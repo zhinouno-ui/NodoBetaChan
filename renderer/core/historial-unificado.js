@@ -436,6 +436,38 @@ window.limpiarFiltrosSolicitudes = function(){
 };
 
 let _solicitudActivaId = null;
+// Clave de cada tarjeta. Una fila de historial_ops va por SU id ("h" + id): un retiro pagado en
+// partes tiene varias filas con la misma solicitud, y con la clave por solicitud eran la misma
+// tarjeta — tocabas cualquiera y se abría la última (Juan, 12/09). Las del portal siguen igual.
+function _claveStream(it){
+  if(it && it.fuente === 'OPERACION') return 'h' + String(it.historial_id || it.id || '');
+  return String((it && (it.solicitud_id || it.historial_id || it.id)) || '');
+}
+window._claveStream = _claveStream;
+// Qué parte de un retiro por partes es esta fila ("Parte 2 de 2 · #207577"), o si es el cierre,
+// que se registra con $0 y sin eso se leía "RETIRO de $0".
+function _parteRetiro(it){
+  try{
+    if(String((it && it.tipo) || '').toUpperCase() !== 'RETIRO' || !it.solicitud_id) return null;
+    const raw = it._raw || {};
+    const sid = String(it.solicitud_id);
+    const H = (typeof _historialData !== 'undefined' && _historialData && _historialData.length)
+      ? _historialData : (window._historialData || []);
+    const partes = H.filter(function(h){
+      return String(h.solicitud_id || '') === sid && String(h.tipo || '').toUpperCase() === 'RETIRO'
+        && Number(h.monto || 0) > 0 && String(h.estado || '').toUpperCase() !== 'ERROR';
+    }).sort(function(a, b){ return new Date(a.created_at) - new Date(b.created_at); });
+    if(Number(it.monto || 0) === 0 && /^Cierre de retiro parcial/i.test(String(raw.notas || '')))
+      return { cierre: true, sid: sid, n: partes.length };
+    if(partes.length < 2 && !/PARCIAL/.test(String(raw.notas || ''))) return null;
+    const i = partes.findIndex(function(h){ return String(h.id) === String(it.historial_id || it.id); });
+    return { cierre: false, sid: sid, i: i + 1, n: partes.length };
+  }catch(_e){ return null; }
+}
+window._parteRetiro = _parteRetiro;
+window._parteRetiroTxt = function(pr){
+  return pr ? ('💸 ' + (pr.cierre ? 'Cierre del retiro' : ('Parte ' + (pr.i > 0 ? pr.i : '?') + ' de ' + pr.n)) + ' · #' + pr.sid) : '';
+};
 
 function renderSolicitudesStream(lista){
   const streamEl = document.getElementById("solicitudesStreamList");
@@ -467,19 +499,18 @@ function renderSolicitudesStream(lista){
 
   // Auto-seleccionar primer elemento
   const tieneActiva = _solicitudActivaId && lista.some(function(it){
-    const sid = String(it.solicitud_id || it.historial_id || it.id);
-    return sid === String(_solicitudActivaId);
+    return _claveStream(it) === String(_solicitudActivaId);
   });
   if(!tieneActiva){
-    const primerElem = lista[0];
-    _solicitudActivaId = String(primerElem.solicitud_id || primerElem.historial_id || primerElem.id);
+    _solicitudActivaId = _claveStream(lista[0]);
   }
 
   let html = '';
   lista.forEach(function(it){
-    const selId = String(it.solicitud_id || it.historial_id || it.id || '');
+    const selId = _claveStream(it);
+    const loteId = String(it.historial_id || it.id || '');   // el lote va por fila de historial, igual que en la tabla
     const isActive = String(selId) === String(_solicitudActivaId);
-    const checked = _seleccionLote.has(selId);
+    const checked = _seleccionLote.has(loteId);
     const seleccionable = it.fuente === 'OPERACION' && it.chunior_movimiento_id;
 
     const u = it.usuario || 'JU';
@@ -517,6 +548,13 @@ function renderSolicitudesStream(lista){
       }
     }
 
+    // Un retiro pagado en partes: qué parte es esta fila, o el cierre.
+    const _pr = it.fuente === 'OPERACION' ? _parteRetiro(it) : null;
+    if(_pr){
+      if(_pr.cierre) montoHtml = '<span style="font-size:13px;color:#c4b5fd">🔒 Cierre</span>';
+      parcialMini += `<div style="margin-top:4px;font-size:10px;font-weight:800;color:#c084fc">${escapeHtml(window._parteRetiroTxt(_pr))}</div>`;
+    }
+
     // Va ARRIBA del todo en la tarjeta: es lo que decide a qué billetera mirar.
     let bilPill = '';
     const _bv = _billeteraVieja(it);
@@ -541,7 +579,7 @@ function renderSolicitudesStream(lista){
     }
 
     const chkHtml = seleccionable ? `
-      <input type="checkbox"${checked ? ' checked' : ''} onclick="event.stopPropagation();toggleSeleccionLote('${escapeHtml(selId)}', this.checked)" style="width:15px;height:15px;cursor:pointer;margin-right:6px">
+      <input type="checkbox"${checked ? ' checked' : ''} onclick="event.stopPropagation();toggleSeleccionLote('${escapeHtml(loteId)}', this.checked)" style="width:15px;height:15px;cursor:pointer;margin-right:6px">
     ` : '';
 
     const esManual = it.fuente === 'OPERACION';
@@ -771,7 +809,7 @@ function tablaHistorialUnificadoHTML(lista){
       </div>`;
     }
 
-    const rowAttrs = ` id="histRow-${escapeHtml(selId)}" class="sol-row${checked?' is-selected':''}" onclick="if(!event.target.closest('button,input,a'))abrirExpedienteSolicitud('${escapeHtml(selId)}')"` + (checked ? ` style="background:#1c2740"` : ``);
+    const rowAttrs = ` id="histRow-${escapeHtml(selId)}" class="sol-row${checked?' is-selected':''}" onclick="if(!event.target.closest('button,input,a'))abrirExpedienteSolicitud('${escapeHtml(_claveStream(it))}')"` + (checked ? ` style="background:#1c2740"` : ``);
     const esRetiroOp = it.fuente==='OPERACION' && it.tipo==='RETIRO';
     const yaExcluido = it._raw && /\[BL_EXCLUIDO\]/.test(String(it._raw.notas||''));
     const blBtn = esRetiroOp
@@ -782,7 +820,7 @@ function tablaHistorialUnificadoHTML(lista){
     const _accU = it.tipo==='RETIRO' ? '#fb923c' : it.tipo==='CARGA' ? '#22c55e' : '';
 
     // Acciones de solicitud
-    let solBtns = `<button class="mini-btn" style="background:#1e293b;color:#93c5fd;border:1px solid rgba(147,197,253,.4);font-size:10px;padding:3px 8px" onclick="event.stopPropagation();abrirExpedienteSolicitud('${escapeHtml(selId)}')" title="Ver expediente detallado">🔎 Ver</button>`;
+    let solBtns = `<button class="mini-btn" style="background:#1e293b;color:#93c5fd;border:1px solid rgba(147,197,253,.4);font-size:10px;padding:3px 8px" onclick="event.stopPropagation();abrirExpedienteSolicitud('${escapeHtml(_claveStream(it))}')" title="Ver expediente detallado">🔎 Ver</button>`;
     if(it.fuente==='SOLICITUD'){
       const _sid = String(it.solicitud_id || it.id || '');
       const _estS = String(it.estado||'').toUpperCase();

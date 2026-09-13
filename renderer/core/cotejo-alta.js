@@ -472,10 +472,10 @@ async function _altaTelRender(){
           ? '<b style="color:#f0883e;font-size:12.5px">⚠ ESE TELÉFONO TIENE '+tel.length+' DÍGITOS</b>'
             + '<div class="small" style="color:#c9d1d9;margin-top:3px">Un número argentino tiene 10 '
             + '(área + número). Si lo validás así, el usuario no va a poder entrar al portal.</div>'
-          : '<b style="color:#8fa9e0;font-size:12.5px">📱 ESTE USUARIO USA OTRO NÚMERO</b>')
+          : '<b style="color:#8fa9e0;font-size:12.5px">📱 ESTE USUARIO OPERÓ CON OTRO NÚMERO</b>')
       + (mejor
-          ? '<div class="small" style="color:#c9d1d9;margin-top:5px">Usó <b style="color:#e6edf3">'
-            + escapeHtml(mejor.telefono)+'</b> en <b>'+mejor.veces+'</b> solicitud'+(mejor.veces===1?'':'es')+'. '
+          ? '<div class="small" style="color:#c9d1d9;margin-top:5px">En esta oficina operó con <b style="color:#e6edf3">'
+            + escapeHtml(mejor.telefono)+'</b> en <b>'+mejor.veces+'</b> carga'+(mejor.veces===1?'':'s')+' o retiro'+(mejor.veces===1?'':'s')+' ya acreditado'+(mejor.veces===1?'':'s')+'. '
             + '<button class="mini-btn green" style="margin-left:6px" onclick="crmUsarTel(\''
             + escapeHtml(mejor.telefono)+'\')">usar este</button></div>'
           : '')

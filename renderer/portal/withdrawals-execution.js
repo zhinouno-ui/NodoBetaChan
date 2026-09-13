@@ -5,10 +5,10 @@
   else root.NodoPortalWithdrawalsExecution = api;
 })(typeof globalThis !== 'undefined' ? globalThis : this, function(){
   'use strict';
-  const dependencies = Object.freeze(["_drexGlobalLock","_drexGlobalUnlock","_rv2ActualizarBotonAprobar","_rv2BilsUsables","_rv2Finalizar","_rv2Modal","_rv2PintarVeredicto","_rv2TotalSel","_trazaFin","_trazaInit","_trazaPaso","_wdLock","_wdUnlock","ajustarSaldoBilletera","alert","callDrex","cargarHistorial","cargarSolicitudesPortal","cerrarExpedienteSolicitud","cerrarPortalJobModal","cerrarRetiroV2","confirm","document","ensureDrexSession","escapeHtml","fetch","localStorage","money","notificarUsuarioEnChat","pcOperativa","registrarEnHistorial","registrarRetiroEnChunior","renderBillerasInicio","setTimeout","sincronizarBilleterasChunior","supabaseClient","toast","window"]);
+  const dependencies = Object.freeze(["_drexGlobalLock","_drexGlobalUnlock","_rv2ActualizarBotonAprobar","_rv2BilsUsables","_rv2Finalizar","_rv2Modal","_rv2PintarVeredicto","_rv2Render","_rv2TotalSel","_trazaFin","_trazaInit","_trazaPaso","_wdLock","_wdUnlock","ajustarSaldoBilletera","alert","callDrex","cargarHistorial","cargarSolicitudesPortal","cerrarExpedienteSolicitud","cerrarPortalJobModal","cerrarRetiroV2","confirm","document","ensureDrexSession","escapeHtml","fetch","localStorage","money","notificarUsuarioEnChat","pcOperativa","registrarEnHistorial","registrarRetiroEnChunior","renderBillerasInicio","setTimeout","sincronizarBilleterasChunior","supabaseClient","toast","window"]);
   function create(deps){
 const api = {};
-async function notificarRetiroParcialPortal(solicitudId, montoPago, pagadoAcum, restante, montoTotal, saldoPost){
+async function notificarRetiroParcialPortal(solicitudId, montoPago, pagadoAcum, restante, montoTotal, saldoPost, desde){
   if(!deps.window.panelAPI || !deps.window.panelAPI.rpc || !solicitudId) return { ok:false, detail:'sin panelAPI/id' };
   const op = (deps.window.operador && (deps.window.operador.usuario||deps.window.operador.nombre)) || 'panel';
   const sid = Number(solicitudId);
@@ -17,6 +17,11 @@ async function notificarRetiroParcialPortal(solicitudId, montoPago, pagadoAcum, 
     //   landing_retiro_registrar_parcial(p_id, p_monto_parcial, p_operador)
     // Las A/B/C eran conjeturas y NINGUNA coincidía → el parcial se pagaba pero nunca se
     // registraba el progreso. Va primera.
+    // Con DESDE qué billetera salió (D-90): el portal le dice al jugador "te transfirió X". Si la
+    // base no conociera p_desde devuelve error de firma y se prueba la de abajo, sin él: el pago
+    // nunca queda sin registrar por el orden en que se publica cada cosa.
+    { k:'ND', p:{ p_id:sid, p_monto_parcial:Number(montoPago)||0, p_operador:op,
+                  p_saldo_post:(saldoPost!=null?Number(saldoPost):null), p_desde:(String(desde||'').trim()||null) } },
     { k:'N', p:{ p_id:sid, p_monto_parcial:Number(montoPago)||0, p_operador:op,
                  p_saldo_post:(saldoPost!=null?Number(saldoPost):null) } },
     { k:'A', p:{ p_solicitud_id:sid, p_monto_pagado:Number(pagadoAcum)||0, p_monto_restante:Number(restante)||0, p_monto_total:Number(montoTotal)||0, p_operador:op } },
@@ -99,7 +104,7 @@ api._rv2Aprobar = async function(){
   const total = deps._rv2TotalSel();
   const seleccionadas = deps._rv2BilsUsables()
     .filter(function(b){ return st.sel[String(b.ID_BILLETERA)] && Number(st.montos[String(b.ID_BILLETERA)])>0; })
-    .map(function(b){ return { id:String(b.ID_BILLETERA), nombre:b.NOMBRE_VISIBLE||'—', chunior:b.CHUNIOR_UID, saldo:Number(b.SALDO||0), monto:Number(st.montos[String(b.ID_BILLETERA)]||0) }; });
+    .map(function(b){ return { id:String(b.ID_BILLETERA), nombre:b.NOMBRE_VISIBLE||'—', titular:String(b.TITULAR||'').trim(), chunior:b.CHUNIOR_UID, saldo:Number(b.SALDO||0), monto:Number(st.montos[String(b.ID_BILLETERA)]||0) }; });
   if(!seleccionadas.length){ deps.toast('Tildá al menos una billetera con monto.','red'); return; }
   if(total<=0){ deps.toast('El total a pagar es 0.','red'); return; }
   // Se compara contra LO QUE FALTA de la deuda (totalReal − yaPagado), igual que el botón. Antes
@@ -107,23 +112,28 @@ api._rv2Aprobar = async function(){
   // metadata podrido: el botón te habilitaba y esta validación te rechazaba con "supera el monto
   // real ($200.000)" cuando en pantalla decía claramente que faltaban $250.000. Y no corta el
   // flujo: pagar de más se pregunta, no se prohíbe — el que sabe cuánto se debe es el operador.
-  const _faltaDeuda = Math.max(0, Number(st.totalReal||0) - Number(st.yaPagado||0));
-  if(total > _faltaDeuda + 0.5){
-    if(!deps.confirm('Vas a pagar '+deps.money(total)+' y de esta deuda sólo faltan '+deps.money(_faltaDeuda)+'.\n\n'
-      + 'Son '+deps.money(total-_faltaDeuda)+' de MÁS.\n\n'
-      + 'Si el total del retiro está mal cargado, corregilo arriba en "Total del retiro".\n\n¿Pagar igual?')) return;
-  }
+  // Pagar de más ya NO se frena con un confirm: el modal lo avisa en rojo ("te pasaste") y el botón
+  // dice cuánto de más. El que sabe cuánto se debe es el operador (Juan, 12/09).
   for(const b of seleccionadas){ if(b.monto > b.saldo+0.5){ deps.toast(b.nombre+' no tiene '+deps.money(b.monto)+' (saldo '+deps.money(b.saldo)+').','red'); return; } }
   // Chequeo de fichas. Si no se pudo leer al abrir el modal, se intenta AHORA — antes se salteaba
   // en silencio (la condición pedía saldoReal!=null) y el retiro salía sin verificar nada.
   if(st.saldoReal==null){
     deps.toast('Leyendo las fichas de '+st.usuario+' antes de pagar…','blue');
     try{ await _rv2LeerSaldo(99); }catch(_e){}          // 99 = sin reintentos, es el último tiro
+    // Se cayó la sesión (PCs con poca actividad): se abre el login y, al entrar, se vuelve a leer
+    // y se sigue. Antes decía "reabrí el retiro" y había que arrancar todo de nuevo.
+    if(st.saldoReal==null && st.saldoFallo==='sesion'){
+      deps.toast('Se cayó la sesión de Agentes · entrá y sigo con el retiro','yellow');
+      let _okSes = false; try{ _okSes = await deps.ensureDrexSession(); }catch(_e){}
+      if(!_okSes || deps.withdrawalState.current!==st) return;
+      try{ await _rv2LeerSaldo(99); }catch(_e){}
+    }
   }
   if(st.saldoReal==null){
     if(!deps.confirm('No se pudieron leer las fichas de '+st.usuario+'.\n\nSi seguís, el retiro sale A CIEGAS: no sabemos si tiene el saldo.\n\n¿Continuar igual?')) return;
-  } else if(total > st.saldoReal+0.5){
-    if(!deps.confirm('El usuario tiene '+deps.money(st.saldoReal)+' de fichas pero vas a retirar '+deps.money(total)+'. ¿Seguir igual?')) return;
+  } else if(total > Math.floor(Number(st.saldoReal) + 1e-9) + 0.001){
+    // Contra las fichas ENTERAS: Agentes no retira centavos.
+    if(!deps.confirm('El usuario tiene '+deps.money(st.saldoReal)+' de fichas (como mucho se le pueden sacar '+deps.money(Math.floor(Number(st.saldoReal)+1e-9))+') y vas a retirar '+deps.money(total)+'. ¿Seguir igual?')) return;
   }
   st.obs = (deps.document.getElementById('rv2Obs')?deps.document.getElementById('rv2Obs').value:'').trim();
   st.pagar = seleccionadas; st.totalPagar = total;
@@ -137,58 +147,72 @@ api._rv2Aprobar = async function(){
     try{ const t=deps.document.getElementById('rv2Total'); if(t){ t.style.outline='2px solid #f5c518'; deps.setTimeout(function(){ t.style.outline=''; },1500); t.scrollIntoView({block:'center'}); } }catch(_e){}
     return;
   }
-  // Freno inverso: entraste por "💸 Parcial" pero el monto cubre TODO. Pasa fácil, porque al elegir
-  // la billetera del desplegable se completa con min(saldo, lo que falta): si esa billetera alcanza,
-  // te llena la deuda entera. Si seguís, el retiro se cierra PAGADO y sale de la bandeja de parciales.
-  if(st.modoParcial && !esParcial){
-    if(!deps.confirm('Con este monto el retiro queda COMPLETO, no parcial.\n\n'
-      + 'Pagás ' + deps.money(total) + ' y la deuda es ' + deps.money(st.objetivo) + '.\n\n'
-      + '¿Es correcto? Si querías abonar solo una parte, cancelá y bajá el monto de la billetera.')) return;
-  }
+  // (Acá había un confirm "el retiro queda COMPLETO, no parcial" que frenaba el pago del resto de un
+  //  parcial — la única forma de cerrarlo. Queda el aviso visible del modal; el operador decide.)
   const confirmarCada = !!(deps.document.getElementById('rv2ConfCada') && deps.document.getElementById('rv2ConfCada').checked);
+  // Un pago a la vez: el modal queda abierto mientras se busca al usuario y un segundo clic pagaba dos veces.
+  if(st._pagando) return;
 
-  // Cerrar la vista/pestaña/modal de inmediato si no se confirmó paso a paso, liberando al operador para ver el hilo abajo
-  if(!confirmarCada){
-    deps.cerrarRetiroV2();
-    try{ if(typeof deps.cerrarExpedienteSolicitud === 'function') deps.cerrarExpedienteSolicitud(); else if(deps.window.cerrarExpedienteSolicitud) deps.window.cerrarExpedienteSolicitud(); }catch(_e){}
-    try{ if(typeof deps.cerrarPortalJobModal === 'function') deps.cerrarPortalJobModal(); else if(deps.window.cerrarPortalJobModal) deps.window.cerrarPortalJobModal(); }catch(_e){}
-    deps.toast('Portal: procesando retiro '+(esParcial?'parcial ':'')+'...', 'blue');
-  }
-
-  // 1) Extraer las fichas del usuario (Agentes) — con lock y traza inferior visible
-  if(!deps._drexGlobalLock('rv2-retiro')){ deps.toast('Hay otra operación en curso. Esperá.','yellow'); return; }
+  // 1) ANTES de cerrar el modal: candado, sesión y búsqueda. Si algo de esto falla no se movió
+  //    plata y el modal queda como estaba para reintentar. Antes se cerraba primero, y cualquier
+  //    falla (sesión caída, otra operación en curso) dejaba al operador sin nada: "el retiro
+  //    parcial no continúa" (Juan, 12/09).
+  if(!deps._drexGlobalLock('rv2-retiro')){ deps.toast('Hay otra operación en curso. Esperá y tocá Pagar de nuevo.','yellow'); return; }
+  st._pagando = true;
+  const _btn = deps.document.getElementById('rv2BtnAprobar');
+  const _btnTxt = _btn ? _btn.textContent : '';
+  if(_btn){ _btn.disabled = true; _btn.textContent = 'Buscando a '+st.usuario+' en Agentes…'; }
   deps._wdLock();
   deps._trazaInit('Retiro '+(esParcial?'PARCIAL':'')+' · '+st.usuario+' · '+deps.money(total)+(st.id?(' (sol. #'+st.id+')'):''));
-  let fichasOk=false;
+  let fichasOk=false, _cerrado=false;
   try{
-    deps.toast('Portal: abriendo backoffice...', 'blue');
     deps._trazaPaso('Abriendo sesión de Agentes...');
     if(!await deps.ensureDrexSession()){
-      deps.toast('Sesión de Agentes requerida.','red');
+      deps.toast('Sesión de Agentes requerida · no se sacó nada','red');
       deps._trazaPaso('Falta sesión de Agentes','err');
       deps._trazaFin('err');
       return;
     }
     deps._trazaPaso('Sesión de Agentes lista','ok');
 
-    deps.toast('Portal: buscando '+st.usuario+'...', 'blue');
     deps._trazaPaso('Buscando '+st.usuario+' en Agentes...');
-    const bb = await deps.callDrex('buscarUsuario', st.usuario, { skipBalance:true });
+    let bb = await deps.callDrex('buscarUsuario', st.usuario, { skipBalance:true });
+    // Se cayó en el medio: login y se reintenta UNA vez. Todavía no se sacó nada, es seguro.
+    if(bb && bb.needsLogin){
+      deps._trazaPaso('Se cayó la sesión de Agentes · pidiendo login','warn');
+      deps.toast('Se cayó la sesión de Agentes · entrá y sigo con el retiro','yellow');
+      let _okSes = false; try{ _okSes = await deps.ensureDrexSession(); }catch(_e){}
+      if(_okSes && deps.withdrawalState.current===st) bb = await deps.callDrex('buscarUsuario', st.usuario, { skipBalance:true });
+    }
     if(bb && (bb.needsLogin || bb.pageError)){
       const _mot = bb.needsLogin ? 'Se cayó la sesión de Agentes' : 'Agentes devolvió una página de error';
-      deps.toast(_mot+' · no se sacó nada. Entrá de nuevo y reintentá.','red');
+      deps.toast(_mot+' · no se sacó nada. Entrá de nuevo y tocá Pagar.','red');
       deps._trazaPaso(_mot+' · no se operó','err');
       deps._trazaFin('err');
       return;
     }
     if(!bb || !bb.exists){
-      deps.toast('Usuario '+st.usuario+' no encontrado en Agentes.','red');
+      deps.toast('Usuario '+st.usuario+' no encontrado en Agentes · no se sacó nada.','red');
       deps._trazaPaso(st.usuario+' no existe en Agentes','err');
+      deps._trazaFin('err');
+      return;
+    }
+    // Cerrar el modal mientras se buscaba es la forma de frenar: no se paga.
+    if(deps.withdrawalState.current !== st){
+      deps.toast('Cancelaste el retiro · no se sacó nada','yellow');
+      deps._trazaPaso('Cancelado por el operador antes de retirar','warn');
       deps._trazaFin('err');
       return;
     }
     deps._trazaPaso(st.usuario+' encontrado'+(bb.balance?.raw?(' · saldo '+bb.balance.raw.trim()):''), 'ok');
 
+    // 2) Punto sin vuelta: recién ahora se cierra el modal y se retira.
+    _cerrado = true;
+    if(!confirmarCada){
+      deps.cerrarRetiroV2();
+      try{ if(typeof deps.cerrarExpedienteSolicitud === 'function') deps.cerrarExpedienteSolicitud(); else if(deps.window.cerrarExpedienteSolicitud) deps.window.cerrarExpedienteSolicitud(); }catch(_e){}
+      try{ if(typeof deps.cerrarPortalJobModal === 'function') deps.cerrarPortalJobModal(); else if(deps.window.cerrarPortalJobModal) deps.window.cerrarPortalJobModal(); }catch(_e){}
+    }
     deps.toast('Portal: retirando '+deps.money(total)+'...', 'blue');
     deps._trazaPaso('Retirando '+deps.money(total)+' en Agentes...');
     const rr = await deps.callDrex('retirarSaldo', total);
@@ -196,6 +220,13 @@ api._rv2Aprobar = async function(){
       deps.toast('No se pudo extraer las fichas: '+((rr&&rr.message)||'error')+' — no se transfirió nada.','red');
       deps._trazaPaso('Falló extracción: '+((rr&&rr.message)||'error'),'err');
       deps._trazaFin('err');
+      // Un ok:false del preload es SIEMPRE antes de tocar Aplicar (saldo insuficiente, sesión, campo
+      // de monto): no se movió plata, así que el modal vuelve tal cual para corregir y reintentar.
+      if(rr && rr.ok === false){
+        _cerrado = false;
+        deps.withdrawalState.current = st;
+        try{ deps._rv2Render(); }catch(_e){}
+      }
       return;
     }
     st.saldoPost = (typeof rr?.newBalance?.value==='number' && !rr?.newBalance?.unchanged) ? rr.newBalance.value : null;
@@ -209,6 +240,9 @@ api._rv2Aprobar = async function(){
   }finally{
     deps._wdUnlock();
     deps._drexGlobalUnlock();
+    st._pagando = false;
+    // Si el modal sigue abierto (no se llegó a mover plata), el botón vuelve para reintentar.
+    if(!_cerrado && _btn){ _btn.disabled = false; _btn.textContent = _btnTxt; }
   }
   if(!fichasOk) return;
 
@@ -431,7 +465,10 @@ const _rv2FinalizarInterno = async function(stCapturado){
   // figuraban como no pagos aunque estuvieran abonados.
   const _hayProgreso = (Number(st.yaPagado)||0) > 0;
   if(!completo || _hayProgreso){
-    try{ _rp = await notificarRetiroParcialPortal(st.id, total, pagadoAcum, restante, montoTotal, st.saldoPost); }
+    // El TITULAR de la billetera: es el nombre que el jugador ve en su cuenta cuando le llega la plata.
+    const _desde = (st.pagar||[]).map(function(b){ return String(b.titular || b.nombre || '').trim(); })
+      .filter(function(v, i, a){ return v && a.indexOf(v) === i; }).join(' + ');
+    try{ _rp = await notificarRetiroParcialPortal(st.id, total, pagadoAcum, restante, montoTotal, st.saldoPost, _desde); }
     catch(e){ _rp = { ok:false, detail:(e&&e.message)||String(e) }; }
     if(!_rp || !_rp.ok){
       try{ deps.toast('⚠ Parcial PAGADO pero sin registrar el progreso · revisalo','red'); }catch(_e){}

@@ -407,6 +407,11 @@ function abrirAprobarSolicitud(id){
           busqueda = await callDrex("buscarUsuario", usuario, {skipBalance:true});
         }finally{ _wdUnlock(); }
 
+        // Sesión caída o página de error NO es "el usuario no existe": la solicitud queda como estaba.
+        if(busqueda && (busqueda.needsLogin || busqueda.pageError)){
+          toast('Se cayó la sesión de Agentes · no se tocó la solicitud. Entrá y reintentá.','red');
+          await refrescarTodo(false); return;
+        }
         if(!busqueda || !busqueda.exists){
           await actualizarSolicitudPortal(id, "ERROR_OPERATIVO", {etapa:"USUARIO_NO_ENCONTRADO_POST_APROBADA", monto_aprobado:montoFinal});
           await notificarUsuarioEnChat(usuario, `❌ Tu carga de $${montoFinal.toLocaleString("es-AR")} no pudo procesarse: el usuario "${escapeHtml(usuario)}" no se encontró en el casino. Contactanos para resolverlo.`);

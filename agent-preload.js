@@ -459,11 +459,43 @@ function detectarModalSesionInvalida() {
   const re = /invalid session|session is invalid|la sesi[oó]n es inv[aá]lida|la session es invalida/i;
   for (const sel of selectores) {
     for (const el of document.querySelectorAll(sel)) {
-      if (re.test(el.textContent || '')) return el;
+      if (re.test(el.textContent || '')) { try { _marcarSesionMuerta(); } catch (_) {} return el; }
     }
   }
   return null;
 }
+
+// ── La sesión MURIÓ y lo sabemos ────────────────────────────────────────────────────────────
+// Cerrar el cartel "Invalid session" no revive nada: sin este recuerdo, la app montada de fondo
+// pasaba por sesión viva. Se baja sólo con evidencia de sesión NUEVA: haber visto la pantalla de
+// login y después la app (o un login que pasó). Una recarga arranca de cero, y si sigue muerta
+// Drex lo vuelve a decir apenas carga ("session is invalid, redireccionamos al login").
+let _sesionMuertaDesde = 0;
+let _vioLoginTrasMuerte = false;
+let _opsEnCurso = 0;          // operaciones del panel corriendo en esta página (ver el ipc de abajo)
+let _recargaLoginEn = 0;
+function _marcarSesionMuerta() {
+  if (!_sesionMuertaDesde) {
+    _sesionMuertaDesde = Date.now();
+    console.warn('[agent] sesión de Agentes caída: lo dijo un cartel "Invalid session"');
+  }
+  _vioLoginTrasMuerte = false;
+}
+// Vigía. El cartel también aparece fuera de una operación (el operador tocó "Mostrar", una
+// consulta de fondo): se anota igual. Y si la sesión está muerta, no hay nada corriendo y la
+// página sigue mostrando la app, se la lleva a la pantalla de ingreso — que es lo que el operador
+// hacía a mano refrescando. Una vez cada 30 s como mucho: sin loops de recarga.
+setInterval(function () {
+  try {
+    detectarModalSesionInvalida();
+    if (!_sesionMuertaDesde || _opsEnCurso > 0) return;
+    if (detectarModalSesionInvalida() || _pantallaPideLogin()) return;
+    if (Date.now() - _recargaLoginEn < 30000) return;
+    _recargaLoginEn = Date.now();
+    console.warn('[agent] sesión caída con la app montada → a la pantalla de ingreso');
+    window.location.assign(USER_SEARCH_URL);
+  } catch (_) {}
+}, 1500);
 
 // Detecta si la página es un ERROR del servidor/CDN (no la app de agentes):
 // CloudFront 403/404/5xx, "Request blocked", "could not be satisfied", etc.
@@ -495,7 +527,18 @@ function pageIsBlocked() {
 function pageNeedsLogin() {
   // Modal de sesión inválida (aparece cuando la sesión expira abruptamente)
   if (detectarModalSesionInvalida()) return true;
+  const pideLogin = _pantallaPideLogin();
+  if (_sesionMuertaDesde) {
+    if (pideLogin) { _vioLoginTrasMuerte = true; return true; }
+    // Pasó por el login y volvió la app: es una sesión nueva.
+    if (_vioLoginTrasMuerte) { _sesionMuertaDesde = 0; _vioLoginTrasMuerte = false; return false; }
+    return true;   // se cerró el cartel pero la sesión sigue muerta
+  }
+  return pideLogin;
+}
 
+// ¿La PANTALLA pide login? (lo de siempre, sin la memoria de arriba)
+function _pantallaPideLogin() {
   // Pantalla de login — h4 con clase loginTitle o texto "login agente"
   const allH4 = Array.from(document.querySelectorAll('h4'));
   const loginH4 = allH4.find(h => /login agente/i.test(h.textContent || ''));
@@ -827,6 +870,8 @@ async function buscarUsuario(usuario, options = {}) {
     balance = await leerSaldoViaModal();
   }
 
+  // Si la sesión se cayó mientras se leía el saldo, ese saldo no vale: se avisa como sesión caída.
+  if (pageNeedsLogin()) return status();
   return { ok: true, exists: true, user: playerAlias, balance, modalLeftOpen };
 }
 
@@ -1198,6 +1243,10 @@ async function iniciarSesion(usuario, clave) {
   }
 
   if (!userInput || !passInput || !entrarBtn) {
+    if (_sesionMuertaDesde) {
+      _recargaLoginEn = 0;   // el vigía la lleva al ingreso apenas termine esta respuesta
+      return { ok: false, needsLogin: true, message: 'La sesión de Agentes estaba caída: la estoy llevando a la pantalla de ingreso. Tocá Conectar de nuevo en unos segundos.' };
+    }
     return { ok: false, message: 'No se encontró el formulario de login en el backoffice.' };
   }
 
@@ -1246,7 +1295,9 @@ ipcRenderer.on('drex:automation:run', async (event, request = {}) => {
       throw new Error(`Método no permitido: ${method}`);
     }
     if (METODOS_OPERACION.has(method)) _abortOperacion = false; // limpiar freno viejo al arrancar una operación
-    const result = await api[method](...args);
+    _opsEnCurso++;
+    let result;
+    try { result = await api[method](...args); } finally { _opsEnCurso = Math.max(0, _opsEnCurso - 1); }
     ipcRenderer.send('drex:automation:result', { requestId, ok: true, result });
   } catch (error) {
     ipcRenderer.send('drex:automation:result', { requestId, ok: false, error: error.message || String(error) });

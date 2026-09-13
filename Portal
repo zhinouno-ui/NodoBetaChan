@@ -320,6 +320,7 @@ input.prellenado{background:rgba(58,208,127,.07);border-color:rgba(58,208,127,.4
 .rp-item{display:flex;justify-content:space-between;gap:8px;font-size:12px;background:rgba(255,255,255,.04);border:1px solid var(--line);border-radius:9px;padding:7px 10px}
 .rp-item .rp-m{font-weight:800;color:var(--green);white-space:nowrap}
 .rp-item .rp-f{color:var(--muted)}
+.rp-item .rp-desde{flex:1;min-width:0;color:var(--text);overflow-wrap:anywhere}
 
 /* ── Chat ───────────────────────────────────────────────────────────────── */
 .messages{flex:1;overflow-y:auto;padding:16px;display:flex;flex-direction:column;background:var(--panel)}
@@ -1300,7 +1301,7 @@ function _fechaCorta(iso){
     return p(d.getDate())+"/"+p(d.getMonth()+1)+" "+p(d.getHours())+":"+p(d.getMinutes());
   }catch(_e){ return ""; }
 }
-function _estadoBadge(e, canceladaPor){
+function _estadoBadge(e, canceladaPor, r){
   const u=String(e||"").toUpperCase();
   // Una que cancelaste vos NO es un rechazo nuestro. Iban las dos en rojo y como "Rechazada",
   // así que cancelar tu propia carga se leía como si te la hubiéramos rechazado.
@@ -1308,6 +1309,14 @@ function _estadoBadge(e, canceladaPor){
     const propia = String(canceladaPor||"").toUpperCase()==="JUGADOR";
     return '<span style="font-size:11px;font-weight:800;color:#8b95a5">'
       + (propia ? "Cancelada por vos" : "Cancelada") + '</span>';
+  }
+  // Un retiro por partes: si se cerró con plata sin pagar no está "Confirmado" (se explica abajo,
+  // en el detalle); si ya hubo pagos y sigue abierto, no está "En revisión": se lo estamos pagando.
+  if(r && String(r.tipo||"").toUpperCase()==="RETIRO"){
+    const _c = _jsonDe(r.cierre);
+    if(_c && Number(_c.faltante)>0.5) return '<span style="font-size:11px;font-weight:800;color:#a78bfa">Cerrado</span>';
+    if(Number(r.pagado)>0 && !["OK","APROBADA","ACREDITADA","PAGADA","COMPLETADA","RECHAZADA","ERROR","ERROR_OPERATIVO"].includes(u))
+      return '<span style="font-size:11px;font-weight:800;color:#a78bfa">Te lo estamos pagando</span>';
   }
   const ok=["OK","APROBADA","ACREDITADA","PAGADA","COMPLETADA"].includes(u);
   const rech=["RECHAZADA","ERROR","ERROR_OPERATIVO"].includes(u);
@@ -1356,6 +1365,36 @@ function _histBox(){
   }
   return box;
 }
+function _jsonDe(v){ if(typeof v==="string"){ try{ return JSON.parse(v); }catch(_e){ return null; } } return (v && typeof v==="object") ? v : null; }
+// Un retiro en el historial: lo que pediste, lo que te pagamos y por qué, cada transferencia con
+// quién te la hizo, y si se cerró sin completar, el motivo (D-90). Sin nada de eso, no agrega nada.
+function _detalleRetiroHistorial(r){
+  const pedido=Number(r.monto)||0, aPagar=Number(r.monto_a_pagar!=null?r.monto_a_pagar:pedido)||0, pagado=Number(r.pagado)||0;
+  let pagos=_jsonDe(r.pagos); if(!Array.isArray(pagos)) pagos=[];
+  const cierre=_jsonDe(r.cierre);
+  const ajustado = aPagar>0 && Math.abs(aPagar-pedido)>0.5;
+  if(!ajustado && !pagos.length && !cierre) return "";
+  let h='<div style="width:100%;font-size:11.5px;color:#c9d3e0;margin-top:4px;line-height:1.55;background:rgba(255,255,255,.03);border:1px solid #23262f;border-radius:9px;padding:7px 9px">';
+  if(ajustado){
+    h+='<div>Pediste <b>'+_money(pedido)+'</b> · te pagamos <b style="color:#e9c25c">'+_money(aPagar)+'</b></div>';
+    if(r.motivo_ajuste) h+='<div style="color:#e9c25c">📝 '+esc(r.motivo_ajuste)+'</div>';
+  }
+  if(pagos.length){
+    h+='<div style="margin-top:4px;color:#8b95a5">Transferencias · cobraste '+_money(pagado)+(aPagar>0?' de '+_money(aPagar):'')+'</div>';
+    pagos.slice().reverse().forEach(function(p){
+      h+='<div style="display:flex;justify-content:space-between;gap:8px">'
+        +'<span><b style="color:#22c55e">+'+_money(Number(p.monto)||0)+'</b>'+(p.desde?' · te transfirió '+esc(p.desde):'')+'</span>'
+        +'<span style="color:#8b95a5;white-space:nowrap">'+esc(_fechaCorta(p.fecha))+'</span></div>';
+    });
+  }
+  if(cierre && (cierre.etiqueta || cierre.nota)){
+    h+='<div style="margin-top:5px;padding-top:5px;border-top:1px solid #23262f;color:#c4b5fd">🔒 Se cerró'
+      +(cierre.etiqueta?': <b>'+esc(cierre.etiqueta)+'</b>':'')
+      +(Number(cierre.faltante)>0.5?' · quedaron sin pagar '+_money(Number(cierre.faltante)):'')+'</div>'
+      +(cierre.nota?'<div style="color:#c9d3e0;font-style:italic">"'+esc(cierre.nota)+'"</div>':'');
+  }
+  return h+'</div>';
+}
 async function pintarHistorialUsuario(){
   const box=_histBox(); if(!box) return;
   box.innerHTML='<div style="text-align:center;color:#8b95a5;font-size:12px;padding:10px">Cargando historial…</div>';
@@ -1384,7 +1423,9 @@ async function pintarHistorialUsuario(){
       + '<div style="display:flex;align-items:center;gap:10px"><span style="font-size:18px">'+(esRetiro?"🏧":"💳")+'</span>'
       +   '<div><div style="font-weight:800;font-size:14px;color:#e8edf4">'+(esRetiro?"Retiro":"Carga")+'</div>'
       +   '<div style="font-size:11px;color:#8b95a5">'+esc(_fechaCorta(r.fecha))+'</div></div></div>'
-      + '<div style="text-align:right"><div style="font-weight:900;font-size:15px;color:#e9c25c">'+_money(Number(r.monto)||0)+'</div>'+_estadoBadge(r.estado, r.cancelada_por)+'</div>'+detalle
+      // En un retiro el número grande es lo que se le paga (si se corrigió, lo que pidió va en el detalle).
+      + '<div style="text-align:right"><div style="font-weight:900;font-size:15px;color:#e9c25c">'+_money((esRetiro && r.monto_a_pagar!=null ? Number(r.monto_a_pagar) : Number(r.monto))||0)+'</div>'+_estadoBadge(r.estado, r.cancelada_por, r)+'</div>'+detalle
+      + (esRetiro ? _detalleRetiroHistorial(r) : '')
       + (rech && r.motivo ? '<div style="width:100%;font-size:11.5px;color:#fca5a5;background:rgba(239,68,68,.08);border:1px solid rgba(239,68,68,.25);border-radius:8px;padding:6px 8px;margin-top:2px">🚫 '+esc(r.motivo)+'</div>' : '')
       + '</div>';
   }).join("");
@@ -1396,6 +1437,9 @@ async function pintarHistorialUsuario(){
 // ella manda la solicitud con la anterior. Del lado del panel eso ya se avisa; acá lo tiene
 // que ver ella, que es la que sabe adónde transfirió de verdad.
 function _avisoBilleteraSolicitud(){
+  // En un RETIRO la plata la mandamos NOSOTROS: "Transferiste a" estaba al revés. Quién le
+  // transfirió y cuánto va pago por pago en el progreso (D-90).
+  if(String(state.pendingTipo||"").toUpperCase()==="RETIRO") return "";
   const dela = String(state.pendingBilletera||"").trim();
   if(!dela) return "";
   const b = state.billetera||{};
@@ -1630,7 +1674,8 @@ async function cargarProgresoRetiro(){
   const lista=pagos.slice().reverse().map(p=>{
     const m=_money(Number(p.monto||0));
     let f=""; try{ f=new Date(p.fecha).toLocaleString("es-AR",{day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"}); }catch(_e){}
-    return `<div class="rp-item"><span class="rp-m">+${m}</span><span class="rp-f">${esc(f)}</span></div>`;
+    // Quién le transfirió, pago por pago (D-90). Los pagos de antes no lo guardaban: esos van igual que siempre.
+    return `<div class="rp-item"><span class="rp-m">+${m}</span>${p.desde?`<span class="rp-desde">te transfirió <b>${esc(p.desde)}</b></span>`:""}<span class="rp-f">${esc(f)}</span></div>`;
   }).join("");
   box.innerHTML=`<div class="rp-wrap">
     <div class="rp-top"><span>Pagado</span><span class="rp-nums">${_money(pagado)} / ${_money(total)}</span></div>

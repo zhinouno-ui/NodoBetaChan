@@ -180,7 +180,9 @@
     try{
       if(typeof callDrex!=="function")throw new Error("callDrex no disponible");
       const res=await callDrex("buscarUsuario",usuario,{skipBalance:true});
-      const ok=!!(res && (res.ok!==false));
+      if(res && (res.needsLogin || res.pageError)) throw new Error(res.needsLogin ? "Sesión de Agentes caída — reintentá" : "Página de error de Agentes — reintentá");
+      // "ok" es true también cuando la búsqueda dice "sin resultados": lo que importa es exists.
+      const ok=!!(res && res.exists);
       const nombre = res?.nombre || res?.nombre_casino || res?.usuario || usuario;
       const saldo = res?.saldo ?? res?.balance ?? null;
 

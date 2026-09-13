@@ -1,3 +1,21 @@
+// El resultado de un CAMBIO DE CLAVE va al chat que el jugador tiene abierto: el portal le dice
+// "te avisamos por este mismo chat". notificarUsuarioEnChat (abajo) escribe en chat_sesiones /
+// chat_mensajes, la generación de chat que el portal ya no lee — la clave se cambiaba y el jugador
+// nunca se enteraba (Juan, 12/09). nodoIniciarChat usa su hilo si lo tiene y, si no, lo abre.
+// Sólo para la clave: pasar TODOS los avisos por acá marcaría como respondidos chats que esperan a
+// un operador, cada vez que se acredita una carga. Eso queda anotado en D-92, sin tocar.
+async function _avisarClaveAlJugador(usuario, texto){
+  try{
+    if(typeof window.nodoIniciarChat === 'function'){
+      const r = await window.nodoIniciarChat(usuario, texto);
+      if(r && r.ok) return r;
+      console.warn('[clave] no se pudo avisar por el chat del portal:', r && r.error);
+    }
+  }catch(e){ console.warn('[clave] aviso por chat falló:', e); }
+  try{ return await notificarUsuarioEnChat(usuario, texto); }catch(_e){ return null; }
+}
+window._avisarClaveAlJugador = _avisarClaveAlJugador;
+
 async function notificarUsuarioEnChat(usuarioNombre, mensaje){
   if(!usuarioNombre || !mensaje) return;
 
@@ -106,13 +124,18 @@ async function ejecutarAutoClave(id){
 
   toast(`Buscando ${usuario}...`,"blue");
   const b = await callDrex("buscarUsuario", usuario);
+  // Sesión caída o página de error NO es "el usuario no existe": la solicitud queda como estaba.
+  if(b && (b.needsLogin || b.pageError)){
+    toast('Se cayó la sesión de Agentes · no se tocó la solicitud. Entrá y reintentá.','red');
+    throw new Error('sesión de Agentes caída');
+  }
 
   if(!b.exists){
     await actualizarSolicitudSupabase(id, {
       estado: "RECHAZADA",
       operador_usuario: operador.usuario || operador.nombre || ""
     });
-    await notificarUsuarioEnChat(usuario,
+    await _avisarClaveAlJugador(usuario,
       `❌ Tu solicitud de cambio de clave fue rechazada: el alias "${usuario}" no se encontró en el sistema de juego. ` +
       `Verificá que sea correcto o contactanos por acá.`);
     toast(`Usuario "${usuario}" no encontrado · rechazada`,"red");
@@ -128,7 +151,7 @@ async function ejecutarAutoClave(id){
       estado: "RECHAZADA",
       operador_usuario: operador.usuario || operador.nombre || ""
     });
-    await notificarUsuarioEnChat(usuario,
+    await _avisarClaveAlJugador(usuario,
       `❌ No pudimos cambiar tu clave: ${r.message || "error al ejecutar"}. Contactanos para revisarlo.`);
     toast("Error: "+(r.message||"falló el cambio"),"red");
     await refrescarTodo(false);
@@ -140,7 +163,7 @@ async function ejecutarAutoClave(id){
     operador_usuario: operador.usuario || operador.nombre || ""
   });
 
-  await notificarUsuarioEnChat(usuario,
+  await _avisarClaveAlJugador(usuario,
     `✅ Tu clave fue actualizada correctamente.\n🔑 Nueva clave: *${claveNueva}*\nIngresá al casino con tu usuario y esta clave.`);
 
   toast(`Clave cambiada · ${usuario} → ${claveNueva}`, "green");
@@ -506,6 +529,11 @@ async function ejecutarAutoRetiro(id){
 
   toast(`Buscando ${usuario}...`,"blue");
   const b = await callDrex("buscarUsuario", usuario);
+  // Sesión caída o página de error NO es "el usuario no existe": la solicitud queda como estaba.
+  if(b && (b.needsLogin || b.pageError)){
+    toast('Se cayó la sesión de Agentes · no se tocó la solicitud. Entrá y reintentá.','red');
+    await refrescarTodo(false); return;
+  }
   if(!b.exists){
     await actualizarSolicitudSupabase(id, {
       estado: "RECHAZADA",
@@ -607,6 +635,11 @@ async function ejecutarAutoCarga(id){
   toast(`Buscando usuario ${usuario}...`,"blue");
   // CARGA auto: no necesitamos balance del jugador → evitamos el abrir/cerrar modal
   const busqueda = await callDrex("buscarUsuario", usuario, { skipBalance: true });
+  // Sesión caída o página de error NO es "el usuario no existe": la solicitud queda como estaba.
+  if(busqueda && (busqueda.needsLogin || busqueda.pageError)){
+    toast('Se cayó la sesión de Agentes · no se tocó la solicitud. Entrá y reintentá.','red');
+    await refrescarTodo(false); return;
+  }
   if(!busqueda.exists){
     await actualizarSolicitudSupabase(id, {
       estado: "RECHAZADA",

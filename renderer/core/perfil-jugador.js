@@ -628,6 +628,7 @@ window.verDetalleMovimiento = function(histId, usuarioArg){
     +     fila('Obs', esc(mov.obs||''))
     +   '</div>'
     + '</div>'
+    + ((esRetiro && hRow && hRow.solicitud_id && window.nodoRetiroHistoriaHtml) ? window.nodoRetiroHistoriaHtml(hRow.solicitud_id, hRow.id) : '')
     + '<div style="display:flex;justify-content:space-between;gap:8px;margin-top:12px;padding:8px 11px;background:#161b22;border-radius:9px;font-size:12px">'
     +   '<span>📊 <b>'+arbol.length+'</b> operación/es</span>'
     +   '<span style="color:#22c55e">⬆️ '+money(totC)+'</span>'
@@ -639,5 +640,6 @@ window.verDetalleMovimiento = function(histId, usuarioArg){
     + '</div>';
 
   abrirModal('🔍 Detalle del movimiento', body, null, '');
+  try{ if(window.nodoRetiroHistoriaLlenar) window.nodoRetiroHistoriaLlenar(document.getElementById('modalBody')); }catch(_e){}
   try{ const b=document.getElementById('modalSaveBtn'); if(b) b.style.display='none'; }catch(_e){}
 };

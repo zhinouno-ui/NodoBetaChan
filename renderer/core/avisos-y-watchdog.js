@@ -33,7 +33,8 @@ function abrirModal(title,body,saveFn,saveText="Guardar"){
   btn.innerText=saveText;
   btn.disabled=false;
   btn.style.opacity='';
-  btn.style.display='';
+  // Sin texto (abrirModal(…, null, '')) el que llama no quiere botón: quedaba uno azul vacío.
+  btn.style.display = saveText ? '' : 'none';
   // Siempre limpiar onclick antes de asignar el nuevo — evita contaminación entre modales
   btn.onclick = saveFn || null;
   // Restaurar el botón Cancelar al comportamiento por defecto

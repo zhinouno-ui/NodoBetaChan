@@ -2977,3 +2977,87 @@ después `altaCotejarDatos` comparaba la declaración contra sí misma.
   (la carga y su bono por separado) y al elegir una **escribe** el expediente en el cuadro, para
   editarlo antes de mandarlo.
 - **El cuadro crece con el texto** hasta casi media pantalla (antes, 110 px fijos).
+
+
+## D-90 · El retiro por partes no se veía en ningún lado, ni en el portal ni en el panel · RESUELTO en el código
+
+Juan cerró el retiro de prueba (#207577: pidió $50.000, se ajustó a $35.019, se pagó $5.000 + $30.018 y
+se cerró con $1 sin pagar) y no encontró **el motivo del cierre ni el parcial** en ningún lado. El
+portal seguía mostrando "Retiro · $50.000 · Confirmada" y "Transferiste a".
+
+**Todo el dato estaba en la base** (metadata.retiro_parcial: pagos, cierre con motivo y nota; monto
+corregido y motivo del ajuste). Ni el portal ni el panel lo leían.
+
+- **Base.** `landing_retiro_registrar_parcial` acepta `p_desde` (qué billetera pagó) y lo guarda en
+  cada pago. `landing_historial_usuario` devuelve, al final, `solicitud_id`, `monto_a_pagar`,
+  `pagado`, `motivo_ajuste`, `pagos` y `cierre`. Parámetro opcional y columnas al final: la 1.2.0 y
+  el portal publicado siguen andando igual.
+- **Portal.** En un retiro ya no dice "Transferiste a". Cada pago: **"+$X · te transfirió Fulano"**.
+  El historial muestra lo que pediste, lo que te pagamos y por qué, cada transferencia y, si se cerró
+  sin completar, el motivo y la nota. El badge dice "Cerrado" o "Te lo estamos pagando".
+- **Panel.** El expediente del Centro de control y el 🔍 del historial muestran la historia del
+  retiro (`landing_retiro_progreso`): pedido → ajuste con motivo, cada pago con su operador, y el cierre.
+  La tarjeta y la tabla dicen "Parte 2 de 2 · #id" o "Cierre del retiro".
+
+**Hay que publicar el archivo `Portal`**: el que ven los jugadores NO sale de este repo.
+
+## D-91 · Centro de control: tocabas cualquier movimiento de un retiro por partes y se abría el último · RESUELTO
+
+La clave de cada tarjeta era la solicitud: los dos pagos y el cierre del mismo retiro eran "la misma
+tarjeta". Además, al anotar el N° de Chunior de un pago, se copiaba **en memoria** a todas las filas
+de esa solicitud (las tres decían el mismo N°; en la base estaban bien). Por eso tampoco se veían
+"las fichas antes y después": siempre se abría el cierre, que no tiene saldos.
+
+- Las filas de historial van por su propio id (`h<id>`); el expediente lo entiende. El lote de
+  cambio de billetera sigue por id de historial, como en la tabla.
+- El N° de un pago sólo se copia a la tarjeta del portal de esa solicitud, no a las otras filas.
+
+### El retiro no dejaba pagar el resto
+
+- El confirm "queda COMPLETO, no parcial" frenaba el pago del resto de un parcial — la única forma de
+  cerrarlo. Pagar de más también era un confirm. Ahora son **avisos visibles** y el operador decide
+  (en la segunda cuota, pagar el resto se muestra en verde). "No me dejaba retirar por 1 peso": con
+  $30.018 el pago era "parcial" y no saltaba el confirm; con $30.019 sí.
+- El modal se cerraba **antes** del candado, la sesión y la búsqueda: cualquier falla dejaba al
+  operador sin nada. Ahora se cierra recién cuando se va a mover la plata; si la sesión se cae en el
+  medio, se abre el login y **se sigue solo**. Un `ok:false` del preload (siempre antes de Aplicar)
+  vuelve a abrir el modal tal cual.
+- El botón no tenía id y nunca decía lo que iba a hacer ("Pagar y cerrar el retiro · $X").
+- **Visto, sin tocar:** si el casino RECHAZA el retiro después de Aplicar (`exito:false`), el flujo
+  del retiro lo toma como pagado (`ok` sigue en true). La carga sí lo distingue. Revisar.
+
+## D-92 · "No da aviso de muerte": la sesión de Drex caída pasaba por viva · RESUELTO en el código
+
+El cartel "User search · ErrorInvalid session" (o "Mostrar · Error de actualización Invalid
+session") el preload lo **cerraba**, y Drex dejaba la búsqueda montada: `pageNeedsLogin` veía el botón
+de buscar y daba la sesión por buena. Reintentaba 3 × 18 s, el panel recibía un error genérico (o el
+timeout de 28 s) y nunca abría el login. Pasa más en las PCs con poca actividad.
+
+- El preload **recuerda** que la sesión murió hasta ver el login y después la app (o un login que
+  pasó). Un vigía anota el cartel aunque aparezca fuera de una operación y, si no hay nada corriendo,
+  lleva la página a la pantalla de ingreso (una vez cada 30 s como mucho, nunca en el medio de una
+  operación).
+- Con la caída bien detectada, **cinco caminos** leían "needsLogin" como "el usuario no existe" y
+  rechazaban la solicitud avisándole al jugador: retiro automático, carga automática, cambio de clave,
+  carga aprobada del portal y la cola de validación. Ahora dejan la solicitud como estaba. La cola de
+  validación además marcaba EXISTE a un usuario inexistente (miraba `ok`, no `exists`).
+
+### Cambio de clave: el jugador nunca se enteraba
+
+`notificarUsuarioEnChat` escribe en `chat_sesiones`/`chat_mensajes`, la generación de chat que el
+portal ya no lee (48 h: 3 mensajes ahí contra 2.445 hilos de soporte vivos). El resultado de la clave
+va ahora al hilo del portal (`nodoIniciarChat`).
+**Pendiente, sin tocar a propósito:** los demás avisos automáticos (carga acreditada, rechazos,
+retiros) siguen yendo a la tabla vieja, o sea a ningún lado. Pasarlos al hilo vivo marcaría como
+respondidos chats que esperan a un operador y mandaría un push por cada carga: hay que decidir cómo.
+
+## D-93 · "Este usuario usa otro número · usó X en 7 solicitudes": no se basaba en nada · RESUELTO
+
+`panel_telefonos_de_usuario` contaba **cualquier** fila con ese usuario: chats de soporte (46 mil),
+de cualquier oficina y en cualquier estado. En el caso de Juan, las "7 solicitudes" eran 7 chats de
+OTRA oficina, de julio, de alguien que se hizo llamar igual (un apodo común de un alta nueva). Nadie
+había verificado ese número.
+
+Ahora cuentan sólo **cargas y retiros ya acreditados/pagados en ESTA oficina**: una operación que un
+operador ejecutó en esa cuenta. Misma firma y mismo JSON (la 1.2.0 lo lee igual). El cartel dice
+"operó con otro número en N cargas o retiros ya acreditados".

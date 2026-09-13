@@ -4348,6 +4348,7 @@ window.verDetalleMovimiento = function(histId, usuarioArg){
     +     fila('Obs', esc(mov.obs||''))
     +   '</div>'
     + '</div>'
+    + ((esRetiro && hRow && hRow.solicitud_id && window.nodoRetiroHistoriaHtml) ? window.nodoRetiroHistoriaHtml(hRow.solicitud_id, hRow.id) : '')
     + '<div style="display:flex;justify-content:space-between;gap:8px;margin-top:12px;padding:8px 11px;background:#161b22;border-radius:9px;font-size:12px">'
     +   '<span>📊 <b>'+arbol.length+'</b> operación/es</span>'
     +   '<span style="color:#22c55e">⬆️ '+money(totC)+'</span>'
@@ -4359,6 +4360,7 @@ window.verDetalleMovimiento = function(histId, usuarioArg){
     + '</div>';
 
   abrirModal('🔍 Detalle del movimiento', body, null, '');
+  try{ if(window.nodoRetiroHistoriaLlenar) window.nodoRetiroHistoriaLlenar(document.getElementById('modalBody')); }catch(_e){}
   try{ const b=document.getElementById('modalSaveBtn'); if(b) b.style.display='none'; }catch(_e){}
 };
 const _HIST_FULL_MAX = 5000;
@@ -4587,6 +4589,70 @@ window.verRetirosParciales = function(){
   const _sald = arr.filter(function(s){ const p=window._retiroParcialInfo?window._retiroParcialInfo(s):null; return p && p.restante<=0.5; }).length;
   abrirModal('💸 Retiros pagándose por partes · '+arr.length
     + (_sald ? ' <span style="font-size:12px;color:#22c55e">('+_sald+' ya saldado'+(_sald>1?'s':'')+')</span>' : ''), filas, null, '');
+};
+// ── La historia de un retiro pagado en partes (D-90) ─────────────────────────────────────────
+// Pedido, ajuste con su motivo, cada pago y el cierre. Se pinta en cualquier
+// <div class="nodo-retiro-historia" data-sid="…" data-hist="…"> que haya en pantalla.
+window._retiroHistoriaCache = window._retiroHistoriaCache || {};
+window.nodoRetiroHistoriaHtml = function(sid, histId){
+  return '<div class="nodo-retiro-historia" data-sid="'+escapeHtml(String(sid||''))+'" data-hist="'+escapeHtml(String(histId||''))+'" style="margin-top:10px"></div>';
+};
+window.nodoRetiroHistoriaLlenar = async function(root){
+  const els = Array.from(((root || document).querySelectorAll && (root || document).querySelectorAll('.nodo-retiro-historia[data-sid]')) || []);
+  for(const el of els){
+    const sid = el.getAttribute('data-sid'); if(!sid) continue;
+    let prog = window._retiroHistoriaCache[sid];
+    if(!prog || Date.now() - prog._ts > 30000){
+      try{
+        const r = await supabaseClient.rpc('landing_retiro_progreso', { p_solicitud_id: Number(sid) });
+        const row = Array.isArray(r.data) ? r.data[0] : r.data;
+        if(r.error || !row || row.ok === false) continue;
+        prog = Object.assign({ _ts: Date.now() }, row);
+        window._retiroHistoriaCache[sid] = prog;
+      }catch(_e){ continue; }
+    }
+    el.innerHTML = window.nodoRetiroHistoriaPintar(prog, sid, el.getAttribute('data-hist'));
+  }
+};
+window.nodoRetiroHistoriaPintar = function(p, sid, histId){
+  const j = function(v){ if(typeof v === 'string'){ try{ return JSON.parse(v); }catch(_e){ return null; } } return v; };
+  let pagos = j(p.pagos); if(!Array.isArray(pagos)) pagos = [];
+  const cierre = j(p.cierre), ajuste = j(p.ajuste);
+  const total = Number(p.total)||0, pagado = Number(p.pagado)||0, resta = Math.max(0, total - pagado);
+  if(!pagos.length && !cierre && !ajuste) return '';
+  const fF = (typeof formatFecha === 'function') ? formatFecha : function(x){ return String(x||''); };
+  // Qué pago es ESTA fila del historial: mismo monto y a menos de 3 minutos.
+  const H = (typeof _historialData !== 'undefined' && _historialData) || window._historialData || [];
+  const hRow = histId ? H.find(function(h){ return String(h.id) === String(histId); }) : null;
+  const esEste = function(x){
+    if(!hRow) return false;
+    return Number(x.monto) === Number(hRow.monto) && Math.abs(new Date(x.fecha) - new Date(hRow.created_at)) < 180000;
+  };
+  let h = '<div style="border-radius:10px;padding:10px 12px;background:rgba(168,85,247,.07);border:1px solid rgba(192,132,252,.35);font-size:12.5px;color:#e6edf3">'
+    + '<div style="font-weight:900;color:#c084fc;margin-bottom:5px">💸 Retiro #'+escapeHtml(String(sid))+(pagos.length > 1 || cierre ? ' · pagado por partes' : '')+'</div>';
+  if(ajuste && ajuste.declarado != null){
+    h += '<div>Pidió <b>'+money(Number(ajuste.declarado)||0)+'</b> → se paga <b style="color:#f5c518">'+money(Number(ajuste.corregido)||total)+'</b></div>';
+    if(ajuste.motivo) h += '<div style="color:#fde68a">📝 '+escapeHtml(ajuste.motivo)+'</div>';
+  }
+  h += '<div style="margin-top:4px;color:#8b949e">Pagado <b style="color:#e6edf3">'+money(pagado)+'</b> de <b style="color:#e6edf3">'+money(total)+'</b>'
+    + (resta > 0.5 ? (' · falta <b style="color:#f5c518">'+money(resta)+'</b>') : ' · completo')+'</div>';
+  pagos.forEach(function(x, i){
+    const este = esEste(x);
+    h += '<div style="display:flex;justify-content:space-between;gap:8px;margin-top:3px;padding:4px 7px;border-radius:7px;background:'+(este?'rgba(245,197,24,.10)':'#0d1117')+';border:1px solid '+(este?'rgba(245,197,24,.4)':'#21262d')+'">'
+      + '<span>'+(i+1)+'. <b style="color:#fb923c">'+money(Number(x.monto)||0)+'</b>'
+      +   (x.desde ? (' · desde '+escapeHtml(x.desde)) : '') + (x.operador ? (' · '+escapeHtml(x.operador)) : '')
+      +   (este ? ' <span style="color:#f5c518;font-size:10.5px">(este)</span>' : '')+'</span>'
+      + '<span style="color:#8b949e;white-space:nowrap">'+escapeHtml(fF(x.fecha))+'</span></div>';
+  });
+  if(cierre){
+    h += '<div style="margin-top:6px;padding:6px 8px;border-radius:7px;background:rgba(124,58,237,.12);border:1px solid #7c3aed55">'
+      + '🔒 <b>Cerrado</b>'+(cierre.etiqueta ? (': '+escapeHtml(cierre.etiqueta)) : '')
+      + (Number(cierre.faltante) > 0.5 ? (' · quedó sin pagar <b>'+money(Number(cierre.faltante))+'</b>') : '')
+      + (cierre.nota ? ('<div style="font-style:italic;color:#c9d1d9;margin-top:2px">"'+escapeHtml(cierre.nota)+'"</div>') : '')
+      + '<div style="color:#8b949e;font-size:11px;margin-top:2px">'+escapeHtml([cierre.operador, cierre.fecha ? fF(cierre.fecha) : ''].filter(Boolean).join(' · '))+'</div>'
+      + '</div>';
+  }
+  return h + '</div>';
 };
 // Cierra un retiro parcial. Antes era un confirm() y listo: la operación quedaba PAGADA con
 // plata sin pagar y NADIE sabía por qué. En el caso que disparó esto: 50% pagado, $25.000 sin
@@ -5124,8 +5190,11 @@ function _marcarMovEnMemoria(historialId, movId){
   }catch(_e){}
   try{
     (window._histUnificadoCache || []).forEach(function(it){
+      // Por solicitud, sólo la tarjeta del PORTAL de esa solicitud. Un retiro pagado en partes
+      // tiene varias filas de historial con la misma solicitud y cada una tiene SU número: el del
+      // último pago se copiaba a todas y las tres tarjetas decían N° 9657437 (Juan, 12/09).
       const coincide = String(it.historial_id) === idStr ||
-        (solicitudId && String(it.solicitud_id) === solicitudId);
+        (solicitudId && it.fuente === 'SOLICITUD' && String(it.solicitud_id) === solicitudId);
       if(coincide){
         it.chunior_movimiento_id = movId;
         if(it._raw){ it._raw.chunior_movimiento_id = movId; }
@@ -5470,7 +5539,10 @@ function renderHistorial(lista){
       '<td style="font-size:12px;white-space:nowrap">'+formatFecha(h.created_at)+'</td>'+
       '<td style="white-space:nowrap'+(_accH?';color:'+_accH+';font-weight:800':'')+'">'+tipoIcon(h.tipo)+' '+escapeHtml(h.tipo||'—')+'</td>'+
       '<td><b>'+escapeHtml(h.usuario||'—')+'</b>'+notasTd+'</td>'+
-      '<td style="font-weight:700'+(_accH?';color:'+_accH:'')+'">'+(h.monto?money(h.monto):'—')+'</td>'+
+      '<td style="font-weight:700'+(_accH?';color:'+_accH:'')+'">'+(h.monto?money(h.monto):'—')
+        +(function(){ const pr = window._parteRetiro ? window._parteRetiro({ fuente:'OPERACION', tipo:h.tipo, solicitud_id:h.solicitud_id, monto:h.monto, historial_id:h.id, id:h.id, _raw:h }) : null;
+            return pr ? '<br><span class="small" style="color:#c084fc;font-weight:800">'+escapeHtml(window._parteRetiroTxt(pr))+'</span>' : ''; })()
+        +'</td>'+
       '<td style="font-size:12px;white-space:nowrap">'+saldoPreTd+'</td>'+
       '<td style="font-size:12px;white-space:nowrap">'+saldoPostTd+'</td>'+
       '<td style="font-size:12px">'+escapeHtml(String(h.billetera_nombre||'—').split('·')[0].trim()||String(h.billetera_nombre||'—'))+'</td>'+
@@ -6144,6 +6216,38 @@ window.limpiarFiltrosSolicitudes = function(){
 };
 
 let _solicitudActivaId = null;
+// Clave de cada tarjeta. Una fila de historial_ops va por SU id ("h" + id): un retiro pagado en
+// partes tiene varias filas con la misma solicitud, y con la clave por solicitud eran la misma
+// tarjeta — tocabas cualquiera y se abría la última (Juan, 12/09). Las del portal siguen igual.
+function _claveStream(it){
+  if(it && it.fuente === 'OPERACION') return 'h' + String(it.historial_id || it.id || '');
+  return String((it && (it.solicitud_id || it.historial_id || it.id)) || '');
+}
+window._claveStream = _claveStream;
+// Qué parte de un retiro por partes es esta fila ("Parte 2 de 2 · #207577"), o si es el cierre,
+// que se registra con $0 y sin eso se leía "RETIRO de $0".
+function _parteRetiro(it){
+  try{
+    if(String((it && it.tipo) || '').toUpperCase() !== 'RETIRO' || !it.solicitud_id) return null;
+    const raw = it._raw || {};
+    const sid = String(it.solicitud_id);
+    const H = (typeof _historialData !== 'undefined' && _historialData && _historialData.length)
+      ? _historialData : (window._historialData || []);
+    const partes = H.filter(function(h){
+      return String(h.solicitud_id || '') === sid && String(h.tipo || '').toUpperCase() === 'RETIRO'
+        && Number(h.monto || 0) > 0 && String(h.estado || '').toUpperCase() !== 'ERROR';
+    }).sort(function(a, b){ return new Date(a.created_at) - new Date(b.created_at); });
+    if(Number(it.monto || 0) === 0 && /^Cierre de retiro parcial/i.test(String(raw.notas || '')))
+      return { cierre: true, sid: sid, n: partes.length };
+    if(partes.length < 2 && !/PARCIAL/.test(String(raw.notas || ''))) return null;
+    const i = partes.findIndex(function(h){ return String(h.id) === String(it.historial_id || it.id); });
+    return { cierre: false, sid: sid, i: i + 1, n: partes.length };
+  }catch(_e){ return null; }
+}
+window._parteRetiro = _parteRetiro;
+window._parteRetiroTxt = function(pr){
+  return pr ? ('💸 ' + (pr.cierre ? 'Cierre del retiro' : ('Parte ' + (pr.i > 0 ? pr.i : '?') + ' de ' + pr.n)) + ' · #' + pr.sid) : '';
+};
 
 function renderSolicitudesStream(lista){
   const streamEl = document.getElementById("solicitudesStreamList");
@@ -6175,19 +6279,18 @@ function renderSolicitudesStream(lista){
 
   // Auto-seleccionar primer elemento
   const tieneActiva = _solicitudActivaId && lista.some(function(it){
-    const sid = String(it.solicitud_id || it.historial_id || it.id);
-    return sid === String(_solicitudActivaId);
+    return _claveStream(it) === String(_solicitudActivaId);
   });
   if(!tieneActiva){
-    const primerElem = lista[0];
-    _solicitudActivaId = String(primerElem.solicitud_id || primerElem.historial_id || primerElem.id);
+    _solicitudActivaId = _claveStream(lista[0]);
   }
 
   let html = '';
   lista.forEach(function(it){
-    const selId = String(it.solicitud_id || it.historial_id || it.id || '');
+    const selId = _claveStream(it);
+    const loteId = String(it.historial_id || it.id || '');   // el lote va por fila de historial, igual que en la tabla
     const isActive = String(selId) === String(_solicitudActivaId);
-    const checked = _seleccionLote.has(selId);
+    const checked = _seleccionLote.has(loteId);
     const seleccionable = it.fuente === 'OPERACION' && it.chunior_movimiento_id;
 
     const u = it.usuario || 'JU';
@@ -6225,6 +6328,13 @@ function renderSolicitudesStream(lista){
       }
     }
 
+    // Un retiro pagado en partes: qué parte es esta fila, o el cierre.
+    const _pr = it.fuente === 'OPERACION' ? _parteRetiro(it) : null;
+    if(_pr){
+      if(_pr.cierre) montoHtml = '<span style="font-size:13px;color:#c4b5fd">🔒 Cierre</span>';
+      parcialMini += `<div style="margin-top:4px;font-size:10px;font-weight:800;color:#c084fc">${escapeHtml(window._parteRetiroTxt(_pr))}</div>`;
+    }
+
     // Va ARRIBA del todo en la tarjeta: es lo que decide a qué billetera mirar.
     let bilPill = '';
     const _bv = _billeteraVieja(it);
@@ -6249,7 +6359,7 @@ function renderSolicitudesStream(lista){
     }
 
     const chkHtml = seleccionable ? `
-      <input type="checkbox"${checked ? ' checked' : ''} onclick="event.stopPropagation();toggleSeleccionLote('${escapeHtml(selId)}', this.checked)" style="width:15px;height:15px;cursor:pointer;margin-right:6px">
+      <input type="checkbox"${checked ? ' checked' : ''} onclick="event.stopPropagation();toggleSeleccionLote('${escapeHtml(loteId)}', this.checked)" style="width:15px;height:15px;cursor:pointer;margin-right:6px">
     ` : '';
 
     const esManual = it.fuente === 'OPERACION';
@@ -6479,7 +6589,7 @@ function tablaHistorialUnificadoHTML(lista){
       </div>`;
     }
 
-    const rowAttrs = ` id="histRow-${escapeHtml(selId)}" class="sol-row${checked?' is-selected':''}" onclick="if(!event.target.closest('button,input,a'))abrirExpedienteSolicitud('${escapeHtml(selId)}')"` + (checked ? ` style="background:#1c2740"` : ``);
+    const rowAttrs = ` id="histRow-${escapeHtml(selId)}" class="sol-row${checked?' is-selected':''}" onclick="if(!event.target.closest('button,input,a'))abrirExpedienteSolicitud('${escapeHtml(_claveStream(it))}')"` + (checked ? ` style="background:#1c2740"` : ``);
     const esRetiroOp = it.fuente==='OPERACION' && it.tipo==='RETIRO';
     const yaExcluido = it._raw && /\[BL_EXCLUIDO\]/.test(String(it._raw.notas||''));
     const blBtn = esRetiroOp
@@ -6490,7 +6600,7 @@ function tablaHistorialUnificadoHTML(lista){
     const _accU = it.tipo==='RETIRO' ? '#fb923c' : it.tipo==='CARGA' ? '#22c55e' : '';
 
     // Acciones de solicitud
-    let solBtns = `<button class="mini-btn" style="background:#1e293b;color:#93c5fd;border:1px solid rgba(147,197,253,.4);font-size:10px;padding:3px 8px" onclick="event.stopPropagation();abrirExpedienteSolicitud('${escapeHtml(selId)}')" title="Ver expediente detallado">🔎 Ver</button>`;
+    let solBtns = `<button class="mini-btn" style="background:#1e293b;color:#93c5fd;border:1px solid rgba(147,197,253,.4);font-size:10px;padding:3px 8px" onclick="event.stopPropagation();abrirExpedienteSolicitud('${escapeHtml(_claveStream(it))}')" title="Ver expediente detallado">🔎 Ver</button>`;
     if(it.fuente==='SOLICITUD'){
       const _sid = String(it.solicitud_id || it.id || '');
       const _estS = String(it.estado||'').toUpperCase();
@@ -7288,6 +7398,11 @@ function abrirAprobarSolicitud(id){
           busqueda = await callDrex("buscarUsuario", usuario, {skipBalance:true});
         }finally{ _wdUnlock(); }
 
+        // Sesión caída o página de error NO es "el usuario no existe": la solicitud queda como estaba.
+        if(busqueda && (busqueda.needsLogin || busqueda.pageError)){
+          toast('Se cayó la sesión de Agentes · no se tocó la solicitud. Entrá y reintentá.','red');
+          await refrescarTodo(false); return;
+        }
         if(!busqueda || !busqueda.exists){
           await actualizarSolicitudPortal(id, "ERROR_OPERATIVO", {etapa:"USUARIO_NO_ENCONTRADO_POST_APROBADA", monto_aprobado:montoFinal});
           await notificarUsuarioEnChat(usuario, `❌ Tu carga de $${montoFinal.toLocaleString("es-AR")} no pudo procesarse: el usuario "${escapeHtml(usuario)}" no se encontró en el casino. Contactanos para resolverlo.`);
@@ -7868,7 +7983,8 @@ function abrirModal(title,body,saveFn,saveText="Guardar"){
   btn.innerText=saveText;
   btn.disabled=false;
   btn.style.opacity='';
-  btn.style.display='';
+  // Sin texto (abrirModal(…, null, '')) el que llama no quiere botón: quedaba uno azul vacío.
+  btn.style.display = saveText ? '' : 'none';
   // Siempre limpiar onclick antes de asignar el nuevo — evita contaminación entre modales
   btn.onclick = saveFn || null;
   // Restaurar el botón Cancelar al comportamiento por defecto
@@ -8857,10 +8973,10 @@ async function _altaTelRender(){
           ? '<b style="color:#f0883e;font-size:12.5px">⚠ ESE TELÉFONO TIENE '+tel.length+' DÍGITOS</b>'
             + '<div class="small" style="color:#c9d1d9;margin-top:3px">Un número argentino tiene 10 '
             + '(área + número). Si lo validás así, el usuario no va a poder entrar al portal.</div>'
-          : '<b style="color:#8fa9e0;font-size:12.5px">📱 ESTE USUARIO USA OTRO NÚMERO</b>')
+          : '<b style="color:#8fa9e0;font-size:12.5px">📱 ESTE USUARIO OPERÓ CON OTRO NÚMERO</b>')
       + (mejor
-          ? '<div class="small" style="color:#c9d1d9;margin-top:5px">Usó <b style="color:#e6edf3">'
-            + escapeHtml(mejor.telefono)+'</b> en <b>'+mejor.veces+'</b> solicitud'+(mejor.veces===1?'':'es')+'. '
+          ? '<div class="small" style="color:#c9d1d9;margin-top:5px">En esta oficina operó con <b style="color:#e6edf3">'
+            + escapeHtml(mejor.telefono)+'</b> en <b>'+mejor.veces+'</b> carga'+(mejor.veces===1?'':'s')+' o retiro'+(mejor.veces===1?'':'s')+' ya acreditado'+(mejor.veces===1?'':'s')+'. '
             + '<button class="mini-btn green" style="margin-left:6px" onclick="crmUsarTel(\''
             + escapeHtml(mejor.telefono)+'\')">usar este</button></div>'
           : '')
@@ -9591,6 +9707,24 @@ window.sondaSesionUsuario = function(u){
 };
 
 try{ setInterval(_sondaSesionTick, SONDA_CADA_MS); }catch(_e){}
+// El resultado de un CAMBIO DE CLAVE va al chat que el jugador tiene abierto: el portal le dice
+// "te avisamos por este mismo chat". notificarUsuarioEnChat (abajo) escribe en chat_sesiones /
+// chat_mensajes, la generación de chat que el portal ya no lee — la clave se cambiaba y el jugador
+// nunca se enteraba (Juan, 12/09). nodoIniciarChat usa su hilo si lo tiene y, si no, lo abre.
+// Sólo para la clave: pasar TODOS los avisos por acá marcaría como respondidos chats que esperan a
+// un operador, cada vez que se acredita una carga. Eso queda anotado en D-92, sin tocar.
+async function _avisarClaveAlJugador(usuario, texto){
+  try{
+    if(typeof window.nodoIniciarChat === 'function'){
+      const r = await window.nodoIniciarChat(usuario, texto);
+      if(r && r.ok) return r;
+      console.warn('[clave] no se pudo avisar por el chat del portal:', r && r.error);
+    }
+  }catch(e){ console.warn('[clave] aviso por chat falló:', e); }
+  try{ return await notificarUsuarioEnChat(usuario, texto); }catch(_e){ return null; }
+}
+window._avisarClaveAlJugador = _avisarClaveAlJugador;
+
 async function notificarUsuarioEnChat(usuarioNombre, mensaje){
   if(!usuarioNombre || !mensaje) return;
 
@@ -9699,13 +9833,18 @@ async function ejecutarAutoClave(id){
 
   toast(`Buscando ${usuario}...`,"blue");
   const b = await callDrex("buscarUsuario", usuario);
+  // Sesión caída o página de error NO es "el usuario no existe": la solicitud queda como estaba.
+  if(b && (b.needsLogin || b.pageError)){
+    toast('Se cayó la sesión de Agentes · no se tocó la solicitud. Entrá y reintentá.','red');
+    throw new Error('sesión de Agentes caída');
+  }
 
   if(!b.exists){
     await actualizarSolicitudSupabase(id, {
       estado: "RECHAZADA",
       operador_usuario: operador.usuario || operador.nombre || ""
     });
-    await notificarUsuarioEnChat(usuario,
+    await _avisarClaveAlJugador(usuario,
       `❌ Tu solicitud de cambio de clave fue rechazada: el alias "${usuario}" no se encontró en el sistema de juego. ` +
       `Verificá que sea correcto o contactanos por acá.`);
     toast(`Usuario "${usuario}" no encontrado · rechazada`,"red");
@@ -9721,7 +9860,7 @@ async function ejecutarAutoClave(id){
       estado: "RECHAZADA",
       operador_usuario: operador.usuario || operador.nombre || ""
     });
-    await notificarUsuarioEnChat(usuario,
+    await _avisarClaveAlJugador(usuario,
       `❌ No pudimos cambiar tu clave: ${r.message || "error al ejecutar"}. Contactanos para revisarlo.`);
     toast("Error: "+(r.message||"falló el cambio"),"red");
     await refrescarTodo(false);
@@ -9733,7 +9872,7 @@ async function ejecutarAutoClave(id){
     operador_usuario: operador.usuario || operador.nombre || ""
   });
 
-  await notificarUsuarioEnChat(usuario,
+  await _avisarClaveAlJugador(usuario,
     `✅ Tu clave fue actualizada correctamente.\n🔑 Nueva clave: *${claveNueva}*\nIngresá al casino con tu usuario y esta clave.`);
 
   toast(`Clave cambiada · ${usuario} → ${claveNueva}`, "green");
@@ -10099,6 +10238,11 @@ async function ejecutarAutoRetiro(id){
 
   toast(`Buscando ${usuario}...`,"blue");
   const b = await callDrex("buscarUsuario", usuario);
+  // Sesión caída o página de error NO es "el usuario no existe": la solicitud queda como estaba.
+  if(b && (b.needsLogin || b.pageError)){
+    toast('Se cayó la sesión de Agentes · no se tocó la solicitud. Entrá y reintentá.','red');
+    await refrescarTodo(false); return;
+  }
   if(!b.exists){
     await actualizarSolicitudSupabase(id, {
       estado: "RECHAZADA",
@@ -10200,6 +10344,11 @@ async function ejecutarAutoCarga(id){
   toast(`Buscando usuario ${usuario}...`,"blue");
   // CARGA auto: no necesitamos balance del jugador → evitamos el abrir/cerrar modal
   const busqueda = await callDrex("buscarUsuario", usuario, { skipBalance: true });
+  // Sesión caída o página de error NO es "el usuario no existe": la solicitud queda como estaba.
+  if(busqueda && (busqueda.needsLogin || busqueda.pageError)){
+    toast('Se cayó la sesión de Agentes · no se tocó la solicitud. Entrá y reintentá.','red');
+    await refrescarTodo(false); return;
+  }
   if(!busqueda.exists){
     await actualizarSolicitudSupabase(id, {
       estado: "RECHAZADA",

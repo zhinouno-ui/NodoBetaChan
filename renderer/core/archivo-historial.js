@@ -225,6 +225,70 @@ window.verRetirosParciales = function(){
   abrirModal('💸 Retiros pagándose por partes · '+arr.length
     + (_sald ? ' <span style="font-size:12px;color:#22c55e">('+_sald+' ya saldado'+(_sald>1?'s':'')+')</span>' : ''), filas, null, '');
 };
+// ── La historia de un retiro pagado en partes (D-90) ─────────────────────────────────────────
+// Pedido, ajuste con su motivo, cada pago y el cierre. Se pinta en cualquier
+// <div class="nodo-retiro-historia" data-sid="…" data-hist="…"> que haya en pantalla.
+window._retiroHistoriaCache = window._retiroHistoriaCache || {};
+window.nodoRetiroHistoriaHtml = function(sid, histId){
+  return '<div class="nodo-retiro-historia" data-sid="'+escapeHtml(String(sid||''))+'" data-hist="'+escapeHtml(String(histId||''))+'" style="margin-top:10px"></div>';
+};
+window.nodoRetiroHistoriaLlenar = async function(root){
+  const els = Array.from(((root || document).querySelectorAll && (root || document).querySelectorAll('.nodo-retiro-historia[data-sid]')) || []);
+  for(const el of els){
+    const sid = el.getAttribute('data-sid'); if(!sid) continue;
+    let prog = window._retiroHistoriaCache[sid];
+    if(!prog || Date.now() - prog._ts > 30000){
+      try{
+        const r = await supabaseClient.rpc('landing_retiro_progreso', { p_solicitud_id: Number(sid) });
+        const row = Array.isArray(r.data) ? r.data[0] : r.data;
+        if(r.error || !row || row.ok === false) continue;
+        prog = Object.assign({ _ts: Date.now() }, row);
+        window._retiroHistoriaCache[sid] = prog;
+      }catch(_e){ continue; }
+    }
+    el.innerHTML = window.nodoRetiroHistoriaPintar(prog, sid, el.getAttribute('data-hist'));
+  }
+};
+window.nodoRetiroHistoriaPintar = function(p, sid, histId){
+  const j = function(v){ if(typeof v === 'string'){ try{ return JSON.parse(v); }catch(_e){ return null; } } return v; };
+  let pagos = j(p.pagos); if(!Array.isArray(pagos)) pagos = [];
+  const cierre = j(p.cierre), ajuste = j(p.ajuste);
+  const total = Number(p.total)||0, pagado = Number(p.pagado)||0, resta = Math.max(0, total - pagado);
+  if(!pagos.length && !cierre && !ajuste) return '';
+  const fF = (typeof formatFecha === 'function') ? formatFecha : function(x){ return String(x||''); };
+  // Qué pago es ESTA fila del historial: mismo monto y a menos de 3 minutos.
+  const H = (typeof _historialData !== 'undefined' && _historialData) || window._historialData || [];
+  const hRow = histId ? H.find(function(h){ return String(h.id) === String(histId); }) : null;
+  const esEste = function(x){
+    if(!hRow) return false;
+    return Number(x.monto) === Number(hRow.monto) && Math.abs(new Date(x.fecha) - new Date(hRow.created_at)) < 180000;
+  };
+  let h = '<div style="border-radius:10px;padding:10px 12px;background:rgba(168,85,247,.07);border:1px solid rgba(192,132,252,.35);font-size:12.5px;color:#e6edf3">'
+    + '<div style="font-weight:900;color:#c084fc;margin-bottom:5px">💸 Retiro #'+escapeHtml(String(sid))+(pagos.length > 1 || cierre ? ' · pagado por partes' : '')+'</div>';
+  if(ajuste && ajuste.declarado != null){
+    h += '<div>Pidió <b>'+money(Number(ajuste.declarado)||0)+'</b> → se paga <b style="color:#f5c518">'+money(Number(ajuste.corregido)||total)+'</b></div>';
+    if(ajuste.motivo) h += '<div style="color:#fde68a">📝 '+escapeHtml(ajuste.motivo)+'</div>';
+  }
+  h += '<div style="margin-top:4px;color:#8b949e">Pagado <b style="color:#e6edf3">'+money(pagado)+'</b> de <b style="color:#e6edf3">'+money(total)+'</b>'
+    + (resta > 0.5 ? (' · falta <b style="color:#f5c518">'+money(resta)+'</b>') : ' · completo')+'</div>';
+  pagos.forEach(function(x, i){
+    const este = esEste(x);
+    h += '<div style="display:flex;justify-content:space-between;gap:8px;margin-top:3px;padding:4px 7px;border-radius:7px;background:'+(este?'rgba(245,197,24,.10)':'#0d1117')+';border:1px solid '+(este?'rgba(245,197,24,.4)':'#21262d')+'">'
+      + '<span>'+(i+1)+'. <b style="color:#fb923c">'+money(Number(x.monto)||0)+'</b>'
+      +   (x.desde ? (' · desde '+escapeHtml(x.desde)) : '') + (x.operador ? (' · '+escapeHtml(x.operador)) : '')
+      +   (este ? ' <span style="color:#f5c518;font-size:10.5px">(este)</span>' : '')+'</span>'
+      + '<span style="color:#8b949e;white-space:nowrap">'+escapeHtml(fF(x.fecha))+'</span></div>';
+  });
+  if(cierre){
+    h += '<div style="margin-top:6px;padding:6px 8px;border-radius:7px;background:rgba(124,58,237,.12);border:1px solid #7c3aed55">'
+      + '🔒 <b>Cerrado</b>'+(cierre.etiqueta ? (': '+escapeHtml(cierre.etiqueta)) : '')
+      + (Number(cierre.faltante) > 0.5 ? (' · quedó sin pagar <b>'+money(Number(cierre.faltante))+'</b>') : '')
+      + (cierre.nota ? ('<div style="font-style:italic;color:#c9d1d9;margin-top:2px">"'+escapeHtml(cierre.nota)+'"</div>') : '')
+      + '<div style="color:#8b949e;font-size:11px;margin-top:2px">'+escapeHtml([cierre.operador, cierre.fecha ? fF(cierre.fecha) : ''].filter(Boolean).join(' · '))+'</div>'
+      + '</div>';
+  }
+  return h + '</div>';
+};
 // Cierra un retiro parcial. Antes era un confirm() y listo: la operación quedaba PAGADA con
 // plata sin pagar y NADIE sabía por qué. En el caso que disparó esto: 50% pagado, $25.000 sin
 // pagar, estado PAGADA, cero explicación ni acá ni en el portal.

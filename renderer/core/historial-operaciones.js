@@ -95,8 +95,11 @@ function _marcarMovEnMemoria(historialId, movId){
   }catch(_e){}
   try{
     (window._histUnificadoCache || []).forEach(function(it){
+      // Por solicitud, sólo la tarjeta del PORTAL de esa solicitud. Un retiro pagado en partes
+      // tiene varias filas de historial con la misma solicitud y cada una tiene SU número: el del
+      // último pago se copiaba a todas y las tres tarjetas decían N° 9657437 (Juan, 12/09).
       const coincide = String(it.historial_id) === idStr ||
-        (solicitudId && String(it.solicitud_id) === solicitudId);
+        (solicitudId && it.fuente === 'SOLICITUD' && String(it.solicitud_id) === solicitudId);
       if(coincide){
         it.chunior_movimiento_id = movId;
         if(it._raw){ it._raw.chunior_movimiento_id = movId; }
@@ -441,7 +444,10 @@ function renderHistorial(lista){
       '<td style="font-size:12px;white-space:nowrap">'+formatFecha(h.created_at)+'</td>'+
       '<td style="white-space:nowrap'+(_accH?';color:'+_accH+';font-weight:800':'')+'">'+tipoIcon(h.tipo)+' '+escapeHtml(h.tipo||'—')+'</td>'+
       '<td><b>'+escapeHtml(h.usuario||'—')+'</b>'+notasTd+'</td>'+
-      '<td style="font-weight:700'+(_accH?';color:'+_accH:'')+'">'+(h.monto?money(h.monto):'—')+'</td>'+
+      '<td style="font-weight:700'+(_accH?';color:'+_accH:'')+'">'+(h.monto?money(h.monto):'—')
+        +(function(){ const pr = window._parteRetiro ? window._parteRetiro({ fuente:'OPERACION', tipo:h.tipo, solicitud_id:h.solicitud_id, monto:h.monto, historial_id:h.id, id:h.id, _raw:h }) : null;
+            return pr ? '<br><span class="small" style="color:#c084fc;font-weight:800">'+escapeHtml(window._parteRetiroTxt(pr))+'</span>' : ''; })()
+        +'</td>'+
       '<td style="font-size:12px;white-space:nowrap">'+saldoPreTd+'</td>'+
       '<td style="font-size:12px;white-space:nowrap">'+saldoPostTd+'</td>'+
       '<td style="font-size:12px">'+escapeHtml(String(h.billetera_nombre||'—').split('·')[0].trim()||String(h.billetera_nombre||'—'))+'</td>'+

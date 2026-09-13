@@ -486,7 +486,16 @@ const api = {};
       s = idOrObj._raw || idOrObj;
     } else {
       const idStr = String(idOrObj);
-      if(deps.window && deps.window._histUnificadoCache){
+      // "h<id>" = una fila puntual de historial_ops (la clave de las tarjetas, ver _claveStream).
+      // Buscando por solicitud, un retiro pagado en partes devolvía siempre la misma fila.
+      const _hId = /^h\d+$/.test(idStr) ? idStr.slice(1) : null;
+      if(_hId){
+        const _c = (deps.window && deps.window._histUnificadoCache) || [];
+        itemUnified = _c.find(x => x.fuente === 'OPERACION' && String(x.historial_id || x.id) === _hId) || null;
+        if(itemUnified) s = itemUnified._raw || itemUnified;
+        if(!s) s = ((deps.window && deps.window._historialData) || []).find(x => String(x.id) === _hId) || null;
+      }
+      if(!s && !_hId && deps.window && deps.window._histUnificadoCache){
         // La carga y su bono de PROMOS comparten solicitud_id. Ganaba el PRIMERO de la lista —el bono,
         // que se registra después y el historial viene de más nuevo a más viejo— y la carga original
         // no se podía abrir (Juan, 12/09). Gana la original; el bono se elige aparte desde el chat.
@@ -912,6 +921,9 @@ ${stepperHtml}
               </div>
             </div>` : ''}
 
+          ${esRetiro && deps.window && deps.window.nodoRetiroHistoriaHtml && (s.solicitud_id || (!esManual && id))
+            ? deps.window.nodoRetiroHistoriaHtml(s.solicitud_id || id, esManual ? (s.id || '') : '') : ''}
+
           ${notas ? `
             <div class="sol-cotejo-row">
               <span class="sol-cotejo-lbl">Notas de la operación:</span>
@@ -1037,6 +1049,7 @@ ${stepperHtml}
     const pane = deps.document.getElementById('solicitudesDossierPane');
     if(pane && html){
       pane.innerHTML = html;
+      try{ if(deps.window && deps.window.nodoRetiroHistoriaLlenar) deps.window.nodoRetiroHistoriaLlenar(pane); }catch(_e){}
     }
   };
 
@@ -1049,6 +1062,7 @@ ${stepperHtml}
       const bodyEl = deps.document.getElementById('expedienteBody');
       if(bodyEl){
         bodyEl.innerHTML = api.construirDossierCompletoHtml(idOrObj) || '';
+        try{ if(deps.window && deps.window.nodoRetiroHistoriaLlenar) deps.window.nodoRetiroHistoriaLlenar(bodyEl); }catch(_e){}
       }
       modalEl.classList.remove('hidden');
     }

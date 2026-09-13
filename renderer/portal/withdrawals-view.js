@@ -360,8 +360,18 @@ function _rv2ActualizarTotal(){
     + (parcial?' · <span style="color:#f5c518">parcial</span>':(paso?' · <span style="color:#f87171">¡te pasaste!</span>':' ✓'));
   // Aviso VISIBLE (no solo el confirm al aprobar): entraste por "Parcial" pero el monto cubre todo.
   if(st.modoParcial && !parcial && !paso && tot > 0){
-    html += '<div style="margin-top:8px;padding:7px 9px;border-radius:8px;background:rgba(240,68,56,.10);border:1px solid rgba(240,68,56,.40);font-size:12px;font-weight:800;color:#f87171">'
+    // En la SEGUNDA cuota pagar el resto es lo normal (es la única forma de cerrar un parcial):
+    // ahí no es una advertencia. En la primera sí, porque suele ser la billetera que se autocompletó.
+    html += (Number(st.yaPagado||0) > 0)
+      ? '<div style="margin-top:8px;padding:7px 9px;border-radius:8px;background:rgba(34,197,94,.10);border:1px solid rgba(34,197,94,.40);font-size:12px;font-weight:800;color:#22c55e">'
+          + '✓ Con este pago se completa el retiro y se cierra.</div>'
+      : '<div style="margin-top:8px;padding:7px 9px;border-radius:8px;background:rgba(240,68,56,.10);border:1px solid rgba(240,68,56,.40);font-size:12px;font-weight:800;color:#f87171">'
           + '⚠ Con este monto el retiro queda COMPLETO, no parcial — bajá el monto de la billetera si querías abonar solo una parte.</div>';
+  }
+  // Pagar de más no se frena, pero se ve (Juan, 12/09: "mientras dé un aviso de 'te pasaste' y sea visible").
+  if(paso){
+    html += '<div style="margin-top:8px;padding:7px 9px;border-radius:8px;background:rgba(240,68,56,.10);border:1px solid rgba(240,68,56,.40);font-size:12px;font-weight:800;color:#f87171">'
+          + '⚠ Te pasaste: vas a pagar '+deps.money(tot)+' y faltan '+deps.money(falta)+' — son '+deps.money(tot-falta)+' de más. Si el total está mal, corregilo arriba.</div>';
   }
   // Retiro PARCIAL → tilde de aceptación (sin él, no deja aprobar). El tilde no pregunta "¿es
   // parcial?" (obvio, ya lo estás armando así) — confirma que quedan $X SIN pagar y la solicitud
@@ -392,6 +402,7 @@ function _rv2ActualizarTotal(){
 function _rv2ActualizarBotonAprobar(){
   const st=deps.withdrawalState.current; if(!st) return;
   const btn=deps.document.getElementById('rv2BtnAprobar'); if(!btn) return;
+  if(st._pagando){ btn.disabled=true; btn.style.opacity=.7; return; }   // buscando en Agentes
   const tot=_rv2TotalSel();
   // Lo único que TRABA es no haber elegido de dónde pagar. Antes se bloqueaba cuando el monto
   // superaba "lo que falta", y eso dejaba el botón muerto en "Te pasaste de $0" —sin salida—
@@ -423,7 +434,7 @@ function _rv2Veredicto(){
   if(st.saldoReal==null && st.saldoFallo)
     return {n:'espera', c:'#8b949e', ico:'❓', tit:'NO PUDIMOS LEER SUS FICHAS',
       det: st.saldoFallo==='ocupado' ? 'Hay otra operación en curso. Podés pagar igual, pero a ciegas.'
-         : st.saldoFallo==='sesion'  ? 'Se cayó la sesión de Agentes. Entrá de nuevo y reabrí el retiro.'
+         : st.saldoFallo==='sesion'  ? 'Se cayó la sesión de Agentes. Tocá Pagar: se abre el login y sigo desde acá.'
                                      : 'No se pudo leer el saldo en Agentes. Podés pagar igual, pero a ciegas.'};
   if(st.saldoReal==null)
     return {n:'espera', c:'#8b949e', ico:'⏳', tit:'LEYENDO LAS FICHAS DEL USUARIO', det:'Un segundo…'};
@@ -631,7 +642,7 @@ function _rv2Render(){
     //  código para lo mismo — un arreglo cubría uno y el otro seguía roto.)
     + '<div style="display:flex;justify-content:flex-end;gap:8px;margin-top:12px">'
     +   '<button class="mini-btn" style="background:transparent;border:1px solid #30363d;color:#c9d1d9" onclick="cerrarRetiroV2()">Cancelar</button>'
-    +   '<button class="mini-btn" style="background:#ea580c;color:#fff;font-weight:800" onclick="_rv2Aprobar()">Aprobar y transferir</button>'
+    +   '<button id="rv2BtnAprobar" class="mini-btn" style="background:#ea580c;color:#fff;font-weight:800" onclick="_rv2Aprobar()">Aprobar y transferir</button>'
     + '</div></div>';
   el.style.display='block';
   _rv2ActualizarTotal();
@@ -641,7 +652,7 @@ function _rv2Render(){
 // propio botón de ajuste, en paralelo al de la tarjeta del pendiente: dos lugares distintos
 // diciendo lo mismo con textos distintos. Ahora hay un solo veredicto y él decide qué mostrar.
 
-    return { globals: api, _rv2TotalSel, _rv2BilsUsables, _rv2PintarVeredicto, _rv2ActualizarBotonAprobar, _rv2Modal, _rv2FmtMiles, _rv2Veredicto };
+    return { globals: api, _rv2TotalSel, _rv2BilsUsables, _rv2PintarVeredicto, _rv2ActualizarBotonAprobar, _rv2Modal, _rv2FmtMiles, _rv2Veredicto, _rv2Render };
   }
   return Object.freeze({ create, dependencies });
 });

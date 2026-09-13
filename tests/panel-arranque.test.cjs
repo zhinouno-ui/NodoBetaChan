@@ -1384,7 +1384,7 @@ test('parcial · un saldo leído con la sesión caída no se cree', () => {
   const b = _bundlePortal();
   assert.match(b, /!b\.needsLogin && !b\.pageError/,
     'con la sesión inválida el preload devolvía 0 y el modal decía "NO TIENE FICHAS"');
-  assert.match(b, /Se cayó la sesión de Agentes\. Entrá de nuevo y reabrí el retiro\./);
+  assert.match(b, /Se cayó la sesión de Agentes\. Tocá Pagar: se abre el login y sigo desde acá\./);
 });
 
 test('Drex · detecta "session is invalid" aunque haya OTRO modal abierto antes', () => {
@@ -1693,4 +1693,167 @@ test('expediente · con carga y bono en el mismo N° de solicitud, abre la carga
 
   const txt = sb.expedienteTextoDe('900060');
   assert.match(txt, /Monto: .*2\.600/, 'abría el bono ($520) y la carga original no se podía abrir');
+});
+
+// ══════════════════════════════════════════════════════════════════════════════
+// CUARTA RONDA DEL 12/09 · D-90..D-93
+// ══════════════════════════════════════════════════════════════════════════════
+
+function _fnDe(src, nombre){
+  const m = src.match(new RegExp('function ' + nombre + '\\([^)]*\\) ?\\{[\\s\\S]*?\\n\\}'));
+  assert.ok(m, 'no encontré ' + nombre);
+  return m[0];
+}
+
+test('Drex · cerrar el cartel "Invalid session" no revive la sesión', () => {
+  const src = fs.readFileSync(path.join(RAIZ, 'agent-preload.js'), 'utf8');
+  const sel = src.match(/const SELECTORS = \{[\s\S]*?\n\};/)[0];
+  const fns = ['hayLayout', 'isVisible', 'visibleElements', 'firstVisible', '_marcarSesionMuerta',
+               'detectarModalSesionInvalida', '_pantallaPideLogin', 'pageNeedsLogin'].map((n) => _fnDe(src, n)).join('\n');
+  const armar = new Function('document', 'window',
+    sel + '\nlet _sesionMuertaDesde = 0; let _vioLoginTrasMuerte = false;\n' + fns + '\nreturn pageNeedsLogin;');
+  const pantalla = (e) => {
+    const el = (txt, sels) => ({ textContent: txt, _sels: sels, getBoundingClientRect: () => ({ width: 10, height: 10 }) });
+    const els = [];
+    if (e.cartel) els.push(el('User search ErrorInvalid session Cerrar', ['.ReactModal__Content', '[role="dialog"]']));
+    if (e.buscar) els.push(el('Buscar', ['#searchButton', 'button']));
+    if (e.login) { els.push(el('Login agente', ['h4'])); els.push(el('Entrar', ['button'])); els.push(el('', ['input[type="password"]'])); }
+    const m = (s) => els.filter((x) => s.split(',').map((p) => p.trim()).some((p) => x._sels.includes(p)));
+    return { querySelectorAll: m, querySelector: (s) => m(s)[0] || null, body: { getBoundingClientRect: () => ({ width: 100, height: 100 }), textContent: '' } };
+  };
+  let actual = pantalla({});
+  const doc = { querySelectorAll: (s) => actual.querySelectorAll(s), querySelector: (s) => actual.querySelector(s), get body() { return actual.body; } };
+  const win = { getComputedStyle: () => ({ visibility: 'visible', display: 'block' }), location: { href: 'https://bo.casinodrex.com/agents/user_search' } };
+  const pideLogin = armar(doc, win);
+
+  actual = pantalla({ cartel: true, buscar: true });
+  assert.equal(pideLogin(), true, 'con el cartel a la vista');
+  actual = pantalla({ buscar: true });
+  assert.equal(pideLogin(), true, 'se cerró el cartel y la búsqueda sigue montada: antes daba la sesión por buena');
+  actual = pantalla({ login: true });
+  assert.equal(pideLogin(), true, 'pantalla de login');
+  actual = pantalla({ buscar: true });
+  assert.equal(pideLogin(), false, 'pasó por el login y volvió la app: sesión nueva');
+
+  const otra = armar(doc, win);
+  assert.equal(otra(), false, 'sin haber visto nunca el cartel, la app montada es sesión viva');
+});
+
+test('Drex · el preload no recarga en el medio de una operación del panel', () => {
+  const src = fs.readFileSync(path.join(RAIZ, 'agent-preload.js'), 'utf8');
+  assert.match(src, /_opsEnCurso\+\+;[\s\S]*?finally \{ _opsEnCurso = Math\.max\(0, _opsEnCurso - 1\); \}/);
+  assert.match(src, /if \(!_sesionMuertaDesde \|\| _opsEnCurso > 0\) return;/);
+  assert.match(src, /Date\.now\(\) - _recargaLoginEn < 30000/, 'una recarga cada 30 s como mucho');
+});
+
+test('sesión caída · ningún camino rechaza la solicitud diciendo que el usuario no existe', () => {
+  const core = fs.readFileSync(path.join(RAIZ, 'renderer', 'core', 'automatizaciones.js'), 'utf8');
+  assert.equal(core.split('no se tocó la solicitud').length - 1, 3, 'clave, retiro automático y carga automática');
+  const lotes = fs.readFileSync(path.join(RAIZ, 'renderer', 'core', 'lotes-y-solicitudes.js'), 'utf8');
+  assert.match(lotes, /busqueda\.needsLogin \|\| busqueda\.pageError/);
+  const cola = fs.readFileSync(path.join(RAIZ, 'renderer', 'extensions', 'validacion-cola.js'), 'utf8');
+  assert.match(cola, /const ok=!!\(res && res\.exists\);/, '"ok" también es true cuando la búsqueda dice "sin resultados"');
+  assert.match(cola, /res\.needsLogin \|\| res\.pageError\)\) throw/);
+});
+
+test('clave · el aviso va al chat del portal, no a la tabla vieja', async () => {
+  const sb = arrancarPanel();
+  let visto = null;
+  sb.nodoIniciarChat = async (u, txt) => { visto = { u, txt }; return { ok: true }; };
+  const r = await sb._avisarClaveAlJugador('pruebaxx', '✅ Tu clave fue actualizada correctamente.');
+  assert.equal(r.ok, true);
+  assert.equal(visto.u, 'pruebaxx');
+  const core = fs.readFileSync(path.join(RAIZ, 'renderer', 'core', 'automatizaciones.js'), 'utf8');
+  assert.equal(core.split('await _avisarClaveAlJugador(usuario,').length - 1, 3, 'los tres resultados de la clave');
+});
+
+test('parcial · el pago viaja con desde qué billetera salió, y con la base vieja no se pierde', async () => {
+  const sb = arrancarPanel();
+  const llamadas = [];
+  sb.panelAPI = { rpc: async (fn, p) => {
+    llamadas.push(p);
+    if ('p_desde' in p) return { error: { code: 'PGRST202', message: 'Could not find the function' } };
+    return { data: { ok: true }, error: null };
+  } };
+  const r = await sb.notificarRetiroParcialPortal(900001, 5000, 5000, 30019, 35019, 30000, 'Titular Demo');
+  assert.equal(r.ok, true, 'el pago se registra igual');
+  assert.equal(llamadas[0].p_desde, 'Titular Demo');
+  assert.ok(!('p_desde' in llamadas[1]));
+});
+
+test('retiro · pagar el resto o de más avisa pero no frena; el modal se cierra recién al mover plata', () => {
+  const b = _bundlePortal();
+  assert.ok(!/queda COMPLETO, no parcial\.\\n/.test(b), 'el confirm de "queda COMPLETO" frenaba el pago del resto');
+  assert.ok(!/¿Pagar igual\?/.test(b), 'pagar de más se avisa en el modal, no con un confirm');
+  const i = b.indexOf('api._rv2Aprobar = async function');
+  const cuerpo = b.slice(i, b.indexOf('\n};', i));
+  const lock = cuerpo.indexOf("_drexGlobalLock('rv2-retiro')"), busca = cuerpo.indexOf("callDrex('buscarUsuario'");
+  const cierra = cuerpo.indexOf('deps.cerrarRetiroV2();'), retira = cuerpo.indexOf("callDrex('retirarSaldo'");
+  assert.ok(lock > 0 && busca > lock && cierra > busca && retira > cierra,
+    'candado → búsqueda → recién ahí se cierra el modal → retiro');
+  assert.match(cuerpo, /if\(st\._pagando\) return;/, 'un segundo clic no paga dos veces');
+  assert.match(b, /id="rv2BtnAprobar"/, 'sin id el botón nunca decía lo que iba a hacer');
+  assert.match(b, /⚠ Te pasaste: vas a pagar/);
+  assert.match(b, /✓ Con este pago se completa el retiro y se cierra\./);
+});
+
+test('centro de control · cada fila de un retiro por partes abre SU movimiento', () => {
+  const sb = arrancarPanel();
+  const fila = (id, monto, mov, notas) => ({ id, tipo: 'RETIRO', usuario: 'pruebaxx', monto, estado: 'OK', origen: 'LANDING',
+    solicitud_id: 900077, chunior_movimiento_id: mov, notas, created_at: '2026-09-12T12:00:00Z' });
+  const a = fila(93001, 5000, '1110001', 'Retiro PARCIAL · pagado $ 5.000');
+  const b = fila(93002, 30018, '2220002', 'Retiro PARCIAL · pagado $ 30.018');
+  const c = fila(93003, 0, null, 'Cierre de retiro parcial · El monto estaba mal cargado');
+  a.created_at = '2026-09-12T12:52:00Z'; b.created_at = '2026-09-12T17:22:00Z'; c.created_at = '2026-09-12T17:24:00Z';
+  sb._histUnificadoCache = [c, b, a].map((h) => ({ fuente: 'OPERACION', _raw: h, id: h.id, historial_id: h.id, solicitud_id: h.solicitud_id, tipo: 'RETIRO', monto: h.monto }));
+  sb._historialData = [c, b, a];
+  assert.equal(sb._claveStream(sb._histUnificadoCache[1]), 'h93002');
+  const html = sb.construirDossierCompletoHtml('h93001');
+  assert.match(html, /1110001/, 'abría siempre la última fila de la solicitud');
+  assert.ok(!/2220002/.test(html));
+  const pr = sb._parteRetiro(sb._histUnificadoCache[1]);
+  assert.equal(pr.i, 2); assert.equal(pr.n, 2);
+  assert.equal(sb._parteRetiro(sb._histUnificadoCache[0]).cierre, true);
+  const ops = fs.readFileSync(path.join(RAIZ, 'renderer', 'core', 'historial-operaciones.js'), 'utf8');
+  assert.match(ops, /it\.fuente === 'SOLICITUD' && String\(it\.solicitud_id\) === solicitudId/,
+    'el N° de un pago se copiaba a todas las filas de la solicitud');
+});
+
+test('panel · la historia del retiro muestra ajuste, pagos y cierre', () => {
+  const sb = arrancarPanel();
+  const html = sb.nodoRetiroHistoriaPintar({
+    total: 35019, pagado: 35018,
+    pagos: [{ monto: 5000, fecha: '2026-09-12T12:52:59Z', operador: 'xprueba' },
+            { monto: 30018, fecha: '2026-09-12T17:22:09Z', operador: 'xprueba', desde: 'Titular Demo' }],
+    ajuste: { declarado: 50000, corregido: 35019, motivo: 'Pediste 50.000 y el retiro quedó en 35.019.' },
+    cierre: { etiqueta: 'El monto estaba mal cargado', nota: 'no se retiran centavos', faltante: 1, operador: 'xprueba' }
+  }, '900077', '');
+  assert.match(html, /Pidió/); assert.match(html, /Pediste 50\.000/);
+  assert.match(html, /desde Titular Demo/);
+  assert.match(html, /Cerrado/); assert.match(html, /El monto estaba mal cargado/); assert.match(html, /no se retiran centavos/);
+});
+
+test('portal · el historial muestra el retiro entero y el badge dice lo que pasó', () => {
+  const src = fs.readFileSync(path.join(RAIZ, 'Portal'), 'utf8');
+  const jd = src.match(/function _jsonDe\(v\)\{[^\n]*\}/)[0];
+  const detalle = new Function('_money', 'esc', '_fechaCorta', jd + '\n' + _fnDe(src, '_detalleRetiroHistorial') + '\nreturn _detalleRetiroHistorial;')(
+    (n) => '$' + n, (s) => String(s), () => '12/09 14:22');
+  const h = detalle({ tipo: 'RETIRO', monto: 50000, monto_a_pagar: 35019, pagado: 35018, motivo_ajuste: 'Es todo lo que tenías en fichas.',
+    pagos: [{ monto: 5000, fecha: 'x' }, { monto: 30018, fecha: 'y', desde: 'Titular Demo' }],
+    cierre: { etiqueta: 'El monto estaba mal cargado', nota: 'no se retiran centavos', faltante: 1 } });
+  assert.match(h, /Pediste <b>\$50000/); assert.match(h, /te pagamos/);
+  assert.match(h, /te transfirió Titular Demo/); assert.match(h, /Se cerró/); assert.match(h, /no se retiran centavos/);
+  const badge = new Function(jd + '\n' + _fnDe(src, '_estadoBadge') + '\nreturn _estadoBadge;')();
+  assert.match(badge('PAGADA', '', { tipo: 'RETIRO', cierre: { faltante: 1 } }), /Cerrado/);
+  assert.match(badge('EN_PROCESO', '', { tipo: 'RETIRO', pagado: 5000 }), /Te lo estamos pagando/);
+  assert.match(badge('EN_PROCESO', '', { tipo: 'CARGA' }), /En revisión/, 'las cargas siguen igual');
+  assert.match(src, /if\(String\(state\.pendingTipo\|\|""\)\.toUpperCase\(\)==="RETIRO"\) return "";/, 'en un retiro no va "Transferiste a"');
+});
+
+test('cotejo · "otro número" dice de dónde sale; un modal sin texto de botón no muestra botón', () => {
+  const cot = fs.readFileSync(path.join(RAIZ, 'renderer', 'core', 'cotejo-alta.js'), 'utf8');
+  assert.match(cot, /ESTE USUARIO OPERÓ CON OTRO NÚMERO/);
+  assert.match(cot, /En esta oficina operó con/);
+  const av = fs.readFileSync(path.join(RAIZ, 'renderer', 'core', 'avisos-y-watchdog.js'), 'utf8');
+  assert.match(av, /btn\.style\.display = saveText \? '' : 'none';/);
 });
