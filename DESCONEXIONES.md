@@ -3130,3 +3130,45 @@ Tres cosas, en el mismo botón:
 
 El monto ajustado se escribe en la solicitud junto con el motivo ("Tenías X en fichas y pediste Y:
 te pagamos todo lo que tenías"), así que el jugador lo ve en el portal y queda en el historial.
+
+
+## D-97 · Gasto de oficina desde el panel · RESUELTO
+
+Botón **💸 Gasto** al lado de Propina y Depo s/reclamar. Es la misma pantalla de Chunior que ya se
+automatiza (`/transacciones/gastoslocal/add/`: billetera + monto + notas), con dos cosas propias:
+
+- **Comprobante**: se pega con **Ctrl+V** en el modal (igual que en el chat) y se adjunta solo en el
+  formulario antes de guardar. Tope de 3,5 MB.
+- **Notas obligatorias**: es el único registro de en qué se gastó.
+
+Queda en el historial como tipo GASTO, con su N° de Chunior. El desplegable de billetera se ubica
+por su identificador o, si esa pantalla usa otro, por el que tenga esa billetera entre sus opciones
+(no dependemos de que Chunior mantenga el mismo nombre en todas las pantallas).
+
+## D-98 · Cualquiera con la clave del portal puede ejecutar 272 funciones internas · PREPARADO, VA EN EL PRÓXIMO DEPLOY
+
+Pedido de Juan (14/09): *"que no haya nada en anon, que nadie pueda ver nuestras cosas o lanzar algo"*.
+
+**Lo que hay hoy**: 318 funciones internas (`panel_*`, `admin_*`, `nodo_*`, `worker_*`) las puede
+ejecutar el rol público, y **272 no tienen ningún control** — ni `p_secret`, ni `auth`. Entre ellas:
+leer las billeteras de una oficina, leer los chats, cambiar el estado de una solicitud o de un
+operador, tomar trabajos del worker. La clave que lo habilita es la publicable, que está a la vista
+en el archivo del portal (eso es normal en esa clave; lo que no es normal es lo que deja hacer).
+
+Las **82 tablas sí tienen RLS activo**: no se puede leer nada directo. El agujero son las funciones.
+
+**Por qué no se cierra hoy**: el panel de las oficinas usa esa misma clave, así que un revoke general
+deja sin funcionar a las 8 oficinas. Y el orden de este deploy es: primero todas actualizan NODO,
+después se sube el portal. Juan decidió que el cierre va en el **próximo** deploy.
+
+Queda escrito el plan, la auditoría y las plantillas en `sql/seguridad-anon-proximo-deploy.sql`:
+revocar primero lo que no llama nadie (generaciones viejas `panel_v13_*`, `panel_v14_*`,
+`panel_v154_plus_*`), después agregarle control a lo que sí se usa, y por último rotar
+PANEL_DATA_SECRET.
+
+### El portal ya no muestra cómo trabajamos
+
+El archivo del portal lo lee cualquiera con "ver código fuente". Tenía 401 notas internas explicando
+criterios nuestros. Se sacaron todas (sólo líneas enteras de comentario, verificando que el archivo
+siga siendo válido). El "por qué" de cada cosa sigue documentado acá, en DESCONEXIONES.md, que no
+sale del repo.

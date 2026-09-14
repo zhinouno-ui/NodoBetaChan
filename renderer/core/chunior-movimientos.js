@@ -8,7 +8,16 @@ function _adminChuParseMonto(v){
   else if(/^\d{1,3}(\.\d{3})+$/.test(s)) s=s.replace(/\./g,'');
   const n=Number(s); return Number.isFinite(n)?Math.abs(n):0;
 }
-async function _registrarAdminChunior(addUrl, chunior_uid, monto, notas){
+// Busca el desplegable de billetera: por los identificadores conocidos o, si la pantalla usa otro,
+// por el ÚNICO que tenga esa billetera entre sus opciones.
+const _BIL_SEL_JS = '(function(uid){' +
+  'var s=document.getElementById("id_cuenta_destino")||document.getElementById("id_cuenta_origen")' +
+  '||document.getElementById("id_billetera")||document.getElementById("id_cuenta");' +
+  'if(s) return s;' +
+  'var ss=document.querySelectorAll("select");' +
+  'for(var i=0;i<ss.length;i++){ if(ss[i].querySelector(\'option[value="\'+uid+\'"]\')) return ss[i]; }' +
+  'return null;})';
+async function _registrarAdminChunior(addUrl, chunior_uid, monto, notas, opts){
   // Bloqueo del cotejo (igual que en registrarCargaEnChunior): esperar la declaración abierta.
   for(let _w=0; window._cotejoDeclarando && _w<90; _w++){ await new Promise(function(r){setTimeout(r,1000);}); }
   if(!window.chunior) return { ok:false, movimientoId:null, error:'Ventana de Chunior no disponible' };
@@ -16,7 +25,9 @@ async function _registrarAdminChunior(addUrl, chunior_uid, monto, notas){
   await window.chunior.navigate(addUrl);
   const t0 = Date.now(); let ready = false;
   while(Date.now() - t0 < 10000){
-    ready = await window.chunior.exec('(function(){return !!(document.getElementById("id_cuenta_destino")&&document.getElementById("id_monto")&&document.getElementById("id_notas"));})()').catch(function(){return false;});
+    // El desplegable de billetera no se llama igual en todas las pantallas (gastos locales tiene el
+    // suyo): se busca por sus nombres conocidos y, si no, por el que tenga esta billetera adentro.
+    ready = await window.chunior.exec('(function(){return !!(_bilSel('+JSON.stringify(String(chunior_uid))+')&&document.getElementById("id_monto")&&document.getElementById("id_notas"));})()'.replace('_bilSel(', _BIL_SEL_JS+'(')).catch(function(){return false;});
     if(ready) break; await new Promise(function(r){ setTimeout(r,300); });
   }
   if(!ready) return { ok:false, movimientoId:null, error:'Formulario no apareció en 10s (¿cambió la página de Chunior?)' };
@@ -24,7 +35,7 @@ async function _registrarAdminChunior(addUrl, chunior_uid, monto, notas){
   try{
     injectRes = await window.chunior.exec(
       '(function(){' +
-      'var s=document.getElementById("id_cuenta_destino");' +
+      'var s=' + _BIL_SEL_JS + '(' + JSON.stringify(String(chunior_uid)) + ');' +
       'var m=document.getElementById("id_monto");' +
       'var n=document.getElementById("id_notas");' +
       'var b=document.querySelector("input[name=\'_addanother\']")||document.querySelector("input[name=\'_save\']")||document.querySelector("input[type=\'submit\'],button[type=\'submit\']");' +
@@ -32,7 +43,18 @@ async function _registrarAdminChunior(addUrl, chunior_uid, monto, notas){
       's.value='+JSON.stringify(String(chunior_uid))+'; s.dispatchEvent(new Event("change",{bubbles:true}));' +
       'm.value='+JSON.stringify(String(monto))+'; m.dispatchEvent(new Event("input",{bubbles:true})); m.dispatchEvent(new Event("change",{bubbles:true}));' +
       'n.value='+JSON.stringify(String(notas||""))+'; n.dispatchEvent(new Event("input",{bubbles:true})); n.dispatchEvent(new Event("change",{bubbles:true}));' +
-      'var snap={ok:true, valS:s.value, valM:m.value, valN:n.value}; try{document.querySelectorAll("ul.messagelist, li.success, .messagelist .success, .success").forEach(function(n){ try{ n.remove(); }catch(_x){} });}catch(_x){} b.click(); return snap;' +
+      // El comprobante se adjunta ANTES de guardar: se arma el archivo desde la imagen pegada y se
+      // deja en el campo, igual que si lo hubieran elegido a mano.
+      'var comp=' + JSON.stringify((opts && opts.comprobante) || '') + ';' +
+      'if(comp){ var fi=document.getElementById("id_comprobantes")||document.querySelector(\'input[type="file"]\');' +
+      '  if(fi){ try{' +
+      '    var pp=comp.split(","), mime=((pp[0]||"").match(/:(.*?);/)||[])[1]||"image/png";' +
+      '    var bin=atob(pp[1]||""), arr=new Uint8Array(bin.length);' +
+      '    for(var ci=0;ci<bin.length;ci++) arr[ci]=bin.charCodeAt(ci);' +
+      '    var dt=new DataTransfer(); dt.items.add(new File([arr], ' + JSON.stringify((opts && opts.nombre) || 'comprobante.png') + ', {type:mime}));' +
+      '    fi.files=dt.files; fi.dispatchEvent(new Event("change",{bubbles:true}));' +
+      '  }catch(_cx){ return {ok:false, err:"no se pudo adjuntar el comprobante: "+(_cx.message||_cx)}; } } }' +
+      'var snap={ok:true, valS:s.value, valM:m.value, valN:n.value, comp:!!comp}; try{document.querySelectorAll("ul.messagelist, li.success, .messagelist .success, .success").forEach(function(n){ try{ n.remove(); }catch(_x){} });}catch(_x){} b.click(); return snap;' +
       '})()'
     );
   }catch(e){ return { ok:false, movimientoId:null, error:e.message||'Error inyectando datos' }; }
@@ -65,6 +87,11 @@ async function _registrarAdminChunior(addUrl, chunior_uid, monto, notas){
   // Anotación admin OK (propina / depo s/r) → refrescar los saldos reales desde Chunior.
   if(_okAdm){ try{ window._syncBilleterasTrasAnotacion && window._syncBilleterasTrasAnotacion(); }catch(_e){} }
   return { ok: _okAdm, movimientoId:movimientoId, error:errorMsg, dbg:dbgTxt };
+}
+// Gasto de oficina: suma el monto a la billetera y descuenta fichas. Acepta comprobante.
+async function registrarGastoOficinaEnChunior(chunior_uid, monto, notas, comprobante){
+  return _registrarAdminChunior(CHUNIOR_BASE + '/transacciones/gastoslocal/add/', chunior_uid, monto, notas,
+    { comprobante: comprobante || '', nombre: 'comprobante-gasto.png' });
 }
 async function registrarPropinaEnChunior(chunior_uid, monto, notas){
   return _registrarAdminChunior(CHUNIOR_BASE + '/transacciones/propina/add/', chunior_uid, monto, notas);
@@ -134,6 +161,90 @@ window.abrirModalRecargaFichas = function(){
       } else toast('⚠️ No se pudo recargar: '+((r&&r.error)||'sin detalle'),'red');
     }, 'Recargar fichas');
 };
+// ── GASTO DE OFICINA ────────────────────────────────────────────────────────────────────────
+// La imagen se pega con Ctrl+V (igual que en el chat) y se adjunta sola en Chunior. El que escucha
+// el pegado se protege solo: si el modal no está abierto, no hace nada (así no hay que sacarlo).
+window._gastoComprobante = null;
+function _gastoLeerImagen(file){
+  if(!file) return;
+  if(file.size > 3.5*1024*1024){ toast('La imagen pesa más de 3,5 MB: achicala o elegí otra.','red'); return; }
+  const fr = new FileReader();
+  fr.onload = function(){
+    window._gastoComprobante = String(fr.result||'');
+    const img = document.getElementById('gastoCompPrev');
+    const zona = document.getElementById('gastoCompZona');
+    if(img){ img.src = window._gastoComprobante; img.style.display='block'; }
+    if(zona){ zona.textContent = '✓ Comprobante listo ('+Math.round(file.size/1024)+' KB) · pegá otra vez para reemplazarlo'; zona.style.color='#22c55e'; }
+  };
+  fr.readAsDataURL(file);
+}
+document.addEventListener('paste', async function(e){
+  if(!document.getElementById('gastoCompZona')) return;   // el modal no está abierto
+  const items = [...((e.clipboardData && e.clipboardData.items) || [])];
+  const img = items.find(function(it){ return it.type && it.type.indexOf('image/')===0; });
+  if(img){ const f = img.getAsFile(); if(f){ e.preventDefault(); _gastoLeerImagen(f); return; } }
+  try{
+    const clips = await navigator.clipboard.read();
+    for(const clip of clips){
+      const t = clip.types.find(function(x){ return x.indexOf('image/')===0; });
+      if(t){ e.preventDefault(); const blob = await clip.getType(t); _gastoLeerImagen(new File([blob],'comprobante.png',{type:t})); return; }
+    }
+  }catch(_e){}
+});
+window.abrirModalGastoOficina = function(){
+  const titulo = '💸 Gasto de oficina';
+  const bilsConUid = (billeteras||[]).filter(function(b){ return b.CHUNIOR_UID; });
+  if(!bilsConUid.length){ abrirModal(titulo, '<div class="err-box">No hay billeteras con UID de Chunior. Sincronizá billeteras primero.</div>', function(){ cerrarModal(); }, 'Entendido'); return; }
+  window._gastoComprobante = null;
+  const opts = bilsConUid.map(function(b){ return '<option value="'+escapeHtml(String(b.ID_BILLETERA))+'">'+escapeHtml(b.NOMBRE_VISIBLE||'—')+' · '+money(b.SALDO||0)+'</option>'; }).join('');
+  const body =
+    '<div style="color:#c0cad8;font-size:12px;margin-bottom:10px">Se <b>suma</b> el monto a la billetera y se <b>descuentan</b> fichas. Queda anotado en Chunior con su comprobante.</div>'
+    + '<label>Billetera</label><select id="gastoBil" style="width:100%">'+opts+'</select>'
+    + '<label style="margin-top:8px;display:block">Monto</label><input id="gastoMonto" type="text" inputmode="decimal" placeholder="Ej: 15000" style="width:100%">'
+    + '<label style="margin-top:8px;display:block">Notas <span class="small" style="color:#8b949e;font-weight:400">· obligatorias, es el único registro de en qué se gastó</span></label>'
+    + '<input id="gastoNotas" type="text" placeholder="Ej: garrafa / limpieza / librería" style="width:100%">'
+    + '<label style="margin-top:8px;display:block">Comprobante <span class="small" style="color:#8b949e;font-weight:400">· pegalo con Ctrl+V o elegí el archivo</span></label>'
+    + '<div id="gastoCompZona" style="border:1px dashed #2d3342;border-radius:8px;padding:10px;text-align:center;font-size:12px;color:#8b949e">Pegá la imagen acá con Ctrl+V</div>'
+    + '<input id="gastoCompFile" type="file" accept="image/*" style="margin-top:6px;width:100%" onchange="_gastoLeerImagenInput(this)">'
+    + '<img id="gastoCompPrev" style="display:none;max-width:100%;border-radius:8px;margin-top:6px">';
+  abrirModal(titulo, body, async function(){
+    const bilId = (document.getElementById('gastoBil')||{}).value || '';
+    const bil = billeteras.find(function(b){ return String(b.ID_BILLETERA)===String(bilId); });
+    const monto = _adminChuParseMonto((document.getElementById('gastoMonto')||{}).value || '');
+    const notas = String((document.getElementById('gastoNotas')||{}).value || '').trim();
+    const comp = window._gastoComprobante;
+    if(!bil || !bil.CHUNIOR_UID){ toast('Elegí una billetera con Chunior.','red'); return; }
+    if(!(monto>0)){ toast('Monto inválido.','red'); return; }
+    if(notas.length < 3){ toast('Escribí en qué se gastó: es lo único que queda registrado.','red'); return; }
+    cerrarModal();
+    toast('💸 Anotando gasto de '+money(monto)+(comp?' con comprobante':'')+'...','blue');
+    _wdLock();
+    let r;
+    try{ r = await registrarGastoOficinaEnChunior(bil.CHUNIOR_UID, monto, notas, comp); }
+    catch(e){ r = { ok:false, error:e.message||'error' }; }
+    finally{ _wdUnlock(); }
+    if(r && r.ok){
+      toast('💸 Gasto anotado en '+bil.NOMBRE_VISIBLE+(r.movimientoId?(' · N° '+r.movimientoId):''),'green');
+      try{
+        await registrarEnHistorial({
+          usuario: notas || 'GASTO OFICINA', tipo:'GASTO', monto: monto,
+          billetera_id: bil.ID_BILLETERA, billetera_nombre: bil.NOMBRE_VISIBLE,
+          origen:'ADMIN', estado:'OK',
+          notas: 'Gasto de oficina · '+notas+(comp?' · con comprobante':'')+(r.movimientoId?(' · Chunior N° '+r.movimientoId):' [CHUNIOR_OK_SIN_N]'),
+          chunior_movimiento_id: r.movimientoId || null
+        });
+      }catch(_e){}
+      window._gastoComprobante = null;
+      try{ await cargarHistorial(); }catch(_e){}
+      try{ await sincronizarBilleterasChunior(true); }catch(_e){}
+      try{ renderBillerasInicio(); }catch(_e){}
+      _watchdogTrigger(1500);
+    } else {
+      toast('⚠️ No se pudo anotar el gasto: '+((r&&r.error)||'sin detalle'),'red');
+    }
+  }, 'Anotar gasto');
+};
+window._gastoLeerImagenInput = function(inp){ if(inp && inp.files && inp.files[0]) _gastoLeerImagen(inp.files[0]); };
 window.abrirModalAdminChunior = function(tipo){
   const esPropina = tipo==='propina';
   const titulo = esPropina ? '🎁 Anotar propina' : '💜 Depósito sin reclamar';

@@ -1,0 +1,62 @@
+-- ══════════════════════════════════════════════════════════════════════════════
+-- CIERRE DE PERMISOS PÚBLICOS · NO EJECUTAR EN ESTE DEPLOY
+-- ══════════════════════════════════════════════════════════════════════════════
+-- Juan (14/09): "que no haya nada en anon, que nadie pueda ver nuestras cosas o lanzar algo".
+-- Decisión suya, el mismo día: esto va en el PRÓXIMO deploy, no en el actual — primero todas las
+-- oficinas actualizan NODO, después se sube el portal, y recién ahí se cierra.
+--
+-- QUÉ SE ENCONTRÓ (14/09)
+--   · 318 funciones internas (panel_*, admin_*, nodo_*, worker_*…) las puede ejecutar "anon".
+--   · 272 de ellas NO tienen ningún control: ni p_secret, ni _panel_data_auth, ni auth.
+--   · La clave que lo permite es la publicable, y está a la vista en el archivo del portal:
+--     cualquiera que abra el código fuente la tiene. Eso es normal en esa clave; lo que NO es
+--     normal es lo que deja hacer.
+--   · Las 82 tablas SÍ tienen RLS activo: no se pueden leer directo. El agujero son las funciones.
+--
+-- POR QUÉ NO SE PUEDE REVOCAR TODO DE UNA
+--   El panel de las oficinas usa ESA MISMA clave publicable (SUPABASE_ANON_KEY). Un revoke general
+--   deja sin funcionar a las 8 oficinas, incluidas las que todavía tengan la versión vieja.
+--
+-- PLAN EN TRES PASOS
+--   1) RIESGO CERO — revocar sólo lo que no llama nadie (generaciones viejas: panel_v13_*,
+--      panel_v14_*, panel_v154_plus_*, y todo lo que no aparezca en el código del panel, del portal
+--      ni del admi). Cruzar la lista de abajo contra el repo antes de ejecutar.
+--   2) Agregarle control (p_secret) a las que SÍ se usan y hoy no lo tienen. Server-side, sin tocar
+--      el panel: la llamada sigue igual pero sin secreto no hace nada.
+--   3) Rotar PANEL_DATA_SECRET (pendiente del OK de Juan desde antes).
+--
+-- ── 1. AUDITORÍA: qué puede ejecutar el público y qué no tiene control ───────────────────────
+-- select p.proname, pg_get_function_identity_arguments(p.oid) as args,
+--        (p.prosrc !~* '(_panel_data_auth|_panel_crm_auth|p_secret|_admin_auth|auth\.|current_setting)') as sin_control
+--   from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+--  where n.nspname = 'public' and has_function_privilege('anon', p.oid, 'EXECUTE')
+--  order by sin_control desc, p.proname;
+--
+-- ── 2. LO QUE EL PORTAL SÍ NECESITA (no tocar) ───────────────────────────────────────────────
+-- landing_portal_resolver_vinculo, landing_leer_chat_v2, landing_portal_chat_thread_get,
+-- landing_cancelar_solicitud, landing_historial_usuario, landing_estado_solicitud_segura,
+-- landing_retiro_progreso, landing_validar_usuario_login, landing_estado_validacion_usuario,
+-- landing_resolver_ruta_publica, landing_resolver_ruta_por_host, landing_acceso_link_usar,
+-- landing_promo_activa, landing_solicitud_activa, landing_marcar_app_instalada,
+-- landing_obtener_billetera_segura, landing_obtener_billetera, landing_titular_bloqueado,
+-- landing_portal_v16_crear_solicitud, landing_crear_solicitud_v3_blindado,
+-- landing_crear_chat_v2_blindado, landing_enviar_mensaje_v2, landing_datos_retiro
+--
+-- ── 3. EL REVOKE (plantilla · ejecutar recién en el próximo deploy y por tandas) ─────────────
+-- Por tandas y midiendo, NUNCA todo junto:
+--
+-- REVOKE EXECUTE ON FUNCTION public.panel_v13_get_session_token(text)        FROM anon, PUBLIC;
+-- REVOKE EXECUTE ON FUNCTION public.panel_v14_cerrar_chat_json(...)          FROM anon, PUBLIC;
+-- …una línea por función de la lista del paso 1 que no aparezca en el código.
+--
+-- Para generar las líneas automáticamente (revisar la salida ANTES de correrla):
+-- select 'REVOKE EXECUTE ON FUNCTION public.' || p.proname || '(' ||
+--        pg_get_function_identity_arguments(p.oid) || ') FROM anon, PUBLIC;'
+--   from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+--  where n.nspname = 'public' and has_function_privilege('anon', p.oid, 'EXECUTE')
+--    and p.proname ~ '^(panel_v13_|panel_v14_|panel_v154_plus_)';
+--
+-- ── 4. DESPUÉS DE CADA TANDA ─────────────────────────────────────────────────────────────────
+-- Abrir el panel de una oficina y hacer una carga, un retiro y un chat. Si algo falla, el
+-- GRANT de vuelta es inmediato:
+-- GRANT EXECUTE ON FUNCTION public.<nombre>(<args>) TO anon;

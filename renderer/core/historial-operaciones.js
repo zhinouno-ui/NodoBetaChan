@@ -354,6 +354,7 @@ function renderHistorial(lista){
     if(t==='DEPOSITO_SR') return '💜';
     if(t==='PROPINA') return '🎁';
     if(t==='RECARGA_FICHAS') return '🎰';
+    if(t==='GASTO') return '💸';
     return '➡️';
   }
 
@@ -420,7 +421,7 @@ function renderHistorial(lista){
     // "⬆️ Carga · pruebaxx · $ 0" con el árbol de OTRAS operaciones colgando abajo. No es que
     // falte el dato: no existe el movimiento.
     const _tipoConMovimiento = ["CARGA","RETIRO","MOV_BILLETERA","CAMBIO_BILLETERA",
-                                "DEPOSITO_SR","PROPINA","RECARGA_FICHAS"];
+                                "DEPOSITO_SR","PROPINA","RECARGA_FICHAS","GASTO"];
     const detalleBtn = _tipoConMovimiento.indexOf(String(h.tipo||"").toUpperCase()) === -1
       ? ''
       : '<button class="mini-btn" style="font-size:13px;background:#3b2a09;color:#fde68a;border:1px solid rgba(253,230,138,.45);padding:5px 9px;line-height:1" onclick="verDetalleMovimiento(\x27'+escapeHtml(String(h.id||''))+'\x27,\x27'+escapeHtml(String(h.usuario||''))+'\x27)" title="Ver detalle del movimiento y el árbol de operaciones del usuario">🔍</button>';

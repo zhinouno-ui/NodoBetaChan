@@ -1992,3 +1992,31 @@ test('pendientes · con menos del mínimo no se ajusta nada, y sin saldo leído 
   assert.equal(sb._retiroMaxRetirable(50001.9), 50001, 'sin centavos: Agentes no los retira');
   assert.equal(sb._retiroMaxRetirable(4999), 0);
 });
+
+// ── D-97 · gasto de oficina ─────────────────────────────────────────────────────────────────
+test('gasto de oficina · usa la pantalla de Chunior y adjunta el comprobante', () => {
+  const src = fs.readFileSync(path.join(RAIZ, 'renderer', 'core', 'chunior-movimientos.js'), 'utf8');
+  assert.match(src, /transacciones\/gastoslocal\/add\//, 'la pantalla que pasó Juan');
+  assert.match(src, /registrarGastoOficinaEnChunior/);
+  assert.match(src, /new DataTransfer\(\); dt\.items\.add\(new File/, 'el comprobante se adjunta solo');
+  assert.ok(src.indexOf('fi.files=dt.files') < src.indexOf("b.click()"), 'primero se adjunta, después se guarda');
+  // El desplegable de billetera no se llama igual en todas las pantallas.
+  assert.match(src, /option\[value=/, 'si el identificador cambia, lo ubica por las opciones');
+  assert.ok(!/document\.getElementById\("id_cuenta_destino"\);\n/.test(src), 'ya no depende de un solo identificador');
+});
+
+test('gasto de oficina · el botón existe y el historial lo reconoce', () => {
+  const tpl = fs.readFileSync(path.join(RAIZ, 'renderer', 'panel.template.html'), 'utf8');
+  assert.match(tpl, /abrirModalGastoOficina\(\)/);
+  assert.match(tpl, /💸 Gasto/);
+  const hist = fs.readFileSync(path.join(RAIZ, 'renderer', 'core', 'historial-operaciones.js'), 'utf8');
+  assert.match(hist, /if\(t==='GASTO'\) return '💸';/);
+  assert.match(hist, /"RECARGA_FICHAS","GASTO"/, 'el detalle del movimiento tiene que abrirse');
+});
+
+test('gasto de oficina · sin notas no se anota (es el único registro de en qué se gastó)', () => {
+  const src = fs.readFileSync(path.join(RAIZ, 'renderer', 'core', 'chunior-movimientos.js'), 'utf8');
+  assert.match(src, /notas\.length < 3/);
+  assert.match(src, /tipo:'GASTO'/);
+  assert.match(src, /3\.5\*1024\*1024/, 'una imagen enorme no entra en la pantalla de Chunior');
+});
