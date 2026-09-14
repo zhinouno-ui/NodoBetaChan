@@ -106,10 +106,11 @@ const api = {};
         const _accS = _esRetiroS ? '#fb923c' : (String(s.TIPO||s.TIPO_SOLICITUD||"").toUpperCase()==="CARGA" ? '#22c55e' : ''); // 🟠 retiro · 🟢 carga
         // Si declaró MÁS de lo que tiene pero igual hay fichas retirables, ofrecemos el retiro por
         // lo que HAY (típico: un cero de más) → abre el modal de parcial ya ajustado al saldo real.
-        const _sugS = (_esRetiroS && _saldoChk && !_saldoChk.suficiente && _saldoChk.confiable && deps.window._retiroMontoSugerido)
-          ? deps.window._retiroMontoSugerido(Number(s.MONTO_REAL||s.MONTO_DECLARADO||0), Number(_saldoChk.saldo||0)) : null;
+        // Lo MÁXIMO que tiene para retirar. El botón deja la solicitud en ese monto (D-96).
+        const _maxS = (_esRetiroS && _saldoChk && !_saldoChk.suficiente && _saldoChk.confiable && deps.window._retiroMaxRetirable)
+          ? deps.window._retiroMaxRetirable(_saldoChk.saldo) : 0;
         const _saldoBadge = (_esRetiroS && _saldoChk) ? `<div style="font-size:10px;font-weight:800;margin-top:2px;color:${_saldoChk.suficiente?'#22c55e':'#ef4444'}">saldo ${deps.esc(_saldoChk.raw||"")}${_saldoChk.suficiente?' ✓':' ⚠ no alcanza'}</div>`
-          + (_sugS ? `<button class="mini-btn" style="margin-top:3px;background:#ea580c;color:#fff;font-weight:800;font-size:10px" onclick="_retiroAjustarASaldo(${id})" title="${_sugS.motivo==='ceros'?'Declaró con '+_sugS.ceros+' cero(s) de más — quiso este monto':'No alcanza: retirar todo lo que tiene'}">✔ Retirar ${deps.esc(deps.money(_sugS.monto))}</button>` : "") : "";
+          + (_maxS ? `<button class="mini-btn" style="margin-top:3px;background:#ea580c;color:#fff;font-weight:800;font-size:10px" onclick="_retiroAjustarASaldo(${id})" title="Deja la solicitud en ${deps.esc(deps.money(_maxS))}, que es todo lo que tiene para retirar">✔ Retirar ${deps.esc(deps.money(_maxS))}</button>` : "") : "";
         const _pp = (deps.window._retiroParcialInfo ? deps.window._retiroParcialInfo(s) : {restante:Number(s.MONTO_REAL||s.MONTO_DECLARADO||0),pagado:0,total:Number(s.MONTO_REAL||s.MONTO_DECLARADO||0),hasProg:false});
         const _montoCell = (_esRetiroS && _pp.hasProg)
           ? `${deps.money(_pp.restante)}<div style="font-size:10px;font-weight:800;margin-top:2px;color:#a78bfa">parcial · pagado ${deps.money(_pp.pagado)} de ${deps.money(_pp.total)}</div>`

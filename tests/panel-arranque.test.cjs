@@ -1948,3 +1948,47 @@ test('portal · dice qué versión es', () => {
   assert.match(src, /Últimos 7 días <span[^>]*>'\+PORTAL_VER\+'<\/span>/,
     'sin esto no se sabe si el portal que se abre es el nuevo o la copia del service worker');
 });
+
+// ── D-96 · el botón "Retirar todo lo que tiene" deja la solicitud en ese monto ──────────────
+test('pendientes · el botón naranja setea el monto de la solicitud, sin preguntar', async () => {
+  const sb = arrancarPanel();
+  sb.toast = () => {};
+  const sol = { ID: 221313, USUARIO: 'pruebaxx', MONTO_DECLARADO: 500000, ESTADO: 'PENDIENTE', metadata: {} };
+  sb.V154P.solicitudes = [sol];
+  sb._retiroSaldoCheck = { pruebaxx: { saldo: 50001, suficiente: false, confiable: true, raw: 'ARS 50,001.00' } };
+  sb.confirm = () => { throw new Error('no tiene que preguntar nada'); };
+  let guardado = null;
+  sb.actualizarSolicitudPortal = async (id, estado, extra) => { guardado = { id, estado, extra }; return {}; };
+  let abrio = null;
+  sb.abrirModalRetiroV2 = (id) => { abrio = String(id); };
+
+  await sb._retiroAjustarASaldo(221313);
+
+  assert.equal(guardado.extra.monto_corregido, 50001, 'el máximo que tiene, no el "cero de más" (50.000)');
+  assert.equal(guardado.extra.monto_declarado_original, 500000);
+  assert.equal(sol.MONTO_REAL, 50001, 'la tarjeta tiene que repintar con el monto nuevo');
+  assert.equal(abrio, '221313');
+  assert.match(String(guardado.extra.motivo_ajuste||''), /te pagamos todo lo que ten/i, 'el jugador tiene que saber por qué cambió');
+});
+
+test('pendientes · con menos del mínimo no se ajusta nada, y sin saldo leído lo dice', async () => {
+  const sb = arrancarPanel();
+  sb.toast = () => {};
+  const sol = { ID: 5, USUARIO: 'pruebaxx', MONTO_DECLARADO: 500000, ESTADO: 'PENDIENTE', metadata: {} };
+  sb.V154P.solicitudes = [sol];
+  let guardado = false;
+  sb.actualizarSolicitudPortal = async () => { guardado = true; return {}; };
+  sb.abrirModalRetiroV2 = () => {};
+
+  sb._retiroSaldoCheck = {};
+  await sb._retiroAjustarASaldo(5);
+  assert.equal(guardado, false, 'sin saldo leído no toca la solicitud');
+
+  sb._retiroSaldoCheck = { pruebaxx: { saldo: 4999, suficiente: false, confiable: true } };
+  await sb._retiroAjustarASaldo(5);
+  assert.equal(guardado, false, 'con menos de $5.000 no hay retiro que valga');
+  assert.equal(sol.MONTO_REAL, undefined);
+
+  assert.equal(sb._retiroMaxRetirable(50001.9), 50001, 'sin centavos: Agentes no los retira');
+  assert.equal(sb._retiroMaxRetirable(4999), 0);
+});

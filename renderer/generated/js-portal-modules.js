@@ -367,10 +367,11 @@ const api = {};
         const _accS = _esRetiroS ? '#fb923c' : (String(s.TIPO||s.TIPO_SOLICITUD||"").toUpperCase()==="CARGA" ? '#22c55e' : ''); // 🟠 retiro · 🟢 carga
         // Si declaró MÁS de lo que tiene pero igual hay fichas retirables, ofrecemos el retiro por
         // lo que HAY (típico: un cero de más) → abre el modal de parcial ya ajustado al saldo real.
-        const _sugS = (_esRetiroS && _saldoChk && !_saldoChk.suficiente && _saldoChk.confiable && deps.window._retiroMontoSugerido)
-          ? deps.window._retiroMontoSugerido(Number(s.MONTO_REAL||s.MONTO_DECLARADO||0), Number(_saldoChk.saldo||0)) : null;
+        // Lo MÁXIMO que tiene para retirar. El botón deja la solicitud en ese monto (D-96).
+        const _maxS = (_esRetiroS && _saldoChk && !_saldoChk.suficiente && _saldoChk.confiable && deps.window._retiroMaxRetirable)
+          ? deps.window._retiroMaxRetirable(_saldoChk.saldo) : 0;
         const _saldoBadge = (_esRetiroS && _saldoChk) ? `<div style="font-size:10px;font-weight:800;margin-top:2px;color:${_saldoChk.suficiente?'#22c55e':'#ef4444'}">saldo ${deps.esc(_saldoChk.raw||"")}${_saldoChk.suficiente?' ✓':' ⚠ no alcanza'}</div>`
-          + (_sugS ? `<button class="mini-btn" style="margin-top:3px;background:#ea580c;color:#fff;font-weight:800;font-size:10px" onclick="_retiroAjustarASaldo(${id})" title="${_sugS.motivo==='ceros'?'Declaró con '+_sugS.ceros+' cero(s) de más — quiso este monto':'No alcanza: retirar todo lo que tiene'}">✔ Retirar ${deps.esc(deps.money(_sugS.monto))}</button>` : "") : "";
+          + (_maxS ? `<button class="mini-btn" style="margin-top:3px;background:#ea580c;color:#fff;font-weight:800;font-size:10px" onclick="_retiroAjustarASaldo(${id})" title="Deja la solicitud en ${deps.esc(deps.money(_maxS))}, que es todo lo que tiene para retirar">✔ Retirar ${deps.esc(deps.money(_maxS))}</button>` : "") : "";
         const _pp = (deps.window._retiroParcialInfo ? deps.window._retiroParcialInfo(s) : {restante:Number(s.MONTO_REAL||s.MONTO_DECLARADO||0),pagado:0,total:Number(s.MONTO_REAL||s.MONTO_DECLARADO||0),hasProg:false});
         const _montoCell = (_esRetiroS && _pp.hasProg)
           ? `${deps.money(_pp.restante)}<div style="font-size:10px;font-weight:800;margin-top:2px;color:#a78bfa">parcial · pagado ${deps.money(_pp.pagado)} de ${deps.money(_pp.total)}</div>`
@@ -1188,6 +1189,12 @@ const RV2_MIN_RETIRABLE = 5000;   // con 5.000 fichas o más, el retiro es viabl
 //   Dicho de otra forma: si hubiera querido TODO habría tecleado 250 (con el cero de más);
 //   como tecleó 200, quiere 20 — le sacamos el cero al DECLARADO, no lo capamos al saldo.
 // Si sacando ceros nunca entra, recién ahí se ofrece todo lo que tiene.
+// Lo MÁXIMO que se le puede sacar: sus fichas enteras (sin centavos, que Agentes no retira), y
+// sólo si llegan al mínimo operativo. Es lo que ofrece el botón de la tarjeta de pendientes.
+api._retiroMaxRetirable = function(saldo){
+  const s = Math.floor(Math.abs(Number(saldo) || 0) + 1e-9);
+  return s >= RV2_MIN_RETIRABLE ? s : 0;
+};
 api._retiroMontoSugerido = function(declarado, saldo){
   declarado = Math.abs(Number(declarado)||0); saldo = Math.abs(Number(saldo)||0);
   if(!(declarado>0) || !(saldo>0)) return null;
@@ -1257,42 +1264,41 @@ api._rv2SetParcialOk = function(v){ if(deps.withdrawalState.current) deps.withdr
 // del cierre pasa a ser ese monto → el retiro cierra COMPLETO, sin dejar un parcial fantasma por
 // la diferencia mal declarada. Re-sugiere las billeteras para el monto nuevo.
 // Atajo desde la card de pendientes: abre el modal de retiro YA ajustado al saldo real del usuario.
-api._retiroAjustarASaldo = function(id){
-  const chk=(deps.window._retiroSaldoCheck||{});
-  let saldo=0, declarado=0;
-  try{
-    const S=(deps.window.V154P&&deps.V154P.solicitudes)||[];
-    const s=S.find(function(x){ return String(x.ID||x.SOLICITUD_ID||0)===String(id); });
-    const u=String((s&&s.USUARIO)||'').toLowerCase();
-    saldo=Number((chk[u]||{}).saldo||0);
-    declarado=Number((s&&(s.MONTO_REAL||s.MONTO_DECLARADO))||0);
-  }catch(_e){}
-  const sug=deps.window._retiroMontoSugerido(declarado, saldo);
-  if(!sug){ deps.toast('No hay un monto retirable para ajustar.','yellow'); return; }
-  const txt = sug.motivo==='ceros'
-    ? ('Declaró '+deps.money(declarado)+' y tiene '+deps.money(saldo)+'.\nLe sobra'+(sug.ceros>1?'n':'')+' '+sug.ceros+' cero'+(sug.ceros>1?'s':'')+': quiso retirar '+deps.money(sug.monto)+'.\n\n¿Abrir el retiro por '+deps.money(sug.monto)+'?')
-    : ('Declaró '+deps.money(declarado)+' y tiene '+deps.money(saldo)+'.\nNo es cuestión de ceros.\n\n¿Abrir el retiro por todo lo que tiene ('+deps.money(sug.monto)+')?');
-  if(!deps.confirm(txt)) return;
+api._retiroAjustarASaldo = async function(id){
+  const S=(deps.window.V154P&&deps.V154P.solicitudes)||[];
+  const s=S.find(function(x){ return String(x.ID||x.SOLICITUD_ID||0)===String(id); });
+  if(!s){ deps.toast('No encuentro la solicitud #'+id+' en pantalla.','red'); return; }
+  const u=String(s.USUARIO||'').toLowerCase();
+  const saldo=Number(((deps.window._retiroSaldoCheck||{})[u]||{}).saldo||0);
+  const declarado=Number(s.MONTO_REAL||s.MONTO_DECLARADO||0);
+  // Lo que se le deja pedido es TODO lo que tiene para retirar. Antes se ofrecía el monto "sin el
+  // cero de más", que le dejaba fichas adentro (Juan, 14/09).
+  const monto = deps.window._retiroMaxRetirable ? deps.window._retiroMaxRetirable(saldo) : 0;
+  if(!saldo){ deps.toast('Todavía no se leyó el saldo de '+(s.USUARIO||'ese usuario')+'. Abrí el retiro y se lee.','yellow'); return; }
+  if(!monto){ deps.toast(s.USUARIO+' tiene '+deps.money(saldo)+': menos del mínimo retirable ('+deps.money(RV2_MIN_RETIRABLE)+').','yellow'); return; }
+  // SIN preguntar: el botón dice el monto y lo hace. El confirm que había acá frenaba todo — si no
+  // se aceptaba (o no llegaba a aparecer) el botón parecía muerto.
+  s.MONTO_REAL = monto;                               // en memoria, para que repinte ya
+  if(s.metadata) s.metadata.monto_corregido = monto;
   // El monto corregido se escribe EN LA SOLICITUD, que es el único lugar donde tiene que cambiar:
-  // de ahí sale MONTO_REAL y con eso quedan bien la tarjeta del pendiente, el modal, el historial
-  // y lo que se le avisa al cliente. Antes el ajuste vivía solo dentro del modal (st.objetivo), así
-  // que la solicitud seguía pidiendo los $200.000 que el cliente tecleó con el cero de más.
+  // de ahí sale MONTO_REAL y con eso quedan bien la tarjeta, el modal, el historial y lo que ve el
+  // cliente. El error ya no se descarta en silencio: si no se guardó, hay que saberlo.
   try{
-    const S=(deps.window.V154P&&deps.V154P.solicitudes)||[];
-    const s=S.find(function(x){ return String(x.ID||x.SOLICITUD_ID||0)===String(id); });
-    if(s){
-      s.MONTO_REAL = sug.monto;                       // en memoria, para que repinte ya
-      if(s.metadata) s.metadata.monto_corregido = sug.monto;
-      deps.window.actualizarSolicitudPortal(String(id), String(s.ESTADO||'PENDIENTE'), {
-        monto_corregido: sug.monto,
-        monto_declarado_original: declarado,
-        motivo_correccion: sug.motivo,                 // 'ceros' | 'todo'
-        operador: (deps.window.operador&&(deps.window.operador.usuario||deps.window.operador.nombre))||'panel'
-      }).catch(function(){});
-    }
-  }catch(_e){}
+    await deps.window.actualizarSolicitudPortal(String(id), String(s.ESTADO||'PENDIENTE'), {
+      monto_corregido: monto,
+      monto_declarado_original: declarado,
+      motivo_correccion: (declarado >= saldo*3 ? 'ceros' : 'todo'),
+      motivo_ajuste: 'Tenías '+deps.money(saldo)+' en fichas y pediste '+deps.money(declarado)+': te pagamos todo lo que tenías.',
+      operador: (deps.window.operador&&(deps.window.operador.usuario||deps.window.operador.nombre))||'panel'
+    });
+    deps.toast('Retiro #'+id+' ajustado a '+deps.money(monto)+' (todo lo que tiene).','green');
+  }catch(e){
+    deps.toast('No se pudo guardar el monto: '+((e&&e.message)||e)+' · reintentá.','red');
+    return;
+  }
   if(typeof deps.abrirModalRetiroV2!=='function'){ deps.toast('Modal de retiro no disponible.','red'); return; }
   deps.abrirModalRetiroV2(id);
+  const sug={ monto:monto };
   // Cuando el modal terminó de montar, fijamos el objetivo al monto sugerido.
   let _intentos = 0;
   (function _ajustar(){

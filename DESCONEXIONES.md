@@ -3108,3 +3108,25 @@ worker, que guarda la copia vieja. Se agregó **PORTAL_VER** a la vista, al lado
 alcanza con mirarlo para saber si la pantalla que se está viendo es el archivo nuevo o la copia
 guardada. Sin eso, "el historial no muestra el parcial" y "el portal no está actualizado" se ven
 exactamente igual.
+
+
+## D-96 · El botón "✔ Retirar $X" de la tarjeta de pendientes no seteaba nada · RESUELTO
+
+Juan (14/09): *"el botón naranja tiene que setear el monto en la solicitud, no está funcionando. Al
+apretarlo la solicitud se debe reducir al monto máximo que tenga el usuario para retirarle, siempre
+y cuando tenga más de 5000"*.
+
+Tres cosas, en el mismo botón:
+
+- **Preguntaba antes de hacer nada.** Un `confirm()` con tres renglones; si no se aceptaba —o no
+  llegaba a aparecer— no pasaba absolutamente nada y el botón parecía muerto. Es el tercer confirm
+  que frena una operación de plata en esta ronda (ver D-91). Ahora el botón dice el monto y lo hace.
+- **Si la grabación fallaba, no se enteraba nadie**: `.catch(function(){})` vacío. Ahora se espera
+  la respuesta y, si no se guardó, lo dice en rojo.
+- **Ofrecía el monto equivocado.** Usaba la regla del "cero de más": con $50.001 en fichas y $500.000
+  pedidos ofrecía **$50.000**, dejándole fichas adentro. Ahora ofrece **todo lo que tiene**
+  (`_retiroMaxRetirable`: las fichas enteras, sin centavos, y sólo si llegan al mínimo de $5.000).
+  La regla del cero de más sigue viva dentro del modal, que es donde el operador decide caso por caso.
+
+El monto ajustado se escribe en la solicitud junto con el motivo ("Tenías X en fichas y pediste Y:
+te pagamos todo lo que tenías"), así que el jugador lo ve en el portal y queda en el historial.
