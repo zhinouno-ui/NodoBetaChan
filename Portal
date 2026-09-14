@@ -1301,6 +1301,9 @@ function _fechaCorta(iso){
     return p(d.getDate())+"/"+p(d.getMonth()+1)+" "+p(d.getHours())+":"+p(d.getMinutes());
   }catch(_e){ return ""; }
 }
+// Versión del portal, a la vista en el historial. Sin esto no había forma de saber si lo que se
+// está mirando es el archivo nuevo o la copia que guardó el service worker (Juan, 14/09).
+const PORTAL_VER="v18.3 · 14/09";
 function _estadoBadge(e, canceladaPor, r){
   const u=String(e||"").toUpperCase();
   // Una que cancelaste vos NO es un rechazo nuestro. Iban las dos en rojo y como "Rechazada",
@@ -1429,7 +1432,7 @@ async function pintarHistorialUsuario(){
       + (rech && r.motivo ? '<div style="width:100%;font-size:11.5px;color:#fca5a5;background:rgba(239,68,68,.08);border:1px solid rgba(239,68,68,.25);border-radius:8px;padding:6px 8px;margin-top:2px">🚫 '+esc(r.motivo)+'</div>' : '')
       + '</div>';
   }).join("");
-  box.innerHTML='<div style="font-size:12px;font-weight:800;color:#8b95a5;text-transform:uppercase;letter-spacing:.4px;margin:16px 2px 4px">Últimos 7 días</div>'+filas;
+  box.innerHTML='<div style="font-size:12px;font-weight:800;color:#8b95a5;text-transform:uppercase;letter-spacing:.4px;margin:16px 2px 4px">Últimos 7 días <span style="font-weight:600;letter-spacing:0;color:#4b5563">'+PORTAL_VER+'</span></div>'+filas;
 }
 
 // La billetera de la solicitud, y el aviso cuando la que figura ahora en el portal es otra.

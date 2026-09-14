@@ -2847,6 +2847,13 @@ const api = {};
     const comprobanteUrl = s.COMPROBANTE_URL || s.comprobante_url || (meta && meta.comprobante_url) || null;
 
     const esManual = origen === 'MANUAL' || origen === 'PANEL' || (itemUnified && itemUnified.fuente === 'OPERACION');
+    // Un retiro pagado en partes tiene un movimiento de Chunior y un par de saldos POR PAGO: no
+    // entran en un casillero. Van abajo, en el detalle del retiro (Juan, 13/09).
+    const _partesRetiro = ((deps.window && deps.window._historialData) || []).filter(function(h){
+      const sid = String((s && s.solicitud_id) || (itemUnified && itemUnified.solicitud_id) || '');
+      return sid && String(h.solicitud_id || '') === sid
+        && String(h.tipo || '').toUpperCase() === 'RETIRO' && Number(h.monto || 0) > 0;
+    }).length;
     const esRetiro = tipo === 'RETIRO';
     const esCarga = tipo === 'CARGA';
     const esRechazo = ['RECHAZADA', 'CANCELADA'].includes(estado);
@@ -3244,7 +3251,9 @@ ${stepperHtml}
             <div class="sol-cotejo-row">
               <span class="sol-cotejo-lbl">N° Movimiento Chunior:</span>
               <div class="sol-cotejo-val">
-                ${movId
+                ${_partesRetiro > 1
+                  ? `<span style="color:#c084fc;font-size:11.5px">Uno por cada pago · abajo, en el detalle del retiro</span>`
+                  : movId
                   ? `<b class="mono" style="color:#86efac;font-size:13px">N° ${esc(movId)}</b>
                      <button type="button" class="sol-copy-btn" onclick="expedienteCopiarTexto('${esc(movId)}')">Copiar</button>
                      ${histIdParaMov ? `<button type="button" class="mini-btn yellow" style="font-size:10.5px"
@@ -3263,7 +3272,9 @@ ${stepperHtml}
               <div class="sol-cotejo-row">
                 <span class="sol-cotejo-lbl">Saldos en casino:</span>
                 <div class="sol-cotejo-val">
-                  ${(saldoPre != null || saldoPost != null)
+                  ${_partesRetiro > 1
+                    ? `<span style="color:#c084fc;font-size:11.5px">Los de cada pago · abajo, en el detalle del retiro</span>`
+                    : (saldoPre != null || saldoPost != null)
                     ? `<span>Prev: ${saldoPre != null ? fmtMoney(saldoPre) : '—'}</span>
                        <span style="color:#34d399">Post: ${saldoPost != null ? fmtMoney(saldoPost) : '—'}</span>`
                     : (abierta ? `<span style="color:#64748b">Se leen al ejecutar</span>`

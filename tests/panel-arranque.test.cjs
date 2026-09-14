@@ -1743,7 +1743,7 @@ test('Drex · el preload no recarga en el medio de una operación del panel', ()
   const src = fs.readFileSync(path.join(RAIZ, 'agent-preload.js'), 'utf8');
   assert.match(src, /_opsEnCurso\+\+;[\s\S]*?finally \{ _opsEnCurso = Math\.max\(0, _opsEnCurso - 1\); \}/);
   assert.match(src, /if \(!_sesionMuertaDesde \|\| _opsEnCurso > 0\) return;/);
-  assert.match(src, /Date\.now\(\) - _recargaLoginEn < 30000/, 'una recarga cada 30 s como mucho');
+  assert.match(src, /_irAlLogin\('sesión caída sin operación en curso'\)/, 'cierra la sesión, no recarga');
 });
 
 test('sesión caída · ningún camino rechaza la solicitud diciendo que el usuario no existe', () => {
@@ -1856,4 +1856,95 @@ test('cotejo · "otro número" dice de dónde sale; un modal sin texto de botón
   assert.match(cot, /En esta oficina operó con/);
   const av = fs.readFileSync(path.join(RAIZ, 'renderer', 'core', 'avisos-y-watchdog.js'), 'utf8');
   assert.match(av, /btn\.style\.display = saveText \? '' : 'none';/);
+});
+
+// ── D-94 · la sesión muerta se cierra y se vuelve a entrar ──────────────────────────────────
+test('Drex · una sesión muerta se cierra por /logout, no se recarga', () => {
+  const src = fs.readFileSync(path.join(RAIZ, 'agent-preload.js'), 'utf8');
+  assert.match(src, /const LOGOUT_URL = 'https:\/\/bo\.casinodrex\.com\/logout';/);
+  assert.match(src, /window\.location\.assign\(LOGOUT_URL\)/, 'el link "Salir" del menú de Agentes');
+  const cerrar = src.slice(src.indexOf('async function cerrarModalSesionInvalida'));
+  assert.match(cerrar.slice(0, 1400), /_irAlLogin\('cartel de sesión inválida'\)/,
+    'apretar "Aceptar" dejaba la app montada con la sesión muerta');
+  assert.match(src, /new MutationObserver/, 'el cartel puede durar un instante');
+  assert.match(src, /if \(e && e\.sesionInvalida\) result = status\(\{ message: e\.message \}\);/,
+    'una sesión caída tiene que abrir el login, no ser un error técnico');
+});
+
+test('Drex · una espera corta apenas aparece el cartel, salvo después de Aplicar', async () => {
+  const src = fs.readFileSync(path.join(RAIZ, 'agent-preload.js'), 'utf8');
+  const fn = (n) => {
+    const m = src.match(new RegExp('(?:async )?function ' + n + '\\([^)]*\\) ?\\{[\\s\\S]*?\\n\\}'));
+    assert.ok(m, 'no encontré ' + n);
+    return (/async function/.test(m[0]) ? m[0] : m[0]);
+  };
+  const fuente = ['delay', '_chequearFreno', '_chequearSesionViva', 'detectarModalSesionInvalida',
+                  '_marcarSesionMuerta', 'waitFor'].map(fn).join('\n');
+  const armar = new Function('document', 'STEP_DELAY', 'DEFAULT_TIMEOUT',
+    'let _abortOperacion = false, _yaAplico = false, _sesionMuertaDesde = 0, _vioLoginTrasMuerte = 0;\n'
+    + 'function now(){ return Date.now(); }\n' + fuente
+    + '\nreturn { waitFor, aplicar: function(){ _yaAplico = true; } };');
+  let hayCartel = false;
+  const doc = {
+    querySelectorAll: (s) => (hayCartel && s === '.ReactModal__Content'
+      ? [{ textContent: 'session is invalid La session es invalida, redireccionamos al login Aceptar' }] : []),
+    querySelector: () => null
+  };
+  const api = armar(doc, 50, 18000);
+
+  // Sin cartel: la espera agota su tiempo, como siempre.
+  await assert.rejects(() => api.waitFor(() => null, 300), (e) => {
+    assert.ok(!e.sesionInvalida, 'sin cartel no hay nada que cortar');
+    return true;
+  });
+  hayCartel = true;
+  const t1 = Date.now();
+  await assert.rejects(() => api.waitFor(() => null, 8000), (e) => {
+    assert.equal(e.sesionInvalida, true, 'tiene que decir que fue la sesión');
+    return true;
+  });
+  assert.ok(Date.now() - t1 < 2000, 'cortó al toque, no a los 18 s');
+
+  // Después de Aplicar la plata pudo moverse: la espera NO corta sola, agota su tiempo.
+  api.aplicar();
+  await assert.rejects(() => api.waitFor(() => null, 400), (e) => {
+    assert.ok(!e.sesionInvalida, 'después de Aplicar hay que leer el resultado sí o sí');
+    return true;
+  });
+});
+
+// ── D-95 · cada pago de un retiro por partes, con su tramo y su movimiento ──────────────────
+test('retiro por partes · cada pago muestra su tramo, su N° de Chunior y sus fichas', () => {
+  const sb = arrancarPanel();
+  sb._historialData = [
+    { id: 95001, tipo: 'RETIRO', usuario: 'pruebaxx', monto: 5000, estado: 'OK', solicitud_id: 900099,
+      chunior_movimiento_id: '9655916', saldo_pre: 35019, saldo_post: 30019, created_at: '2026-09-12T12:52:59Z' },
+    { id: 95002, tipo: 'RETIRO', usuario: 'pruebaxx', monto: 30018, estado: 'OK', solicitud_id: 900099,
+      chunior_movimiento_id: null, saldo_pre: 30019, saldo_post: 1, created_at: '2026-09-12T17:22:09Z' }
+  ];
+  const html = sb.nodoRetiroHistoriaPintar({
+    total: 35019, pagado: 35018,
+    pagos: [{ monto: 5000, fecha: '2026-09-12T12:52:59Z', operador: 'xprueba' },
+            { monto: 30018, fecha: '2026-09-12T17:22:09Z', operador: 'xprueba' }]
+  }, '900099', '');
+
+  assert.match(html, /0–14%/, 'el primer pago cubre del 0 al 14%');
+  assert.match(html, /14–100%/, 'el segundo lo termina');
+  assert.match(html, /N° 9655916/, 'el movimiento del pago que SÍ lo tiene');
+  assert.match(html, /expedienteBuscarMovChunior\('95002'/, 'el que no lo tiene se busca sobre SU fila');
+  assert.match(html, /1 pago sin N° de Chunior/);
+  assert.ok(/35\.019/.test(html) && /30\.019/.test(html) && /→/.test(html), 'las fichas antes y después de cada pago');
+});
+
+test('expediente · con varios pagos no muestra un solo N° ni un solo par de saldos', () => {
+  const b = _bundlePortal();
+  assert.match(b, /Uno por cada pago · abajo, en el detalle del retiro/);
+  assert.match(b, /Los de cada pago · abajo, en el detalle del retiro/);
+});
+
+test('portal · dice qué versión es', () => {
+  const src = fs.readFileSync(path.join(RAIZ, 'Portal'), 'utf8');
+  assert.match(src, /const PORTAL_VER="v[\d.]+ · \d\d\/\d\d";/);
+  assert.match(src, /Últimos 7 días <span[^>]*>'\+PORTAL_VER\+'<\/span>/,
+    'sin esto no se sabe si el portal que se abre es el nuevo o la copia del service worker');
 });

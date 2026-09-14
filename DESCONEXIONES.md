@@ -3061,3 +3061,50 @@ había verificado ese número.
 Ahora cuentan sólo **cargas y retiros ya acreditados/pagados en ESTA oficina**: una operación que un
 operador ejecutó en esa cuenta. Misma firma y mismo JSON (la 1.2.0 lo lee igual). El cartel dice
 "operó con otro número en N cargas o retiros ya acreditados".
+
+
+## D-95 · Un retiro en partes tiene un movimiento de Chunior POR PAGO · RESUELTO en el código
+
+La ficha tenía **un** casillero de "N° Movimiento Chunior" y **un** par de saldos. En un retiro
+pagado en dos veces no entraba ninguno: decía "Sin N° anotado", "No quedaron registrados", y el
+botón "Buscar en Chunior" contestaba "esta fila no tiene operación registrada" (apuntaba a la
+solicitud, que no es una operación).
+
+Juan (13/09): *"ya tiene un contador interno que detecta el porcentaje: usá eso mismo para ver el
+movimiento de Chunior — de 0 a 50 abarca este movimiento, de 50 a 75 este otro"*.
+
+Ahora cada pago se muestra con su **tramo** (0–14%, 14–100%), su **N° de Chunior** (o el botón que
+lo busca sobre ESA fila del historial) y las **fichas antes y después** de ese pago. La ficha de la
+solicitud, cuando hay más de un pago, manda a leer el detalle en vez de mostrar un dato que no existe.
+
+**Los saldos pre y post SÍ se guardan** (uno por pago, en historial_ops). Lo que no existía era el
+lugar donde mostrarlos: la solicitud no tiene saldos propios.
+
+## D-94 · La sesión muerta de Drex hay que CERRARLA, no taparle el cartel · RESUELTO en el código
+
+Juan (13/09), con la sesión ya cerrada: *"el cartel de user search invalid session aparece unos
+microsegundos pero el preload lo acepta; lo que debe hacer es cerrar la sesión y volver a
+iniciarla"*. Y con un Ctrl+R el cartel aparece igual y tampoco se tomaba.
+
+Lo que pasaba, medido contra la captura: el cartel aparece **después** de arrancar la búsqueda. El
+preload esperaba la lista 18 s × 3 intentos sin volver a mirar si había cartel, el panel cortaba por
+el timeout de 28 s y mostraba "la consulta tardó demasiado" — un error técnico cualquiera — así que
+**nunca abría el login**.
+
+- **Toda espera mira el cartel**: la operación corta en un segundo con "hay que entrar de nuevo".
+  Después de apretar Aplicar NO corta: ahí la plata ya pudo moverse y hay que leer el resultado.
+- **Una sesión caída ya no es un error técnico**: vuelve como estado, y el panel abre el login.
+- **Se cierra la sesión de verdad**: apretar "Aceptar" dejaba la app montada y muerta. Ahora se va a
+  `/logout` (el link "Salir" del menú de Agentes). Ir a user_search no servía: con la cookie muerta
+  volvía a salir el cartel y quedaba dando vueltas ahí.
+- **Un observador** agarra el cartel aunque dure un instante.
+- `iniciarSesion` sin formulario a la vista (app montada o pantalla en blanco detrás del cartel)
+  cierra la sesión y espera el ingreso en la misma llamada.
+
+### El portal ahora dice qué versión es
+
+`Portal` es el archivo fuente; el que ven los jugadores se sirve desde otro lado y tiene service
+worker, que guarda la copia vieja. Se agregó **PORTAL_VER** a la vista, al lado de "Últimos 7 días":
+alcanza con mirarlo para saber si la pantalla que se está viendo es el archivo nuevo o la copia
+guardada. Sin eso, "el historial no muestra el parcial" y "el portal no está actualizado" se ven
+exactamente igual.

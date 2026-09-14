@@ -257,7 +257,10 @@ window.nodoRetiroHistoriaPintar = function(p, sid, histId){
   if(!pagos.length && !cierre && !ajuste) return '';
   const fF = (typeof formatFecha === 'function') ? formatFecha : function(x){ return String(x||''); };
   // Qué pago es ESTA fila del historial: mismo monto y a menos de 3 minutos.
-  const H = (typeof _historialData !== 'undefined' && _historialData) || window._historialData || [];
+  // OJO con el "||": una lista VACÍA es verdadera en JS, así que ganaba la vacía y nunca se usaba
+  // el respaldo. Se mira la cantidad, igual que en _parteRetiro.
+  const H = (typeof _historialData !== 'undefined' && _historialData && _historialData.length)
+    ? _historialData : (window._historialData || []);
   const hRow = histId ? H.find(function(h){ return String(h.id) === String(histId); }) : null;
   const esEste = function(x){
     if(!hRow) return false;
@@ -271,14 +274,57 @@ window.nodoRetiroHistoriaPintar = function(p, sid, histId){
   }
   h += '<div style="margin-top:4px;color:#8b949e">Pagado <b style="color:#e6edf3">'+money(pagado)+'</b> de <b style="color:#e6edf3">'+money(total)+'</b>'
     + (resta > 0.5 ? (' · falta <b style="color:#f5c518">'+money(resta)+'</b>') : ' · completo')+'</div>';
+  // Cada pago con SU movimiento de Chunior y SUS fichas: un retiro en partes tiene un movimiento
+  // por pago y la ficha tenía un solo casillero, así que no entraba ninguno (Juan, 13/09).
+  const delaSolicitud = H.filter(function(r){
+    return String(r.solicitud_id || '') === String(sid) && String(r.tipo || '').toUpperCase() === 'RETIRO'
+      && Number(r.monto || 0) > 0 && String(r.estado || '').toUpperCase() !== 'ERROR';
+  }).sort(function(a, b){ return new Date(a.created_at) - new Date(b.created_at); });
+  const usadas = {};
+  const filaDelPago = function(x, i){
+    for(let k = 0; k < delaSolicitud.length; k++){
+      if(usadas[k]) continue;
+      const r = delaSolicitud[k];
+      if(Number(r.monto) === Number(x.monto) && Math.abs(new Date(x.fecha) - new Date(r.created_at)) < 180000){ usadas[k] = true; return r; }
+    }
+    const porOrden = delaSolicitud[i];
+    if(porOrden && !usadas[i] && Number(porOrden.monto) === Number(x.monto)){ usadas[i] = true; return porOrden; }
+    return null;
+  };
+  let acum = 0, faltanMovs = 0;
   pagos.forEach(function(x, i){
+    const monto = Number(x.monto) || 0;
+    const desdePct = total > 0 ? Math.round(acum * 100 / total) : 0;
+    acum += monto;
+    const hastaPct = total > 0 ? Math.min(100, Math.round(acum * 100 / total)) : 0;
+    const fila = filaDelPago(x, i);
     const este = esEste(x);
-    h += '<div style="display:flex;justify-content:space-between;gap:8px;margin-top:3px;padding:4px 7px;border-radius:7px;background:'+(este?'rgba(245,197,24,.10)':'#0d1117')+';border:1px solid '+(este?'rgba(245,197,24,.4)':'#21262d')+'">'
-      + '<span>'+(i+1)+'. <b style="color:#fb923c">'+money(Number(x.monto)||0)+'</b>'
-      +   (x.desde ? (' · desde '+escapeHtml(x.desde)) : '') + (x.operador ? (' · '+escapeHtml(x.operador)) : '')
-      +   (este ? ' <span style="color:#f5c518;font-size:10.5px">(este)</span>' : '')+'</span>'
-      + '<span style="color:#8b949e;white-space:nowrap">'+escapeHtml(fF(x.fecha))+'</span></div>';
+    const mov = (fila && fila.chunior_movimiento_id) ? String(fila.chunior_movimiento_id) : '';
+    if(!mov) faltanMovs++;
+    const fichas = (fila && (fila.saldo_pre != null || fila.saldo_post != null))
+      ? ('🎰 ' + (fila.saldo_pre != null ? money(fila.saldo_pre) : '—') + ' → ' + (fila.saldo_post != null ? money(fila.saldo_post) : '—'))
+      : '';
+    const botonMov = mov
+      ? '<b class="mono" style="color:#86efac">N° ' + escapeHtml(mov) + '</b>'
+        + ' <button type="button" class="mini-btn" style="font-size:10px;padding:2px 6px" onclick="expedienteCopiarTexto(\'' + escapeHtml(mov) + '\')">Copiar</button>'
+      : (fila
+          ? '<span style="color:#f59e0b">sin N°</span>'
+            + ' <button type="button" class="mini-btn yellow" style="font-size:10px;padding:2px 6px" title="Busca en Chunior el movimiento de ESTE pago y lo guarda"'
+            + ' onclick="expedienteBuscarMovChunior(\'' + escapeHtml(String(fila.id)) + '\',\'' + escapeHtml(String(fila.usuario || '')) + '\',\'' + monto + '\',\'' + escapeHtml(String(fila.created_at || x.fecha || '')) + '\')">🔎 Buscar en Chunior</button>'
+          : '<span style="color:#8b949e">sin operación registrada</span>');
+    h += '<div style="margin-top:4px;padding:5px 8px;border-radius:7px;background:' + (este ? 'rgba(245,197,24,.10)' : '#0d1117') + ';border:1px solid ' + (este ? 'rgba(245,197,24,.4)' : '#21262d') + '">'
+      + '<div style="display:flex;justify-content:space-between;gap:8px">'
+      +   '<span><b style="color:#c084fc">' + desdePct + '–' + hastaPct + '%</b> · <b style="color:#fb923c">' + money(monto) + '</b>'
+      +     (x.desde ? (' · desde ' + escapeHtml(x.desde)) : '') + (x.operador ? (' · ' + escapeHtml(x.operador)) : '')
+      +     (este ? ' <span style="color:#f5c518;font-size:10.5px">(este)</span>' : '') + '</span>'
+      +   '<span style="color:#8b949e;white-space:nowrap">' + escapeHtml(fF(x.fecha)) + '</span>'
+      + '</div>'
+      + '<div style="display:flex;justify-content:space-between;gap:8px;font-size:11.5px;margin-top:2px">'
+      +   '<span>' + botonMov + '</span>'
+      +   '<span style="color:#8b949e;white-space:nowrap">' + fichas + '</span>'
+      + '</div></div>';
   });
+  if(faltanMovs) h += '<div style="margin-top:4px;font-size:11.5px;color:#f59e0b">⚠ ' + faltanMovs + ' pago' + (faltanMovs === 1 ? '' : 's') + ' sin N° de Chunior.</div>';
   if(cierre){
     h += '<div style="margin-top:6px;padding:6px 8px;border-radius:7px;background:rgba(124,58,237,.12);border:1px solid #7c3aed55">'
       + '🔒 <b>Cerrado</b>'+(cierre.etiqueta ? (': '+escapeHtml(cierre.etiqueta)) : '')

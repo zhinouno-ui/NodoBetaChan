@@ -1,6 +1,9 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
 const USER_SEARCH_URL = 'https://bo.casinodrex.com/agents/user_search';
+// Cerrar sesión DE VERDAD. Es el link "Salir" del menú lateral de Agentes. Ir a user_search con la
+// cookie muerta sólo volvía a mostrar el cartel; /logout la tira y deja la pantalla de ingreso.
+const LOGOUT_URL = 'https://bo.casinodrex.com/logout';
 const DEFAULT_TIMEOUT = 18000; // antes 30s — si un elemento no aparece (ventana trabada), falla más rápido y libera
 const STEP_DELAY = 180;
 
@@ -24,6 +27,19 @@ function delay(ms = STEP_DELAY) {
 let _abortOperacion = false;
 function _chequearFreno(donde) {
   if (_abortOperacion) throw new Error('⛔ Operación frenada por el operador' + (donde ? ' (' + donde + ')' : '') + '. No se aplicó plata.');
+}
+
+// La sesión se puede morir EN MEDIO de una espera: el cartel aparece un instante y Drex deja la
+// página inservible. Toda espera lo mira, así una búsqueda corta en un segundo con "hay que entrar
+// de nuevo" en vez de agotar 3 × 18 s y terminar en "la consulta tardó demasiado" (Juan, 13/09).
+// Después de apretar Aplicar NO se corta: ahí la plata ya pudo moverse y hay que leer el resultado.
+let _yaAplico = false;
+function _chequearSesionViva() {
+  if (_yaAplico) return;
+  if (!detectarModalSesionInvalida()) return;
+  const err = new Error('Se cayó la sesión de Agentes (Drex mostró "session is invalid"). No se operó: hay que entrar de nuevo.');
+  err.sesionInvalida = true;
+  throw err;
 }
 
 function now() {
@@ -65,6 +81,7 @@ async function waitFor(predicate, timeout = DEFAULT_TIMEOUT, interval = 120) {
   const started = now();
   while (now() - started < timeout) {
     _chequearFreno(); // el ⛔ Cancelar corta cualquier espera en curso
+    _chequearSesionViva(); // y si la sesión se murió, no tiene sentido seguir esperando
     const value = typeof predicate === 'function' ? predicate() : document.querySelector(predicate);
     if (value) return value;
     await delay(interval);
@@ -474,6 +491,15 @@ let _sesionMuertaDesde = 0;
 let _vioLoginTrasMuerte = false;
 let _opsEnCurso = 0;          // operaciones del panel corriendo en esta página (ver el ipc de abajo)
 let _recargaLoginEn = 0;
+// Cierra la sesión y deja la pantalla de ingreso. Con la cookie muerta, recargar user_search sólo
+// volvía a mostrar el cartel: se quedaba dando vueltas ahí.
+function _irAlLogin(motivo) {
+  if (Date.now() - _recargaLoginEn < 8000) return false;   // no encadenar navegaciones
+  _recargaLoginEn = Date.now();
+  console.warn('[agent] cerrando sesión de Agentes (' + (motivo || 'sesión caída') + ') → ' + LOGOUT_URL);
+  try { window.location.assign(LOGOUT_URL); } catch (_) { return false; }
+  return true;
+}
 function _marcarSesionMuerta() {
   if (!_sesionMuertaDesde) {
     _sesionMuertaDesde = Date.now();
@@ -487,15 +513,28 @@ function _marcarSesionMuerta() {
 // hacía a mano refrescando. Una vez cada 30 s como mucho: sin loops de recarga.
 setInterval(function () {
   try {
-    detectarModalSesionInvalida();
+    detectarModalSesionInvalida();          // anota la muerte aunque el cartel dure un instante
     if (!_sesionMuertaDesde || _opsEnCurso > 0) return;
-    if (detectarModalSesionInvalida() || _pantallaPideLogin()) return;
-    if (Date.now() - _recargaLoginEn < 30000) return;
-    _recargaLoginEn = Date.now();
-    console.warn('[agent] sesión caída con la app montada → a la pantalla de ingreso');
-    window.location.assign(USER_SEARCH_URL);
+    if (_pantallaPideLogin()) return;       // ya estamos en el ingreso: no hay nada que hacer
+    // Con el cartel a la vista o con la app montada da igual: la sesión está muerta y la única
+    // forma de revivirla es cerrarla y volver a entrar.
+    _irAlLogin('sesión caída sin operación en curso');
   } catch (_) {}
 }, 1500);
+
+// El cartel puede durar un instante: un observador lo agarra apenas se dibuja, aunque el vigía de
+// cada 1,5 s no llegue a verlo ("aparece unos microsegundos", Juan 13/09).
+try {
+  const _obsSesion = new MutationObserver(function () {
+    if (_sesionMuertaDesde) return;   // ya está anotado
+    try { detectarModalSesionInvalida(); } catch (_) {}
+  });
+  const _arrancarObs = function () {
+    try { if (document.body) _obsSesion.observe(document.body, { childList: true, subtree: true }); } catch (_) {}
+  };
+  if (document.body) _arrancarObs();
+  else document.addEventListener('DOMContentLoaded', _arrancarObs);
+} catch (_) {}
 
 // Detecta si la página es un ERROR del servidor/CDN (no la app de agentes):
 // CloudFront 403/404/5xx, "Request blocked", "could not be satisfied", etc.
@@ -586,25 +625,15 @@ async function cerrarModalSesionInvalida() {
     return /accept|aceptar|cerrar|close|ok/.test(t);
   }) || buttons.find(isVisible);
 
-  if (accept) {
-    try { clickElement(accept); } catch (_) {}
-  } else {
-    // Sin botón: fallback al reload diferido
-    setTimeout(() => { try { window.location.assign(USER_SEARCH_URL); } catch (_) {} }, 200);
-  }
-
-  // Esperar a que el modal desaparezca (hasta 6 segundos)
-  const tFin = Date.now() + 6000;
+  // Apretar "Aceptar" no cierra nada: el cartel se va, la app queda montada con la sesión muerta y
+  // todo lo que venga después falla en silencio (Juan, 13/09: "el preload lo acepta; lo que debe
+  // hacer es cerrar la sesión y volver a iniciarla"). Se cierra por /logout y se espera el ingreso.
+  if (accept) { try { clickElement(accept); } catch (_) {} await delay(250); }
+  _irAlLogin('cartel de sesión inválida');
+  const tFin = Date.now() + 8000;
   while (Date.now() < tFin) {
-    await delay(180);
-    if (!detectarModalSesionInvalida()) break;
-  }
-  // Y esperar a que aparezca el form de login o se cargue alguna página interna
-  const tFin2 = Date.now() + 6000;
-  while (Date.now() < tFin2) {
-    await delay(180);
-    if (document.querySelector('input[type="password"]')) break;
-    if (document.querySelector(SELECTORS.searchButton)) break;
+    await delay(200);
+    if (document.querySelector('input[type="password"]') || _pantallaPideLogin()) break;
   }
   return true;
 }
@@ -986,6 +1015,7 @@ async function applyAmount(iconName, amount, actionName, options = {}) {
 
   _chequearFreno('antes de aplicar'); // ÚLTIMO punto seguro: si el operador abortó, frena ANTES de mover plata
   clickElement(applyButton);
+  _yaAplico = true;   // de acá en adelante la plata pudo moverse: ninguna espera corta sola
 
   // Tras Aplicar, el casino muestra el modal "Resultado de la operación" con el Balance
   // Jugador REAL (post) y el texto "Operación correcta". Esa es la FUENTE del saldo
@@ -1243,11 +1273,23 @@ async function iniciarSesion(usuario, clave) {
   }
 
   if (!userInput || !passInput || !entrarBtn) {
-    if (_sesionMuertaDesde) {
-      _recargaLoginEn = 0;   // el vigía la lleva al ingreso apenas termine esta respuesta
-      return { ok: false, needsLogin: true, message: 'La sesión de Agentes estaba caída: la estoy llevando a la pantalla de ingreso. Tocá Conectar de nuevo en unos segundos.' };
+    // La sesión murió y quedó la app montada (o la página en blanco detrás del cartel): no hay
+    // formulario que llenar. Se cierra la sesión y se espera el ingreso EN ESTA MISMA llamada, para
+    // que el operador no tenga que tocar "Conectar" dos veces.
+    if (_sesionMuertaDesde || detectarModalSesionInvalida()) {
+      _irAlLogin('login sin formulario');
+      const tSalida = now();
+      while (now() - tSalida < 12000) {
+        await delay(250);
+        userInput = document.querySelector('input[type="text"], input[name="username"], input[name="user"], input[autocomplete="username"]');
+        passInput = document.querySelector('input[type="password"]');
+        entrarBtn = Array.from(document.querySelectorAll('button')).find(btn => /entrar|ingresar|login|iniciar|sign.?in/i.test(btn.textContent || ''));
+        if (userInput && passInput && entrarBtn) break;
+      }
     }
-    return { ok: false, message: 'No se encontró el formulario de login en el backoffice.' };
+    if (!userInput || !passInput || !entrarBtn) {
+      return { ok: false, needsLogin: true, message: 'La sesión de Agentes estaba caída y se cerró. Tocá Conectar de nuevo en unos segundos.' };
+    }
   }
 
   // Inyectar credenciales con disparo de eventos React
@@ -1296,8 +1338,17 @@ ipcRenderer.on('drex:automation:run', async (event, request = {}) => {
     }
     if (METODOS_OPERACION.has(method)) _abortOperacion = false; // limpiar freno viejo al arrancar una operación
     _opsEnCurso++;
+    _yaAplico = false;
     let result;
-    try { result = await api[method](...args); } finally { _opsEnCurso = Math.max(0, _opsEnCurso - 1); }
+    try { result = await api[method](...args); }
+    catch (e) {
+      // La sesión se murió en medio y ANTES de mover plata: no es un error técnico ni un timeout,
+      // es "hay que entrar de nuevo". Devuelto como estado, el panel abre el login en vez de
+      // quedarse en "la consulta tardó demasiado" (Juan, 13/09).
+      if (e && e.sesionInvalida) result = status({ message: e.message });
+      else throw e;
+    }
+    finally { _opsEnCurso = Math.max(0, _opsEnCurso - 1); }
     ipcRenderer.send('drex:automation:result', { requestId, ok: true, result });
   } catch (error) {
     ipcRenderer.send('drex:automation:result', { requestId, ok: false, error: error.message || String(error) });
