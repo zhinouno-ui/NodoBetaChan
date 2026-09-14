@@ -2225,7 +2225,12 @@ const _rv2FinalizarInterno = async function(stCapturado){
     // El motivo va UNA vez: si ya se le dijo este mismo motivo, no se repite en cada cuota.
     const _avisarAjuste = _ajustado && _motivoAjuste && _motivoAjuste !== String(st._motivoAvisado||'');
     const _pre = _avisarAjuste ? ('📝 Ajustamos tu retiro a '+deps.money(montoTotal)+'. '+_motivoAjuste+'\n') : '';
-    await deps.notificarUsuarioEnChat(st.usuario, _pre+(st.obs?st.obs+'\n':'')+msg, st.id, _estadoFinal);
+    // Al chat VIVO del portal (D-99): antes iba a la generación de chat que el portal ya no lee, o
+    // sea a ningún lado. Si no tiene conversación abierta no se le abre una por cada pago: para ese
+    // caso ya sale el push de acá abajo.
+    const _txtAviso = _pre+(st.obs?st.obs+'\n':'')+msg;
+    if(typeof deps.window.avisarJugadorEnChat === 'function') await deps.window.avisarJugadorEnChat(st.usuario, _txtAviso);
+    else await deps.notificarUsuarioEnChat(st.usuario, _txtAviso, st.id, _estadoFinal);
   }catch(_e){}
   // Canal EXTRA: push directo con título/cuerpo claros del parcial (no depende del chat_thread).
   try{ notificarRetiroParcialPush(st.usuario, total, pagadoAcum, montoTotal, completo); }catch(_e){}

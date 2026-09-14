@@ -2020,3 +2020,36 @@ test('gasto de oficina · sin notas no se anota (es el único registro de en qu�
   assert.match(src, /tipo:'GASTO'/);
   assert.match(src, /3\.5\*1024\*1024/, 'una imagen enorme no entra en la pantalla de Chunior');
 });
+
+// ── D-99 · al jugador se le avisa por el chat que él ve ─────────────────────────────────────
+test('aviso al jugador · usa su conversación del portal, no la tabla vieja', async () => {
+  const sb = arrancarPanel();
+  let porHilo = null, abrioChat = 0;
+  sb.nodoEnviarMensajePortal = async (u, txt) => { porHilo = { u, txt }; return { ok: true }; };
+  sb.nodoIniciarChat = async () => { abrioChat++; return { ok: true }; };
+
+  const r = await sb.avisarJugadorEnChat('pruebaxx', '💸 Te transferimos $ 5.000');
+  assert.equal(r.ok, true);
+  assert.equal(porHilo.u, 'pruebaxx');
+  assert.equal(abrioChat, 0, 'un pago de retiro no abre un chat nuevo: para eso está el push');
+
+  // La clave sí abre conversación: el portal le promete la respuesta por ahí.
+  await sb._avisarClaveAlJugador('pruebaxx', '✅ Tu clave fue actualizada correctamente.');
+  assert.equal(abrioChat, 1);
+});
+
+test('aviso al jugador · sin conversación abierta no inventa nada', async () => {
+  const sb = arrancarPanel();
+  let legacy = 0;
+  sb.nodoEnviarMensajePortal = async () => ({ ok: false, error: 'sin-ticket' });
+  sb.notificarUsuarioEnChat = async () => { legacy++; return null; };
+  const r = await sb.avisarJugadorEnChat('pruebaxx', 'hola');
+  assert.equal(r.error, 'sin-ticket');
+  assert.equal(legacy, 0, 'escribir en la tabla que el portal no lee no sirve para nada');
+});
+
+test('retiro · el pago le avisa al jugador por el chat vivo', () => {
+  const b = _bundlePortal();
+  assert.match(b, /deps\.window\.avisarJugadorEnChat\(st\.usuario, _txtAviso\)/);
+  assert.match(b, /notificarRetiroParcialPush/, 'el push sigue saliendo igual');
+});

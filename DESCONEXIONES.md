@@ -3172,3 +3172,31 @@ El archivo del portal lo lee cualquiera con "ver código fuente". Tenía 401 not
 criterios nuestros. Se sacaron todas (sólo líneas enteras de comentario, verificando que el archivo
 siga siendo válido). El "por qué" de cada cosa sigue documentado acá, en DESCONEXIONES.md, que no
 sale del repo.
+
+
+## D-99 · Al jugador no le llegaba el aviso del pago de su retiro · RESUELTO
+
+Decisión de Juan (14/09): *"si avisale al jugador"*.
+
+El mensaje del pago ("Te transferimos $X · restan $Y") se mandaba con `notificarUsuarioEnChat`, que
+escribe en `chat_sesiones` / `chat_mensajes` — la generación de chat que el portal ya no lee (ver
+D-92). O sea: a ningún lado. El **push sí salía**, así que el jugador se enteraba por la notificación
+del celular, pero en el chat no quedaba nada.
+
+Ahora el aviso entra en la conversación que el jugador ve en el portal. Un solo lugar para todos los
+avisos (`avisarJugadorEnChat`), con una diferencia a propósito:
+
+- **Lo que el jugador PIDIÓ por el chat** (la clave): si no tiene conversación abierta, se le abre.
+  El portal le prometió "te avisamos por este mismo chat".
+- **Lo que sale solo** (el pago de un retiro): sólo si YA tiene conversación abierta. Abrir un hilo
+  nuevo por cada pago llenaría la bandeja de los operadores, y para ese caso el jugador igual recibe
+  el push.
+
+**Sigue pendiente** lo mismo que en D-92 para el resto de los avisos automáticos (carga acreditada,
+rechazos): siguen yendo a la tabla vieja. Hay que decidir uno por uno, porque cada uno que se pase al
+chat vivo marca como respondido un chat que puede estar esperando a un operador.
+
+### Versión 2.1.0
+
+La 1.2.1 nunca se subió (verificado: no hay release publicada y desde acá no hay acceso a GitHub).
+Como no había nada publicado, el salto a **2.1.0** es gratis y hace que todas las PCs la tomen solas.

@@ -9760,15 +9760,32 @@ try{ setInterval(_sondaSesionTick, SONDA_CADA_MS); }catch(_e){}
 // nunca se enteraba (Juan, 12/09). nodoIniciarChat usa su hilo si lo tiene y, si no, lo abre.
 // Sólo para la clave: pasar TODOS los avisos por acá marcaría como respondidos chats que esperan a
 // un operador, cada vez que se acredita una carga. Eso queda anotado en D-92, sin tocar.
-async function _avisarClaveAlJugador(usuario, texto){
+// El aviso va a la conversación que el jugador ve en el portal. notificarUsuarioEnChat (abajo)
+// escribe en chat_sesiones / chat_mensajes, la generación de chat que el portal ya no lee.
+//   crearSiNoHay:true  → si no tiene conversación abierta, se le abre una. Para lo que PIDIÓ por el
+//                        chat (la clave): el portal le promete "te avisamos por este mismo chat".
+//   crearSiNoHay:false → sólo si ya tiene conversación. Para los avisos que salen solos (un pago de
+//                        retiro), así no se llena la bandeja con un hilo nuevo por cada pago; para
+//                        ese caso el jugador igual recibe la notificación del celular.
+async function avisarJugadorEnChat(usuario, texto, opts){
+  const crear = !!(opts && opts.crearSiNoHay);
   try{
-    if(typeof window.nodoIniciarChat === 'function'){
+    if(crear && typeof window.nodoIniciarChat === 'function'){
       const r = await window.nodoIniciarChat(usuario, texto);
       if(r && r.ok) return r;
-      console.warn('[clave] no se pudo avisar por el chat del portal:', r && r.error);
+      console.warn('[aviso] no se pudo abrir el chat del portal:', r && r.error);
+    } else if(typeof window.nodoEnviarMensajePortal === 'function'){
+      const r = await window.nodoEnviarMensajePortal(usuario, texto, false);
+      if(r && r.ok) return r;
+      if(r && r.error === 'sin-ticket') return { ok:false, error:'sin-ticket' };   // sin chat abierto: ya salió el push
+      console.warn('[aviso] el chat del portal falló:', r && r.error);
     }
-  }catch(e){ console.warn('[clave] aviso por chat falló:', e); }
+  }catch(e){ console.warn('[aviso] chat vivo falló:', e); }
   try{ return await notificarUsuarioEnChat(usuario, texto); }catch(_e){ return null; }
+}
+window.avisarJugadorEnChat = avisarJugadorEnChat;
+async function _avisarClaveAlJugador(usuario, texto){
+  return avisarJugadorEnChat(usuario, texto, { crearSiNoHay:true });
 }
 window._avisarClaveAlJugador = _avisarClaveAlJugador;
 
