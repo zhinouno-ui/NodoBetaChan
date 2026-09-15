@@ -686,21 +686,30 @@ test('un turno es un bloque de un día, no una franja horaria de todos', () => {
   const enTurno = vm.runInContext('_enTurno', sb);
   const bordes = vm.runInContext('_bordesTurno', sb);
 
-  // Hora argentina = UTC−3. Las 10:00 AR de hoy son las 13:00 UTC.
+  // Hora argentina = UTC−3. Las 10:00 AR del día de referencia son las 13:00 UTC.
+  // Se fija un mediodía concreto en vez de usar el reloj: corrida a las 00:14 AR, "TM" todavía no
+  // arrancó ese día y el turno vigente es el de AYER, así que "ayer 07:30" sí caía dentro y la
+  // prueba fallaba sola al pasar la medianoche. El panel estaba bien; la prueba, no.
+  const REF = Date.UTC(2026, 8, 14, 15, 0);            // 14/09/2026 12:00 AR
   const hoyAR = (h, m) => {
-    const ahora = new Date(Date.now() - 3 * 3600 * 1000);
-    return new Date(Date.UTC(ahora.getUTCFullYear(), ahora.getUTCMonth(), ahora.getUTCDate(), h, m || 0) + 3 * 3600 * 1000);
+    const ar = new Date(REF - 3 * 3600 * 1000);
+    return new Date(Date.UTC(ar.getUTCFullYear(), ar.getUTCMonth(), ar.getUTCDate(), h, m || 0) + 3 * 3600 * 1000);
+  };
+  const enTurnoRef = (ts, turno) => {
+    const b = bordes(turno, REF);
+    const x = new Date(ts).getTime();
+    return !!b && x >= b.desde && x < b.hasta;
   };
 
-  const b = bordes('TM');
+  const b = bordes('TM', REF);
   assert.ok(b && b.hasta - b.desde === 8 * 3600 * 1000, 'un turno dura 8 h');
 
   // Mismo horario, otro día: NO es del turno.
   const ayerMismaHora = new Date(hoyAR(7, 30).getTime() - 24 * 3600 * 1000);
-  assert.equal(enTurno(ayerMismaHora.toISOString(), 'TM'), false, 'las 07:30 de ayer no son de este turno');
+  assert.equal(enTurnoRef(ayerMismaHora.toISOString(), 'TM'), false, 'las 07:30 de ayer no son de este turno');
 
   // Fuera de la franja tampoco.
-  assert.equal(enTurno(hoyAR(15, 0).toISOString(), 'TM'), false, 'las 15:00 no son TM');
+  assert.equal(enTurnoRef(hoyAR(15, 0).toISOString(), 'TM'), false, 'las 15:00 no son TM');
 
   // Sin fecha no se cuenta: antes entraba siempre y engordaba el KPI.
   assert.equal(enTurno(null, 'TM'), false);
@@ -2195,18 +2204,44 @@ test('Drex · el cierre de sesión no puede pisar una operación ni un login (el
   assert.equal(fue.length, 1);
   assert.match(fue[0], /\/logout$/);
 
-  api.set({ t: 0 });
-  assert.equal(api.ir('otra vez'), false, 'una sola salida por caída');
-  api.muerta();
-  api.set({ t: 0 });
-  assert.equal(api.ir('misma caída'), false);
+  assert.equal(api.ir('enseguida otra vez'), false, 'no se encadenan navegaciones');
   assert.equal(fue.length, 1, 'si no, navega una y otra vez encima del operador');
+
+  // Pero SÍ tiene que poder reintentar más tarde: si el primer intento no dejó la pantalla de
+  // ingreso, prohibirlo para siempre deja la ventana encerrada (D-102).
+  api.set({ t: Date.now() - 26000 });
+  assert.equal(api.ir('un rato después'), true);
+  assert.equal(fue.length, 2);
+});
+
+test('Drex · la salida diferida no se mata a sí misma', () => {
+  const src = fs.readFileSync(path.join(RAIZ, 'agent-preload.js'), 'utf8');
+  const m = src.match(/function _irAlLogin\([^)]*\) ?\{[\s\S]*?\n\}/);
+  assert.ok(m, 'no encontré _irAlLogin');
+  const armar = new Function('window', 'LOGOUT_URL', 'console', 'setTimeout',
+    'let _opsEnCurso = 0, _loginEnCurso = false, _yaFuiAlLogin = false, _recargaLoginEn = 0;\n'
+    + m[0] + '\nreturn { ir:_irAlLogin, set:function(o){ if("ops" in o) _opsEnCurso=o.ops; if("login" in o) _loginEnCurso=o.login; } };');
+  const fue = [], pendientes = [];
+  const api = armar({ location:{ assign:(u)=>fue.push(u) } }, 'https://bo.casinodrex.com/logout',
+    { warn(){} }, (fn)=>pendientes.push(fn));
+
+  // Con el login en curso: la inmediata NO va, la diferida sí (pero recién después de contestar).
+  api.set({ login: true, ops: 1 });
+  assert.equal(api.ir('inmediata'), false);
+  assert.equal(api.ir('diferida', true), true);
+  assert.equal(fue.length, 0, 'no puede navegar mientras la llamada sigue abierta: eso la mataba');
+  assert.equal(pendientes.length, 1, 'queda agendada para después');
+  pendientes[0]();
+  assert.match(fue[0], /\/logout$/, 'y recién ahí lleva la ventana al ingreso');
 });
 
 test('Drex · ni el login ni el cartel navegan por su cuenta', () => {
   const src = fs.readFileSync(path.join(RAIZ, 'agent-preload.js'), 'utf8');
-  assert.match(src, /if \(_opsEnCurso > 0 \|\| _loginEnCurso\) return false;/, 'el freno vive dentro de _irAlLogin');
-  assert.ok(!/_irAlLogin\('login sin formulario'\)/.test(src), 'iniciarSesion ya no navega');
+  assert.match(src, /if \(!diferido && \(_opsEnCurso > 0 \|\| _loginEnCurso\)\) return false;/,
+    'el freno vive dentro de _irAlLogin');
+  // El login puede pedir la salida, pero SÓLO diferida: navegar en el momento se mataba a sí mismo.
+  assert.ok(!/_irAlLogin\('login sin formulario'\);/.test(src), 'nunca inmediata');
+  assert.match(src, /_irAlLogin\('login sin formulario', true\)/, 'diferida: navega después de contestar');
   assert.match(src, /_loginEnCurso = true;[\s\S]{0,160}_iniciarSesionInterno/, 'mientras entra, queda marcado');
   // El cartel se cierra con su botón: Drex redirige solo. Navegar encima era pelearle al redirect.
   assert.match(src, /else _irAlLogin\('cartel de sesión inválida sin botón'\)/);

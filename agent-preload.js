@@ -498,13 +498,20 @@ let _loginEnCurso = false;    // el operador está entrando: NADA puede recargar
 // NUNCA navega si hay una operación corriendo o si se está iniciando sesión: la navegación descarga
 // la página, la operación en curso no contesta nunca y el panel muestra "la página de Agentes se
 // recargó durante la operación". El operador reintentaba y volvía a pasar: loop (D-101).
-function _irAlLogin(motivo) {
-  if (_opsEnCurso > 0 || _loginEnCurso) return false;
-  if (_yaFuiAlLogin) return false;                         // ya se salió por esta caída
-  if (Date.now() - _recargaLoginEn < 8000) return false;   // no encadenar navegaciones
+// diferido = navegar DESPUÉS de contestar. Lo usa el login: navegar en el momento se mata a sí
+// mismo (el loop de D-101), pero no navegar nunca dejaba la ventana encerrada, sin ingreso ni app.
+function _irAlLogin(motivo, diferido) {
+  if (!diferido && (_opsEnCurso > 0 || _loginEnCurso)) return false;
+  // Espaciada, no "una sola vez": si el primer intento no dejó la pantalla de ingreso, tiene que
+  // haber un segundo. Lo que evita el loop es el espacio entre intentos, no prohibirlos (D-102).
+  if (Date.now() - _recargaLoginEn < 25000) return false;
   _recargaLoginEn = Date.now();
   _yaFuiAlLogin = true;
   console.warn('[agent] cerrando sesión de Agentes (' + (motivo || 'sesión caída') + ') → ' + LOGOUT_URL);
+  if (diferido) {
+    setTimeout(function () { try { window.location.assign(LOGOUT_URL); } catch (_) {} }, 400);
+    return true;
+  }
   try { window.location.assign(LOGOUT_URL); } catch (_) { return false; }
   return true;
 }
@@ -1303,8 +1310,11 @@ async function _iniciarSesionInterno(usuario, clave) {
       if (userInput && passInput && entrarBtn) break;
     }
     if (!userInput || !passInput || !entrarBtn) {
-      // El vigía la lleva al ingreso cuando no haya nada corriendo (ahí sí es seguro navegar).
-      return { ok: false, needsLogin: true, message: 'La ventana de Agentes todavía no muestra el ingreso. Esperá unos segundos y tocá Conectar de nuevo.' };
+      // Ni formulario ni app: la ventana está encerrada. Se pide la salida DIFERIDA — navega recién
+      // después de contestar esto, así no se mata la propia llamada (D-101) pero la próxima vez ya
+      // hay pantalla de ingreso (D-102).
+      _irAlLogin('login sin formulario', true);
+      return { ok: false, needsLogin: true, message: 'La ventana de Agentes no mostraba el ingreso: la estoy llevando ahí. Tocá Conectar de nuevo en unos segundos.' };
     }
   }
 
