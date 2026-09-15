@@ -711,6 +711,7 @@
     if(!aVencer.length) return;
 
     let cerrados = 0;
+    const nombres = [];
     for(const s of aVencer){
       const sid = idSol(s);
       if(!sid) continue;
@@ -722,12 +723,20 @@
         // Limpiar del mapa de aceptados
         const usuario = usuarioSol(s);
         if(usuario){const map=getAccepted();delete map[U(usuario)];localStorage.setItem(ACCEPT_KEY,JSON.stringify(map));}
+        if(usuario) nombres.push(usuario);
         cerrados++;
       }catch(e){console.warn("[auto-close]",sid,e);}
     }
 
     if(cerrados > 0){
-      try{if(typeof toast==="function")toast(`${cerrados} consulta${cerrados>1?"s":""} cerrada${cerrados>1?"s":""} automáticamente`,"blue");}catch(_e){}
+      // QUÉ se cerró y POR QUÉ. "1 consulta cerrada automáticamente" a secas dejaba al operador sin
+      // saber qué había pasado: no figura en el historial ni llega a Nexo porque NO es una operación,
+      // sólo cambia el estado de ese chat. Los datos ya estaban acá; sólo no se usaban.
+      const quien = nombres.slice(0,3).join(", ") + (nombres.length > 3 ? (" y "+(nombres.length-3)+" más") : "");
+      const msg = cerrados === 1
+        ? `✓ Cerré la consulta de ${quien || "un jugador"} · ya respondida y sin contestar hace ${AUTOCLOSE_HORAS} h`
+        : `✓ Cerré ${cerrados} consultas ya respondidas y sin contestar hace ${AUTOCLOSE_HORAS} h${quien ? " · "+quien : ""}`;
+      try{if(typeof toast==="function")toast(msg,"blue");}catch(_e){}
       try{if(typeof cargarSolicitudesPortal==="function")await cargarSolicitudesPortal(true);}catch(_e){}
       renderChatListStep2Final();
     }

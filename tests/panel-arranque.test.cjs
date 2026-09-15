@@ -2283,3 +2283,14 @@ test('ficha del retiro · sin pagos anotados no dice "falta" de algo ya pagado',
   assert.match(html, /Pidió/, 'el ajuste sí se muestra: es lo que explica el monto');
   assert.ok(!/falta/.test(html), 'decía "Pagado $ 0 · falta $ 67.208" de un retiro ya cobrado entero');
 });
+
+// ── D-104 · un aviso que no se puede entender es peor que no avisar ─────────────────────────
+test('chat · el cierre automático dice de quién es la consulta y por qué se cerró', () => {
+  const src = fs.readFileSync(path.join(RAIZ, 'renderer', 'chat', 'chat-hilos.js'), 'utf8');
+  // Decía "1 consulta cerrada automáticamente" y el operador no tenía forma de saber qué era:
+  // no deja fila en el historial ni llega a Nexo, porque no es una operación (Juan, 15/09).
+  assert.ok(!/consulta\$\{cerrados>1\?"s":""\} cerrada/.test(src), 'el aviso viejo no decía nada');
+  assert.match(src, /Cerré la consulta de \$\{quien/, 'de quién');
+  assert.match(src, /ya respondida y sin contestar hace \$\{AUTOCLOSE_HORAS\} h/, 'y por qué');
+  assert.match(src, /nombres\.push\(usuario\)/, 'los nombres ya estaban a mano');
+});
