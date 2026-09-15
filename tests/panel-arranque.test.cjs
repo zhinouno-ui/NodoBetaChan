@@ -2053,3 +2053,110 @@ test('retiro · el pago le avisa al jugador por el chat vivo', () => {
   assert.match(b, /deps\.window\.avisarJugadorEnChat\(st\.usuario, _txtAviso\)/);
   assert.match(b, /notificarRetiroParcialPush/, 'el push sigue saliendo igual');
 });
+
+// ── D-100 · el parcial no queda colgado y el depósito sigue andando ─────────────────────────
+function _pantallaChunior(estado){
+  const campo = (id) => ({ id, value:'', dispatchEvent(){}, querySelector(){ return null; } });
+  const sel = campo('id_cuenta_destino');
+  sel.querySelector = (s) => /1170/.test(s) ? {} : null;
+  const monto = campo('id_monto'), notas = campo('id_notas');
+  const guardar = { click(){ estado.guardado = true; }, disabled:false };
+  const exito = { textContent:'El movimiento N° 9673700 se agregó correctamente', querySelector(){ return null; } };
+  return {
+    getElementById: (id) => ({ id_cuenta_destino:sel, id_monto:monto, id_notas:notas })[id] || null,
+    querySelector: (s) => {
+      if(/_addanother|_save|submit/.test(s)) return guardar;
+      if(/success/.test(s)) return estado.guardado ? exito : null;
+      return null;
+    },
+    querySelectorAll: () => [],
+    campos: { sel, monto, notas }
+  };
+}
+function _correrEnChunior(script, doc){
+  return new Function('document','Event','File','DataTransfer','atob','Uint8Array','location',
+    'return ' + script)(doc, function(){}, function(){}, function(){}, () => '', Uint8Array,
+    { href:'https://bo.chunior.com/transacciones/depositossinreclamar/add/' });
+}
+
+test('chunior · el depósito sin reclamar llena el formulario y lo guarda', async () => {
+  const sb = arrancarPanel();
+  sb.toast = () => {};
+  // El código real espera entre paso y paso; acá esos tiempos se cumplen de una.
+  sb.setTimeout = (fn) => setTimeout(fn, 0);
+  const estado = { guardado:false };
+  const doc = _pantallaChunior(estado);
+  const fallos = [];
+  sb.chunior = { navigate: async () => {}, exec: async (s) => {
+    try{ return _correrEnChunior(s, doc); }
+    catch(e){ fallos.push(String(e && e.message).slice(0, 120)); throw e; }
+  } };
+
+  const r = await sb.registrarDepoSinReclamarEnChunior('1170', 25000, 'transferencia sin usuario');
+
+  assert.equal(r.ok, true, 'el depósito tiene que quedar anotado · fallos: ' + (fallos.join(' | ') || 'ninguno') + ' · error: ' + (r.error || ''));
+  assert.equal(r.movimientoId, '9673700', 'y traer su N° de Chunior');
+  assert.equal(estado.guardado, true, 'hay que apretar Guardar');
+  assert.equal(doc.campos.sel.value, '1170');
+  assert.equal(doc.campos.monto.value, '25000');
+  assert.equal(doc.campos.notas.value, 'transferencia sin usuario');
+  assert.equal(fallos.length, 0, 'el script que se le manda a Chunior tiene que correr sin errores');
+});
+
+test('chunior · el script que se le manda a Chunior no lleva funciones sin definir', () => {
+  const src = fs.readFileSync(path.join(RAIZ, 'renderer', 'core', 'chunior-movimientos.js'), 'utf8');
+  // El .replace() al final de una concatenación se aplica SÓLO al último pedazo: el reemplazo no
+  // ocurría y a la página le llegaba "_bilSel(" sin definir. No se podía anotar nada (D-100).
+  assert.ok(!/\.replace\('_bilSel\(/.test(src), 'no se arma el script con reemplazos de texto');
+  assert.ok(!/_bilSel\(/.test(src.replace(/_readyChuniorJs/g, '')), 'no queda ninguna llamada a _bilSel');
+  assert.match(src, /function _readyChuniorJs\(uid\)/);
+});
+
+test('chunior · si el formulario no aparece, el error dice qué había en pantalla', () => {
+  // Este camino espera 10 s a propósito: se comprueba leyendo el código, no ejecutándolo.
+  const src = fs.readFileSync(path.join(RAIZ, 'renderer', 'core', 'chunior-movimientos.js'), 'utf8');
+  assert.match(src, /El formulario de Chunior no apareció en 10s/);
+  assert.match(src, /pantalla: '\+String\(d\.url/, 'tiene que decir en qué pantalla quedó');
+  assert.match(src, /campos: '\+\(\(d\.campos/, 'y qué campos había');
+  assert.ok(!/¿cambió la página de Chunior\?/.test(src), '"no te deja agregar" no alcanza para arreglar nada');
+});
+
+test('parcial · un pago que no quedó anotado igual cuenta: el historial lo tiene', () => {
+  const sb = arrancarPanel();
+  // Caso real #222128: se pagaron 200.000 + 350.000 + 200.000, pero el progreso quedó en 550.000.
+  sb._historialData = [
+    { id:1, solicitud_id:900222, tipo:'RETIRO', estado:'OK', monto:200000 },
+    { id:2, solicitud_id:900222, tipo:'RETIRO', estado:'OK', monto:350000 },
+    { id:3, solicitud_id:900222, tipo:'RETIRO', estado:'OK', monto:200000 }
+  ];
+  const sol = { ID:900222, TIPO:'RETIRO', ESTADO:'EN_PROCESO', USUARIO:'jugadordeprueba',
+    metadata:{ monto_pagado:750000, retiro_parcial:{ total:750000, pagado:550000, pagos:[{monto:200000},{monto:350000}] } } };
+
+  const pp = sb._retiroParcialInfo(sol);
+  assert.equal(pp.total, 750000);
+  assert.equal(pp.pagadoHistorial, 750000, 'la suma de lo que salió de verdad');
+  assert.equal(pp.pagado, 750000, 'cobró todo, aunque un contador diga otra cosa');
+  assert.equal(pp.restante, 0, 'la caja pedía "falta $200.000" de algo ya pagado');
+  assert.equal(pp.saldadoPorAlguna, true);
+  assert.equal(pp.discrepa, true, 'hay que poder avisar que los registros no coinciden');
+  assert.equal(sb._retiroParcialSigueAbierto(sol), false, 'no vuelve a la lista de pendientes');
+});
+
+test('parcial · un retiro cerrado a mano no vuelve a la caja', () => {
+  const sb = arrancarPanel();
+  const cerrado = { ID:900223, TIPO:'RETIRO', ESTADO:'PAGADA',
+    metadata:{ etapa:'RETIRO_CIERRE_MANUAL', retiro_parcial:{ total:750000, pagado:550000 } } };
+  assert.equal(sb._retiroCerradoAMano(cerrado), true);
+  assert.equal(sb._retiroParcialSigueAbierto(cerrado), false);
+  const b = _bundlePortal();
+  assert.match(b, /_retiroCerradoAMano && deps\.window\._retiroCerradoAMano\(s\)\) return false/,
+    'la caja de parciales tiene que respetar el cierre del operador');
+});
+
+test('parcial · si el pago no entró en la base, el panel lo nota y no pierde los anteriores', () => {
+  const b = _bundlePortal();
+  assert.match(b, /_pagRpc < pagadoAcum - 0\.5/, 'se compara contra lo que contestó la base');
+  assert.match(b, /no entró/);
+  assert.match(b, /pagos:_pagosPrev/, 'el respaldo conserva los pagos ya anotados');
+  assert.match(b, /return \{ ok:true, detail:'forma '\+f\.k, data:\(r && r\.data\) \|\| null \}/);
+});

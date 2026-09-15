@@ -17,6 +17,13 @@ const _BIL_SEL_JS = '(function(uid){' +
   'var ss=document.querySelectorAll("select");' +
   'for(var i=0;i<ss.length;i++){ if(ss[i].querySelector(\'option[value="\'+uid+\'"]\')) return ss[i]; }' +
   'return null;})';
+// El chequeo de "¿está el formulario?" se arma DERECHO, sin reemplazos de texto: antes era un
+// .replace() al final de una concatenación, que en JS se aplica sólo al último pedazo. El reemplazo
+// no ocurría, la página recibía una función sin definir y no se podía anotar nada (D-100).
+function _readyChuniorJs(uid){
+  return '(function(){return !!(' + _BIL_SEL_JS + '(' + JSON.stringify(String(uid)) + ')'
+    + '&&document.getElementById("id_monto")&&document.getElementById("id_notas"));})()';
+}
 async function _registrarAdminChunior(addUrl, chunior_uid, monto, notas, opts){
   // Bloqueo del cotejo (igual que en registrarCargaEnChunior): esperar la declaración abierta.
   for(let _w=0; window._cotejoDeclarando && _w<90; _w++){ await new Promise(function(r){setTimeout(r,1000);}); }
@@ -27,10 +34,19 @@ async function _registrarAdminChunior(addUrl, chunior_uid, monto, notas, opts){
   while(Date.now() - t0 < 10000){
     // El desplegable de billetera no se llama igual en todas las pantallas (gastos locales tiene el
     // suyo): se busca por sus nombres conocidos y, si no, por el que tenga esta billetera adentro.
-    ready = await window.chunior.exec('(function(){return !!(_bilSel('+JSON.stringify(String(chunior_uid))+')&&document.getElementById("id_monto")&&document.getElementById("id_notas"));})()'.replace('_bilSel(', _BIL_SEL_JS+'(')).catch(function(){return false;});
+    ready = await window.chunior.exec(_readyChuniorJs(chunior_uid)).catch(function(){return false;});
     if(ready) break; await new Promise(function(r){ setTimeout(r,300); });
   }
-  if(!ready) return { ok:false, movimientoId:null, error:'Formulario no apareció en 10s (¿cambió la página de Chunior?)' };
+  if(!ready){
+    // Sin esto, "no te deja agregar" es todo lo que se sabe. Ahora el error dice qué había en la
+    // pantalla, que es lo único que permite arreglarlo sin estar sentado al lado (D-100).
+    let _diag = '';
+    try{
+      const d = await window.chunior.exec('(function(){var ids=[];document.querySelectorAll("select,input,textarea").forEach(function(e){ if(e.id) ids.push(e.id); });return {url:location.href, campos:ids.slice(0,12), titulo:(document.title||"").slice(0,60)};})()');
+      if(d) _diag = ' · pantalla: '+String(d.url||'').split('/').slice(3).join('/')+' · campos: '+((d.campos||[]).join(', ')||'ninguno');
+    }catch(_e){}
+    return { ok:false, movimientoId:null, error:'El formulario de Chunior no apareció en 10s'+_diag };
+  }
   let injectRes;
   try{
     injectRes = await window.chunior.exec(

@@ -3200,3 +3200,58 @@ chat vivo marca como respondido un chat que puede estar esperando a un operador.
 
 La 1.2.1 nunca se subió (verificado: no hay release publicada y desde acá no hay acceso a GitHub).
 Como no había nada publicado, el salto a **2.1.0** es gratis y hace que todas las PCs la tomen solas.
+
+
+## D-100 · "El parcial queda colgado: ese premio lo pagué hace horas y si lo cierro vuelve" · RESUELTO
+
+Reportado por OFI-SAN el 14/09 con el retiro #222128 (jairocarp, $750.000).
+
+**Qué pasó, según la base**: se pagaron los tres tramos — 200.000 (16:50), 350.000 (18:14) y 200.000
+(18:36), los tres con su movimiento de Chunior. Pero el **último** pago quedó sólo en el contador
+(`monto_pagado` = 750.000) y **no** en la lista de pagos (`retiro_parcial.pagado` = 550.000). La caja
+mira esa lista, así que siguió pidiendo "falta $200.000" de un premio ya pagado. Es el bug que el
+propio código documenta (el pago que CIERRA el retiro no se anotaba) y que la versión nueva corrige:
+esa PC todavía tenía la anterior.
+
+Que el bug de origen esté arreglado no alcanza: el panel no puede quedarse colgado por un contador.
+
+- **El progreso ahora mira tres fuentes** y manda la más alta: la lista de pagos (la escribe la base),
+  el contador del panel, y **la suma del historial** — las transferencias que de verdad salieron, que
+  es el único registro que no es un contador. Con eso, #222128 pasa a "✔ saldado" solo, sin tocar nada.
+  Si las fuentes no coinciden queda marcado (`discrepa`) para poder avisarlo.
+- **Un retiro cerrado a mano no vuelve a la caja**, aunque el estado no haya llegado a guardarse. Antes
+  se cerraba, reaparecía en el refresco siguiente, y no había forma de sacarlo.
+- **Después de pagar se verifica que el progreso avanzó**: la base devuelve cuánto quedó pagado y el
+  panel lo compara. Si contesta bien pero el pago no entró, se guarda el respaldo —**conservando los
+  pagos anteriores**, que antes se pisaban— y se avisa en pantalla.
+
+### "No te deja agregar depos sin reclamar tampoco"
+
+Reportado en el mismo mensaje. Se agregó una prueba que ejecuta el depósito sin reclamar de punta a
+punta contra una pantalla de Chunior simulada (llena billetera, monto y notas, aprieta Guardar y lee
+el N°): **pasa**, así que el cambio del Gasto de oficina no lo rompió. Lo que sí faltaba era poder
+diagnosticarlo: si el formulario no aparece en 10 s, el error ahora dice **en qué pantalla quedó la
+ventana y qué campos tiene** (por ejemplo, si quedó en el login de Chunior). Con "no te deja agregar"
+no hay forma de arreglar nada a distancia.
+
+
+### La 2.1.0 rompió TODO lo que se anota en Chunior (regresión mía)
+
+Lo que en el reporte aparece como *"no te deja agregar depos sin reclamar tambien"* no era el
+depósito: era **todo** — propina, depósito y gasto. Al agregar el Gasto de oficina armé el chequeo
+del formulario así:
+
+    '...(_bilSel(' + uid + ')...)'.replace('_bilSel(', _BIL_SEL_JS + '(')
+
+En JavaScript ese `.replace()` se aplica **sólo al último pedazo de la concatenación**, no al texto
+entero. El reemplazo nunca ocurría, a la ventana de Chunior le llegaba `_bilSel(...)` —que no existe
+de ese lado— y tiraba ReferenceError. El panel lo leía como "el formulario no apareció en 10s" y no
+se podía anotar nada. Salió publicado en la 2.1.0 y se corrige en la **2.1.1**.
+
+Ahora el script se arma derecho (`_readyChuniorJs`) y hay una prueba que **ejecuta** el depósito
+sin reclamar contra una pantalla de Chunior simulada: llena billetera, monto y notas, aprieta Guardar
+y lee el N° del movimiento. Si el script vuelve a romperse, la prueba falla antes de publicar.
+
+**Lección, anotada donde corresponde**: las pruebas que sólo miran el código con expresiones
+regulares no habrían visto esto nunca. Lo que mueve plata o habla con otra ventana necesita una
+prueba que lo **corra**.

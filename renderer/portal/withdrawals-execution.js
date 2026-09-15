@@ -44,7 +44,8 @@ async function notificarRetiroParcialPortal(solicitudId, montoPago, pagadoAcum, 
       // Guardar una preferencia local no forma parte de la transacción. Si falla,
       // el pago sigue confirmado y no debe enviarse otra vez.
       try{ deps.localStorage.setItem('nodo_rpc_parcial_shape', f.k); }catch(_e){}
-      return { ok:true, detail:'forma '+f.k };
+      // Se devuelve lo que contestó la base: con eso el que llama comprueba que el pago ENTRÓ.
+      return { ok:true, detail:'forma '+f.k, data:(r && r.data) || null };
     }
     const msg = String(r.error.message||'');
     const esFirma = /PGRST202|Could not find the function|function .* does not exist/i.test(
@@ -470,6 +471,13 @@ const _rv2FinalizarInterno = async function(stCapturado){
       .filter(function(v, i, a){ return v && a.indexOf(v) === i; }).join(' + ');
     try{ _rp = await notificarRetiroParcialPortal(st.id, total, pagadoAcum, restante, montoTotal, st.saldoPost, _desde); }
     catch(e){ _rp = { ok:false, detail:(e&&e.message)||String(e) }; }
+    // ¿El progreso AVANZÓ de verdad? La base devuelve cuánto quedó pagado. Si contesta bien pero el
+    // acumulado no se movió, el pago no entró y el retiro queda colgado en la caja pidiendo un monto
+    // que ya se pagó (D-100). Se trata como fallo para que entre el respaldo de abajo.
+    const _pagRpc = Number((( _rp && _rp.data) || {}).pagado);
+    if(_rp && _rp.ok && Number.isFinite(_pagRpc) && _pagRpc < pagadoAcum - 0.5){
+      _rp = { ok:false, detail:'la base quedó en '+deps.money(_pagRpc)+' y este pago de '+deps.money(total)+' no entró' };
+    }
     if(!_rp || !_rp.ok){
       try{ deps.toast('⚠ Parcial PAGADO pero sin registrar el progreso · revisalo','red'); }catch(_e){}
       try{ deps.alert('⚠️ El retiro parcial SÍ se pagó ('+deps.money(total)+'), pero NO se pudo registrar el progreso.\n\n'
@@ -495,7 +503,21 @@ const _rv2FinalizarInterno = async function(stCapturado){
       _extra.motivo_ajuste = _motivoAjuste;
     }
     // Respaldo SOLO si la RPC falló: si no, duplicaríamos el progreso.
-    if((!completo || _hayProgreso) && (!_rp || !_rp.ok)) _extra.retiro_parcial = { pagado:pagadoAcum, total:montoTotal, restante:restante };
+    if((!completo || _hayProgreso) && (!_rp || !_rp.ok)){
+      // CONSERVANDO los pagos ya anotados: el respaldo los pisaba y se perdía el detalle de lo cobrado.
+      let _rpPrev = {};
+      try{
+        const _sol = ((deps.window.V154P && deps.V154P.solicitudes) || []).find(function(x){ return String(x.ID||x.SOLICITUD_ID||0)===String(st.id); });
+        let _mPrev = (_sol && (_sol.METADATA!==undefined ? _sol.METADATA : _sol.metadata)) || {};
+        if(typeof _mPrev==='string'){ try{ _mPrev = JSON.parse(_mPrev); }catch(_e){ _mPrev = {}; } }
+        _rpPrev = (_mPrev && _mPrev.retiro_parcial) || {};
+      }catch(_e){}
+      const _pagosPrev = Array.isArray(_rpPrev.pagos) ? _rpPrev.pagos.slice() : [];
+      _pagosPrev.push({ monto: total, fecha: new Date().toISOString(),
+        operador: (deps.window.operador&&(deps.window.operador.usuario||deps.window.operador.nombre))||'panel',
+        desde: _desde || null, respaldo_panel: true });
+      _extra.retiro_parcial = Object.assign({}, _rpPrev, { pagado:pagadoAcum, total:montoTotal, restante:restante, pagos:_pagosPrev });
+    }
     // Va DESPUÉS de la RPC a propósito: deja el estado correcto aunque la RPC lo haya marcado completo.
     const _ru = await deps.window.actualizarSolicitudPortal(String(st.id), _estadoFinal, _extra);
     // NO silencioso: si esto falla el retiro queda con el estado VIEJO. Un retiro ya saldado que

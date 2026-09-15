@@ -69,8 +69,13 @@ function _arbolResumenHtml(usuario){
 window._retiroPagadoDelHistorial = function(solicitudId){
   const sid = String(solicitudId||''); if(!sid) return null;
   let filas = [];
-  try{ filas = (typeof _historialData!=='undefined' && Array.isArray(_historialData)) ? _historialData
-             : (Array.isArray(window._historialData) ? window._historialData : []); }catch(_e){ return null; }
+  // OJO con el "||" y con Array.isArray: una lista VACÍA es "verdadera" en JS, así que ganaba la
+  // vacía y el respaldo no se usaba NUNCA. Gana la que tenga filas.
+  try{
+    const _lex = (typeof _historialData!=='undefined' && Array.isArray(_historialData)) ? _historialData : null;
+    const _win = Array.isArray(window._historialData) ? window._historialData : null;
+    filas = (_lex && _lex.length) ? _lex : (_win || _lex || []);
+  }catch(_e){ return null; }
   if(!filas.length) return null;                       // historial no cargado → no afirmamos nada
   let suma = 0, n = 0;
   filas.forEach(function(h){
@@ -107,12 +112,24 @@ window._retiroParcialInfo = function(s){
   if(!(total>0)) total = Number((s&&(s.MONTO_REAL||s.MONTO_DECLARADO||s.MONTO))||0);
   if(total>0 && pagado>total) pagado=total;
   const _alt = (total>0 && pagadoAlt>total) ? total : pagadoAlt;
+  // TERCERA fuente, y la única que NO es un contador: la suma de las transferencias que realmente
+  // salieron (historial_ops). Si un pago no llegó a anotarse en el progreso —le pasó al último pago
+  // de un retiro, D-100— el libro igual lo tiene y el retiro deja de figurar colgado para siempre.
+  let _hist = 0;
+  try{
+    const _h = window._retiroPagadoDelHistorial
+      ? window._retiroPagadoDelHistorial(s && (s.ID || s.SOLICITUD_ID || s.solicitud_id || s.id)) : null;
+    if(_h && _h.pagado > 0) _hist = (total>0 && _h.pagado>total) ? total : _h.pagado;
+  }catch(_e){}
+  // Lo COBRADO es lo más alto de las tres: un pago puede faltar en un contador, pero si salió, salió.
+  const _cobrado = Math.max(pagado, _alt, _hist);
   return {
-    total:total, pagado:pagado, restante:Math.max(0,total-pagado), hasProg:(pagado>0.5||_alt>0.5),
-    // Segunda fuente + si discrepan: NO se decide por una, se avisa al operador para que resuelva.
-    pagadoAlt:_alt,
-    discrepa: Math.abs(_alt - pagado) > 1,
-    saldadoPorAlguna: (total>0 && (pagado >= total-0.5 || _alt >= total-0.5))
+    total:total, pagado:_cobrado, restante:Math.max(0, total - _cobrado),
+    hasProg:(pagado>0.5 || _alt>0.5 || _hist>0.5),
+    // Las otras fuentes + si discrepan: NO se decide por una, se avisa al operador para que resuelva.
+    pagadoRpc:pagado, pagadoAlt:_alt, pagadoHistorial:_hist,
+    discrepa: (Math.abs(_alt - pagado) > 1) || (_hist > 0.5 && Math.abs(_hist - pagado) > 1),
+    saldadoPorAlguna: (total>0 && _cobrado >= total-0.5)
   };
 };
 // Un RETIRO con progreso PARCIAL (se pagó algo pero NO todo) sigue PENDIENTE hasta cobrar el total,
@@ -159,6 +176,7 @@ function _retiroCerradoAMano(s){
     return String((m&&m.etapa)||'').toUpperCase()==='RETIRO_CIERRE_MANUAL';
   }catch(_e){ return false; }
 }
+window._retiroCerradoAMano = _retiroCerradoAMano;
 window._retiroParcialSigueAbierto = function(s){
   try{
     if(String(s.TIPO||s.TIPO_SOLICITUD||'').toUpperCase()!=='RETIRO') return false;

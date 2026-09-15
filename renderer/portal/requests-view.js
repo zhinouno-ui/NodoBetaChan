@@ -23,6 +23,9 @@ const api = {};
       try{
         if(String(s.TIPO||s.TIPO_SOLICITUD||'').toUpperCase()!=='RETIRO') return false;
         if(/RECHAZ|CANCEL/.test(String(s.ESTADO||'').toUpperCase())) return false;
+        // Cerrado a mano por el operador → no vuelve, aunque el estado no haya llegado a guardarse.
+        // Antes se cerraba, reaparecía en el refresco siguiente y no había forma de sacarlo (D-100).
+        if(deps.window._retiroCerradoAMano && deps.window._retiroCerradoAMano(s)) return false;
         const pp = deps.window._retiroParcialInfo ? deps.window._retiroParcialInfo(s) : null;
         return !!(pp && pp.hasProg && pp.total>0);
       }catch(_e){ return false; }
