@@ -491,11 +491,19 @@ let _sesionMuertaDesde = 0;
 let _vioLoginTrasMuerte = false;
 let _opsEnCurso = 0;          // operaciones del panel corriendo en esta página (ver el ipc de abajo)
 let _recargaLoginEn = 0;
+let _yaFuiAlLogin = false;    // una sola salida por caída: si no, navega encima del operador
+let _loginEnCurso = false;    // el operador está entrando: NADA puede recargarle la página
 // Cierra la sesión y deja la pantalla de ingreso. Con la cookie muerta, recargar user_search sólo
 // volvía a mostrar el cartel: se quedaba dando vueltas ahí.
+// NUNCA navega si hay una operación corriendo o si se está iniciando sesión: la navegación descarga
+// la página, la operación en curso no contesta nunca y el panel muestra "la página de Agentes se
+// recargó durante la operación". El operador reintentaba y volvía a pasar: loop (D-101).
 function _irAlLogin(motivo) {
+  if (_opsEnCurso > 0 || _loginEnCurso) return false;
+  if (_yaFuiAlLogin) return false;                         // ya se salió por esta caída
   if (Date.now() - _recargaLoginEn < 8000) return false;   // no encadenar navegaciones
   _recargaLoginEn = Date.now();
+  _yaFuiAlLogin = true;
   console.warn('[agent] cerrando sesión de Agentes (' + (motivo || 'sesión caída') + ') → ' + LOGOUT_URL);
   try { window.location.assign(LOGOUT_URL); } catch (_) { return false; }
   return true;
@@ -503,6 +511,7 @@ function _irAlLogin(motivo) {
 function _marcarSesionMuerta() {
   if (!_sesionMuertaDesde) {
     _sesionMuertaDesde = Date.now();
+    _yaFuiAlLogin = false;      // caída NUEVA: se permite una salida
     console.warn('[agent] sesión de Agentes caída: lo dijo un cartel "Invalid session"');
   }
   _vioLoginTrasMuerte = false;
@@ -570,7 +579,7 @@ function pageNeedsLogin() {
   if (_sesionMuertaDesde) {
     if (pideLogin) { _vioLoginTrasMuerte = true; return true; }
     // Pasó por el login y volvió la app: es una sesión nueva.
-    if (_vioLoginTrasMuerte) { _sesionMuertaDesde = 0; _vioLoginTrasMuerte = false; return false; }
+    if (_vioLoginTrasMuerte) { _sesionMuertaDesde = 0; _vioLoginTrasMuerte = false; _yaFuiAlLogin = false; return false; }
     return true;   // se cerró el cartel pero la sesión sigue muerta
   }
   return pideLogin;
@@ -625,11 +634,12 @@ async function cerrarModalSesionInvalida() {
     return /accept|aceptar|cerrar|close|ok/.test(t);
   }) || buttons.find(isVisible);
 
-  // Apretar "Aceptar" no cierra nada: el cartel se va, la app queda montada con la sesión muerta y
-  // todo lo que venga después falla en silencio (Juan, 13/09: "el preload lo acepta; lo que debe
-  // hacer es cerrar la sesión y volver a iniciarla"). Se cierra por /logout y se espera el ingreso.
-  if (accept) { try { clickElement(accept); } catch (_) {} await delay(250); }
-  _irAlLogin('cartel de sesión inválida');
+  // Se aprieta "Aceptar": el cartel dice "redireccionamos al login" y Drex lo hace solo. Navegar
+  // ENCIMA de eso era pelearse con su propio redirect y, si había una operación corriendo, la
+  // mataba (D-101). El /logout queda como último recurso y sólo si no hay nada en curso: _irAlLogin
+  // se niega solo mientras el panel esté operando o el operador esté entrando.
+  if (accept) { try { clickElement(accept); } catch (_) {} await delay(400); }
+  else _irAlLogin('cartel de sesión inválida sin botón');
   const tFin = Date.now() + 8000;
   while (Date.now() < tFin) {
     await delay(200);
@@ -1243,6 +1253,11 @@ async function obtenerSaldoAgente(options = {}) {
 // Si aparece el modal de "session is invalid" → clickea Accept, espera el redirect
 // al login, y sigue con la inyección de credenciales en la misma pasada.
 async function iniciarSesion(usuario, clave) {
+  _loginEnCurso = true;
+  try { return await _iniciarSesionInterno(usuario, clave); }
+  finally { _loginEnCurso = false; }
+}
+async function _iniciarSesionInterno(usuario, clave) {
   // Modal de sesión inválida → cerrarlo (clickeando Accept) y esperar el form de login
   if (detectarModalSesionInvalida()) {
     await cerrarModalSesionInvalida();
@@ -1273,22 +1288,23 @@ async function iniciarSesion(usuario, clave) {
   }
 
   if (!userInput || !passInput || !entrarBtn) {
-    // La sesión murió y quedó la app montada (o la página en blanco detrás del cartel): no hay
-    // formulario que llenar. Se cierra la sesión y se espera el ingreso EN ESTA MISMA llamada, para
-    // que el operador no tenga que tocar "Conectar" dos veces.
-    if (_sesionMuertaDesde || detectarModalSesionInvalida()) {
-      _irAlLogin('login sin formulario');
-      const tSalida = now();
-      while (now() - tSalida < 12000) {
-        await delay(250);
-        userInput = document.querySelector('input[type="text"], input[name="username"], input[name="user"], input[autocomplete="username"]');
-        passInput = document.querySelector('input[type="password"]');
-        entrarBtn = Array.from(document.querySelectorAll('button')).find(btn => /entrar|ingresar|login|iniciar|sign.?in/i.test(btn.textContent || ''));
-        if (userInput && passInput && entrarBtn) break;
-      }
+    // No hay formulario: o quedó el cartel tapando, o la app montada con la sesión muerta.
+    // Acá NO se navega. Navegar en medio del login descarga la página, esta misma llamada no
+    // contesta nunca y el panel muestra "la página de Agentes se recargó durante la operación" —
+    // el operador reintenta y vuelve a pasar: loop (D-101). Se aprieta el "Aceptar" del cartel, que
+    // es lo que hace que Drex redirija al login por su cuenta, y se espera el formulario.
+    if (detectarModalSesionInvalida()) { try { await cerrarModalSesionInvalida(); }catch(_){} }
+    const tSalida = now();
+    while (now() - tSalida < 8000) {
+      await delay(250);
+      userInput = document.querySelector('input[type="text"], input[name="username"], input[name="user"], input[autocomplete="username"]');
+      passInput = document.querySelector('input[type="password"]');
+      entrarBtn = Array.from(document.querySelectorAll('button')).find(btn => /entrar|ingresar|login|iniciar|sign.?in/i.test(btn.textContent || ''));
+      if (userInput && passInput && entrarBtn) break;
     }
     if (!userInput || !passInput || !entrarBtn) {
-      return { ok: false, needsLogin: true, message: 'La sesión de Agentes estaba caída y se cerró. Tocá Conectar de nuevo en unos segundos.' };
+      // El vigía la lleva al ingreso cuando no haya nada corriendo (ahí sí es seguro navegar).
+      return { ok: false, needsLogin: true, message: 'La ventana de Agentes todavía no muestra el ingreso. Esperá unos segundos y tocá Conectar de nuevo.' };
     }
   }
 

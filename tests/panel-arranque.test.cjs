@@ -1863,9 +1863,12 @@ test('Drex · una sesión muerta se cierra por /logout, no se recarga', () => {
   const src = fs.readFileSync(path.join(RAIZ, 'agent-preload.js'), 'utf8');
   assert.match(src, /const LOGOUT_URL = 'https:\/\/bo\.casinodrex\.com\/logout';/);
   assert.match(src, /window\.location\.assign\(LOGOUT_URL\)/, 'el link "Salir" del menú de Agentes');
-  const cerrar = src.slice(src.indexOf('async function cerrarModalSesionInvalida'));
-  assert.match(cerrar.slice(0, 1400), /_irAlLogin\('cartel de sesión inválida'\)/,
-    'apretar "Aceptar" dejaba la app montada con la sesión muerta');
+  const cerrar = src.slice(src.indexOf('async function cerrarModalSesionInvalida')).slice(0, 1600);
+  // El cartel se cierra con SU botón: dice "redireccionamos al login" y Drex lo hace solo. Navegar
+  // encima era pelearle al redirect y, en medio de una operación, la mataba (D-101).
+  assert.match(cerrar, /clickElement\(accept\)/);
+  assert.match(cerrar, /else _irAlLogin\('cartel de sesión inválida sin botón'\)/,
+    'sin botón que apretar, el /logout queda de último recurso');
   assert.match(src, /new MutationObserver/, 'el cartel puede durar un instante');
   assert.match(src, /if \(e && e\.sesionInvalida\) result = status\(\{ message: e\.message \}\);/,
     'una sesión caída tiene que abrir el login, no ser un error técnico');
@@ -2159,4 +2162,52 @@ test('parcial · si el pago no entró en la base, el panel lo nota y no pierde l
   assert.match(b, /no entró/);
   assert.match(b, /pagos:_pagosPrev/, 'el respaldo conserva los pagos ya anotados');
   assert.match(b, /return \{ ok:true, detail:'forma '\+f\.k, data:\(r && r\.data\) \|\| null \}/);
+});
+
+// ── D-101 · nadie le recarga la página al operador mientras entra ───────────────────────────
+test('Drex · el cierre de sesión no puede pisar una operación ni un login (el loop)', () => {
+  const src = fs.readFileSync(path.join(RAIZ, 'agent-preload.js'), 'utf8');
+  const fn = (n) => {
+    const m = src.match(new RegExp('function ' + n + '\\([^)]*\\) ?\\{[\\s\\S]*?\\n\\}'));
+    assert.ok(m, 'no encontré ' + n);
+    return m[0];
+  };
+  const armar = new Function('window', 'LOGOUT_URL', 'console',
+    'let _opsEnCurso = 0, _loginEnCurso = false, _yaFuiAlLogin = false, _recargaLoginEn = 0;\n'
+    + 'let _sesionMuertaDesde = 0, _vioLoginTrasMuerte = false;\n'
+    + fn('_irAlLogin') + '\n' + fn('_marcarSesionMuerta') + '\n'
+    + 'return { ir:_irAlLogin, muerta:_marcarSesionMuerta,'
+    + ' set:function(o){ if("ops" in o) _opsEnCurso=o.ops; if("login" in o) _loginEnCurso=o.login; if("t" in o) _recargaLoginEn=o.t; } };');
+  const fue = [];
+  const api = armar({ location:{ assign:(u)=>fue.push(u) } }, 'https://bo.casinodrex.com/logout', { warn(){} });
+
+  api.muerta();
+  api.set({ ops: 1 });
+  assert.equal(api.ir('con una operación corriendo'), false);
+  assert.equal(fue.length, 0, 'navegar acá mata la operación: "la página de Agentes se recargó durante la operación"');
+
+  api.set({ ops: 0, login: true });
+  assert.equal(api.ir('mientras el operador entra'), false);
+  assert.equal(fue.length, 0, 'es el peor momento posible para recargarle la página');
+
+  api.set({ login: false });
+  assert.equal(api.ir('sin nada en curso'), true, 'con la sesión muerta y todo quieto, sí se cierra');
+  assert.equal(fue.length, 1);
+  assert.match(fue[0], /\/logout$/);
+
+  api.set({ t: 0 });
+  assert.equal(api.ir('otra vez'), false, 'una sola salida por caída');
+  api.muerta();
+  api.set({ t: 0 });
+  assert.equal(api.ir('misma caída'), false);
+  assert.equal(fue.length, 1, 'si no, navega una y otra vez encima del operador');
+});
+
+test('Drex · ni el login ni el cartel navegan por su cuenta', () => {
+  const src = fs.readFileSync(path.join(RAIZ, 'agent-preload.js'), 'utf8');
+  assert.match(src, /if \(_opsEnCurso > 0 \|\| _loginEnCurso\) return false;/, 'el freno vive dentro de _irAlLogin');
+  assert.ok(!/_irAlLogin\('login sin formulario'\)/.test(src), 'iniciarSesion ya no navega');
+  assert.match(src, /_loginEnCurso = true;[\s\S]{0,160}_iniciarSesionInterno/, 'mientras entra, queda marcado');
+  // El cartel se cierra con su botón: Drex redirige solo. Navegar encima era pelearle al redirect.
+  assert.match(src, /else _irAlLogin\('cartel de sesión inválida sin botón'\)/);
 });
