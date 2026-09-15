@@ -2246,3 +2246,40 @@ test('Drex · ni el login ni el cartel navegan por su cuenta', () => {
   // El cartel se cierra con su botón: Drex redirige solo. Navegar encima era pelearle al redirect.
   assert.match(src, /else _irAlLogin\('cartel de sesión inválida sin botón'\)/);
 });
+
+// ── D-103 · el historial dice CUÁNTO se pagó, no si se pagó en partes ───────────────────────
+test('retiro común · no aparece como parcial aunque el historial tenga su fila', () => {
+  const sb = arrancarPanel();
+  // 15/09: retiros pagados de una sola vez salían como "Parcial 100%" y con monto $ 0.
+  sb._historialData = [{ id:1, solicitud_id:900300, tipo:'RETIRO', estado:'OK', monto:70000 }];
+  const comun = { ID:900300, TIPO:'RETIRO', ESTADO:'PAGADA', MONTO_DECLARADO:70000,
+    metadata:{ monto_pagado:70000 } };   // el panel escribe este contador en TODO retiro, parcial o no
+
+  const pp = sb._retiroParcialInfo(comun);
+  assert.equal(pp.hasProg, false, 'sin retiro_parcial no hay "pago por partes"');
+  assert.equal(pp.pagado, 0, 'ni el historial ni el contador del panel inventan progreso');
+  assert.equal(pp.restante, 70000);
+  assert.equal(sb._retiroParcialSigueAbierto(comun), false, 'no va a la caja de parciales');
+
+  // Y uno de verdad sigue siéndolo.
+  sb._historialData = [
+    { id:2, solicitud_id:900301, tipo:'RETIRO', estado:'OK', monto:200000 },
+    { id:3, solicitud_id:900301, tipo:'RETIRO', estado:'OK', monto:350000 }
+  ];
+  const parcial = { ID:900301, TIPO:'RETIRO', ESTADO:'EN_PROCESO',
+    metadata:{ retiro_parcial:{ total:750000, pagado:550000, pagos:[{monto:200000},{monto:350000}] } } };
+  const qq = sb._retiroParcialInfo(parcial);
+  assert.equal(qq.hasProg, true, 'este sí se está pagando por partes');
+  assert.equal(qq.total, 750000);
+  assert.equal(qq.restante, 200000);
+});
+
+test('ficha del retiro · sin pagos anotados no dice "falta" de algo ya pagado', () => {
+  const sb = arrancarPanel();
+  const html = sb.nodoRetiroHistoriaPintar({
+    total:67208, pagado:0, pagos:[],
+    ajuste:{ declarado:650000, corregido:67208, motivo:'Es todo lo que tenías en fichas.' }
+  }, '900302', '');
+  assert.match(html, /Pidió/, 'el ajuste sí se muestra: es lo que explica el monto');
+  assert.ok(!/falta/.test(html), 'decía "Pagado $ 0 · falta $ 67.208" de un retiro ya cobrado entero');
+});

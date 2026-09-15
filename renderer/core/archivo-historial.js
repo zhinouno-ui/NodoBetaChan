@@ -121,11 +121,17 @@ window._retiroParcialInfo = function(s){
       ? window._retiroPagadoDelHistorial(s && (s.ID || s.SOLICITUD_ID || s.solicitud_id || s.id)) : null;
     if(_h && _h.pagado > 0) _hist = (total>0 && _h.pagado>total) ? total : _h.pagado;
   }catch(_e){}
-  // Lo COBRADO es lo más alto de las tres: un pago puede faltar en un contador, pero si salió, salió.
-  const _cobrado = Math.max(pagado, _alt, _hist);
+  // "Esto es un retiro EN PARTES" lo dice SÓLO la máquina de parciales (retiro_parcial). El
+  // historial dice CUÁNTO se pagó, que es otra cosa: todo retiro pagado tiene su fila ahí, así que
+  // usarlo para decidir "hay progreso" convertía en parcial a TODOS los retiros comunes — salían
+  // como "Parcial 100%" con monto $0 (D-103). Y monto_pagado tampoco sirve: el panel lo escribe en
+  // cada retiro, parcial o no.
+  const hayParcial = pagado > 0.5;
+  // Con progreso real, lo cobrado es lo más alto: un pago puede faltar en un contador, pero si salió, salió.
+  const _cobrado = hayParcial ? Math.max(pagado, _alt, _hist) : pagado;
   return {
     total:total, pagado:_cobrado, restante:Math.max(0, total - _cobrado),
-    hasProg:(pagado>0.5 || _alt>0.5 || _hist>0.5),
+    hasProg:hayParcial,
     // Las otras fuentes + si discrepan: NO se decide por una, se avisa al operador para que resuelva.
     pagadoRpc:pagado, pagadoAlt:_alt, pagadoHistorial:_hist,
     discrepa: (Math.abs(_alt - pagado) > 1) || (_hist > 0.5 && Math.abs(_hist - pagado) > 1),
@@ -290,8 +296,12 @@ window.nodoRetiroHistoriaPintar = function(p, sid, histId){
     h += '<div>Pidió <b>'+money(Number(ajuste.declarado)||0)+'</b> → se paga <b style="color:#f5c518">'+money(Number(ajuste.corregido)||total)+'</b></div>';
     if(ajuste.motivo) h += '<div style="color:#fde68a">📝 '+escapeHtml(ajuste.motivo)+'</div>';
   }
-  h += '<div style="margin-top:4px;color:#8b949e">Pagado <b style="color:#e6edf3">'+money(pagado)+'</b> de <b style="color:#e6edf3">'+money(total)+'</b>'
-    + (resta > 0.5 ? (' · falta <b style="color:#f5c518">'+money(resta)+'</b>') : ' · completo')+'</div>';
+  // El "pagado X de Y · falta Z" sale SÓLO si hay pagos anotados. Sin pagos por partes, ese contador
+  // está en cero aunque la plata haya salido entera, y decía "falta $67.208" de un retiro ya pagado.
+  if(pagos.length){
+    h += '<div style="margin-top:4px;color:#8b949e">Pagado <b style="color:#e6edf3">'+money(pagado)+'</b> de <b style="color:#e6edf3">'+money(total)+'</b>'
+      + (resta > 0.5 ? (' · falta <b style="color:#f5c518">'+money(resta)+'</b>') : ' · completo')+'</div>';
+  }
   // Cada pago con SU movimiento de Chunior y SUS fichas: un retiro en partes tiene un movimiento
   // por pago y la ficha tenía un solo casillero, así que no entraba ninguno (Juan, 13/09).
   const delaSolicitud = H.filter(function(r){
