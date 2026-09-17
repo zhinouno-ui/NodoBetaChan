@@ -2453,3 +2453,64 @@ test('chunior · si la lista no carga, NO anota a ciegas', async () => {
   assert.equal(JSON.parse(sb.localStorage.getItem('nodo_chunior_pendientes')).length, 1,
     'queda pendiente para el proximo intento');
 });
+
+// ── D-108 · la luz verde del reintento cierra la solicitud, igual que el boton Aprobar ──────
+test('reintento · una CARGA que sale bien deja la solicitud acreditada', async () => {
+  const sb = arrancarPanel();
+  const avisos = []; sb.toast = (m) => avisos.push(String(m));
+  let escrito = null;
+  sb.actualizarSolicitudPortal = async (id, estado, extra) => { escrito = { id, estado, extra }; };
+
+  await sb._cerrarSolicitudTrasReintento(
+    { id: 77, solicitud_id: 500123, saldo_pre: 1000, saldo_post: 11000, created_at: '2026-09-17T12:00:00.000Z' },
+    'CARGA', 10000, { ID_BILLETERA: 31, NOMBRE_VISIBLE: 'MATRELO MP', TITULAR: 'Ana Matrelo' });
+
+  assert.ok(escrito, 'si la carga entro, la solicitud no puede quedar abierta');
+  assert.equal(escrito.id, '500123');
+  assert.equal(escrito.estado, 'ACREDITADA');
+  assert.equal(escrito.extra.etapa, 'PORTAL_COMPLETADA_REINTENTO', 'queda la marca de que la cerro el reintento');
+  assert.equal(escrito.extra.monto_aprobado, 10000);
+  assert.equal(escrito.extra.historial_id, 77, 'la solicitud queda atada a la operacion');
+  assert.equal(escrito.extra.saldo_post, 11000, 'el jugador ve el antes y despues de sus fichas');
+  assert.equal(escrito.extra.billetera_nombre, 'MATRELO MP');
+});
+
+test('reintento · un RETIRO anota el pago con el motor del portal, no con una RPC propia', async () => {
+  const sb = arrancarPanel();
+  const avisos = []; sb.toast = (m) => avisos.push(String(m));
+  const llamadas = [];
+  sb.panelAPI = { rpc: async (fn, p) => { llamadas.push({ fn, p }); return { data: [{ restante: 0 }], error: null }; } };
+
+  await sb._cerrarSolicitudTrasReintento(
+    { id: 78, solicitud_id: 207577, saldo_post: 0, created_at: '2026-09-17T12:00:00.000Z' },
+    'RETIRO', 35000, { ID_BILLETERA: 31, NOMBRE_VISIBLE: 'MATRELO MP', TITULAR: 'Ana Matrelo' });
+
+  assert.ok(llamadas.length, 'el pago tiene que quedar anotado en la solicitud');
+  assert.equal(llamadas[0].fn, 'landing_retiro_registrar_parcial',
+    'el estado lo decide la maquina de parciales: un retiro puede seguir debiendo plata');
+  assert.equal(llamadas[0].p.p_id, 207577);
+  assert.equal(llamadas[0].p.p_monto_parcial, 35000);
+  assert.equal(llamadas[0].p.p_desde, 'Ana Matrelo', 'el jugador ve de que cuenta le llego');
+});
+
+test('reintento · sin solicitud no inventa nada', async () => {
+  const sb = arrancarPanel();
+  const llamadas = [];
+  sb.panelAPI = { rpc: async (fn, p) => { llamadas.push({ fn, p }); return { data: null, error: null }; } };
+  sb.actualizarSolicitudPortal = async () => { llamadas.push({ fn: 'portal' }); };
+  await sb._cerrarSolicitudTrasReintento({ id: 79, solicitud_id: null }, 'CARGA', 5000, null);
+  assert.equal(llamadas.length, 0, 'una operacion a mano no tiene solicitud que cerrar');
+});
+
+test('reintento · si el pago YA estaba anotado, no lo cuenta dos veces', () => {
+  const sb = arrancarPanel();
+  const t = new Date('2026-09-17T12:00:00.000Z').getTime();
+  const pagos = [{ monto: 35000, fecha: '2026-09-17T12:01:10.000Z' }];
+  assert.equal(sb._pagoYaAnotado(pagos, 35000, t), true, 'mismo monto y al lado en el tiempo: es el mismo pago');
+  assert.equal(sb._pagoYaAnotado(pagos, 5000, t), false, 'otro monto es otro pago');
+  assert.equal(sb._pagoYaAnotado([{ monto: 35000, fecha: '2026-09-17T18:00:00.000Z' }], 35000, t), false,
+    'el mismo monto seis horas despues es un segundo pago de verdad');
+  assert.equal(sb._pagoYaAnotado([{ monto: 35000, fecha: '2026-09-17T12:01:10.000Z', revertido: true }], 35000, t), false,
+    'un pago deshecho no bloquea el nuevo');
+  assert.equal(sb._pagoYaAnotado([], 35000, t), false);
+});

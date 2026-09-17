@@ -468,6 +468,93 @@ function renderHistorial(lista){
 //   - Chunior: detectable por chunior_movimiento_id (null = NO registrado)
 //   - Drex/Agentes: leemos el saldo ACTUAL del jugador y lo mostramos. El operador
 //     ve el número y decide si la carga ya está reflejada o falta.
+// ¿Este pago ya está anotado en el progreso del retiro? Mismo monto y a menos de 10 minutos del
+// movimiento. Sin esto, cerrar la solicitud desde el reintento contaría el pago dos veces.
+function _pagoYaAnotado(pagos, montoAbs, tFilaMs){
+  if(!Array.isArray(pagos) || !pagos.length) return false;
+  return pagos.some(function(p){
+    if(!p || p.revertido) return false;
+    const mismoMonto = Math.abs((Math.abs(Number(p.monto)) || 0) - montoAbs) < 1;
+    if(!mismoMonto) return false;
+    if(!p.fecha) return true;                      // sin fecha, el monto manda
+    const t = new Date(p.fecha).getTime();
+    return !isNaN(t) && Math.abs(t - tFilaMs) < 10*60*1000;
+  });
+}
+window._pagoYaAnotado = _pagoYaAnotado;
+
+// Cierra la solicitud cuando el reintento terminó BIEN. Usa los mismos motores que el botón
+// Aprobar: para una carga, el mismo estado y los mismos datos; para un retiro, la máquina de
+// parciales, que es la única que sabe si quedó saldo pendiente (D-108).
+async function _cerrarSolicitudTrasReintento(row, tipo, monto, bil){
+  const sid = String((row && row.solicitud_id) || '');
+  if(!sid) return;
+  const montoAbs = Math.abs(Number(monto)) || 0;
+  const operador = (window.operador && (window.operador.usuario || window.operador.nombre)) || 'panel';
+
+  if(String(tipo || '').toUpperCase() !== 'RETIRO'){
+    // Mismo puente que usa el botón Aprobar; lo pone portal-bridge, así que se resuelve al usarlo.
+    const apFn = (typeof actualizarSolicitudPortal === 'function') ? actualizarSolicitudPortal
+               : (typeof window.actualizarSolicitudPortal === 'function' ? window.actualizarSolicitudPortal : null);
+    try{
+      if(!apFn) throw new Error('falta el puente con el portal');
+      await apFn(sid, 'ACREDITADA', {
+        etapa: 'PORTAL_COMPLETADA_REINTENTO',
+        monto_aprobado: montoAbs,
+        historial_id: row.id || null,
+        saldo_pre: (row.saldo_pre != null ? row.saldo_pre : null),
+        saldo_post: (row.saldo_post != null ? row.saldo_post : null),
+        operador: operador,
+        billetera_id: bil ? bil.ID_BILLETERA : null,
+        billetera_nombre: bil ? bil.NOMBRE_VISIBLE : null
+      });
+      toast('✓ Solicitud #'+sid+' acreditada · el jugador ya la ve resuelta','green');
+    }catch(e){
+      toast('⚠ La carga entró pero la solicitud #'+sid+' sigue abierta · '+(e.message||'')+' · cerrala a mano','red');
+    }
+    return;
+  }
+
+  // RETIRO: acá NO se elige el estado. Un retiro puede estar pagándose en partes, así que se anota
+  // el pago con el MISMO motor que usa el portal (negocia la firma de la RPC y no reintenta cuando
+  // el resultado quedó incierto) y la base decide si queda PAGADA o sigue EN_PROCESO.
+  let meta = {}, totalSol = 0;
+  try{
+    const q = await supabaseClient.from('landing_solicitudes').select('metadata, monto').eq('id', sid).maybeSingle();
+    const f = (q && q.data && !Array.isArray(q.data)) ? q.data : null;
+    meta = (f && f.metadata) || {};
+    totalSol = Math.abs(Number(f && f.monto)) || 0;
+  }catch(_e){}
+  const pagos = (meta.retiro_parcial && Array.isArray(meta.retiro_parcial.pagos)) ? meta.retiro_parcial.pagos : [];
+  const tFila = row.created_at ? new Date(row.created_at).getTime() : Date.now();
+  if(_pagoYaAnotado(pagos, montoAbs, tFila)){
+    toast('El pago ya estaba anotado en el retiro #'+sid+' · no se cuenta dos veces','blue');
+    return;
+  }
+
+  const yaPagado = pagos.reduce(function(a,x){ return a + (x && !x.revertido ? (Math.abs(Number(x.monto))||0) : 0); }, 0);
+  const total = totalSol || (yaPagado + montoAbs);
+  const acum  = yaPagado + montoAbs;
+  const resta = Math.max(0, total - acum);
+  const motor = (typeof notificarRetiroParcialPortal === 'function') ? notificarRetiroParcialPortal
+              : (typeof window.notificarRetiroParcialPortal === 'function' ? window.notificarRetiroParcialPortal : null);
+  if(!motor){
+    toast('⚠ El retiro salió pero no tengo cómo anotar el pago en la solicitud #'+sid+' · anotalo a mano','red');
+    return;
+  }
+  try{
+    const rp = await motor(sid, montoAbs, acum, resta, total,
+      (row.saldo_post != null ? Number(row.saldo_post) : null),
+      (bil && String(bil.TITULAR || bil.NOMBRE_VISIBLE || '').trim()) || null);
+    if(!(rp && rp.ok)) throw new Error((rp && rp.detail) || 'no se pudo anotar el pago');
+    toast(resta > 0.5
+      ? ('✓ Pago anotado en el retiro #'+sid+' · falta '+money(resta))
+      : ('✓ Retiro #'+sid+' quedó saldado · el jugador ya lo ve pagado'), 'green');
+  }catch(e){
+    toast('⚠ El retiro salió pero la solicitud #'+sid+' sigue abierta · '+(e.message||'')+' · anotá el pago a mano','red');
+  }
+}
+
 async function reintentarOperacionFallida(historialId){
   if(!window.ctrlElectron){ alert("La automatización solo funciona en la app de escritorio."); return; }
   const { data: row, error } = await supabaseClient
@@ -630,6 +717,12 @@ async function reintentarOperacionFallida(historialId){
     } catch(e){ console.warn('update reintento:', e); }
 
     toast(nuevoEstado==='OK' ? '🎉 Reintento OK' : '⚠️ Reintento parcial', nuevoEstado==='OK'?'green':'yellow');
+    // MISMO DESENLACE, MISMAS CONSECUENCIAS: la luz verde cierra la solicitud, venga del botón
+    // Aprobar o del reintento. Antes el reintento movía la plata y dejaba la solicitud abierta: el
+    // jugador seguía viendo su pedido sin resolver y el operador la volvía a trabajar (D-108).
+    if(nuevoEstado === 'OK' && row.solicitud_id){
+      await _cerrarSolicitudTrasReintento(row, tipo, monto, bil);
+    }
     await cargarHistorial();
     if(movChu) _watchdogTrigger(1500);
   }, 'Ejecutar reintento');
