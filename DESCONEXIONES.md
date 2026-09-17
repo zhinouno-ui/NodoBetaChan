@@ -3255,3 +3255,27 @@ y lee el N° del movimiento. Si el script vuelve a romperse, la prueba falla ant
 **Lección, anotada donde corresponde**: las pruebas que sólo miran el código con expresiones
 regulares no habrían visto esto nunca. Lo que mueve plata o habla con otra ventana necesita una
 prueba que lo **corra**.
+
+---
+
+## D-101 · Mapa de qué toca cada acción, y los siete huecos que quedaron a la vista
+
+Estaba todo enganchado de a un gancho: cada botón actualizaba los lugares que quien lo escribió
+tenía en la cabeza ese día. Para poder revisarlo se armó **`MAPA-MOVIMIENTOS.md`**: los siete
+lugares donde vive una operación (Drex, Chunior, `historial_ops`, `landing_solicitudes`, el progreso
+del retiro, el saldo de la billetera y el chat del jugador), el motor único que escribe en cada uno,
+y una fila por botón con lo que toca y lo que no. Sale de grep, así que se puede recalcular.
+
+Huecos que aparecieron (detalle y evidencia en el mapa, sección 3):
+
+| | Hueco | Qué cuesta |
+|---|---|---|
+| H-1 | La carga de la bandeja de respaldo no se anota en Chunior | plata que no está en el libro |
+| H-2 | "Cerrar retiro" y ▶ Auto marcan PAGADA sin pasar por la máquina de parciales | el progreso queda colgado (D-100 otra vez) |
+| H-3 | Deshacer una CARGA con solicitud la deja acreditada | el jugador ve pagado algo que se revirtió |
+| H-4 | El expediente del portal no le avisa al jugador por chat | el mismo pedido avisa o no según por dónde entró |
+| H-5 | El reintento no ajusta el saldo de la billetera | la billetera muestra plata que ya salió |
+| H-6 | Gasto/propina/depósito no descuentan el saldo local | a definir: puede ser a propósito |
+| H-7 | `agent-preload-bet300.js` sin el blindaje de sesión | en BET300 la sesión caída vuelve a pasar |
+
+**Estado** — ABIERTO (el mapa, RESUELTO; los huecos, en cola)
