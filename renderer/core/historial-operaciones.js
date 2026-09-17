@@ -676,6 +676,35 @@ async function deshacerOperacion(id, usuario, tipoOriginal, monto, bilId){
       notas:"Reversión de "+tipoOriginal, reversion_de:id, chunior_movimiento_id:movChu});
 
     if(ok && bil && bil.ID_BILLETERA) await ajustarSaldoBilletera(bil.ID_BILLETERA, tipoReversion==='CARGA'?montoNum:-montoNum);
+
+    // Es el MISMO movimiento: si se deshace un pago de un retiro por partes, el progreso tiene que
+    // retroceder. La reversión devolvía las fichas, el movimiento de Chunior y la plata a la
+    // billetera, pero NO tocaba la solicitud: el retiro seguía figurando pagado y la caja mostraba
+    // un progreso que ya no existía (D-105). El pago queda marcado como revertido, no se borra.
+    let _sidRev = null;
+    try{
+      const _fila = (window._histPorId||{})[String(id)]
+        || ((typeof _historialData!=='undefined' && _historialData) || []).find(function(h){ return String(h.id)===String(id); });
+      if(_fila && _fila.solicitud_id) _sidRev = String(_fila.solicitud_id);
+    }catch(_e){}
+    if(ok && _sidRev && String(tipoOriginal||'').toUpperCase()==='RETIRO'){
+      try{
+        const rRev = await supabaseClient.rpc('landing_retiro_revertir_parcial', {
+          p_id: Number(_sidRev), p_monto: montoNum,
+          p_operador: (window.operador&&(window.operador.usuario||window.operador.nombre))||'panel',
+          p_historial_id: Number(id)||null
+        });
+        if(rRev && rRev.error){
+          toast('⚠ La plata volvió, pero el retiro #'+_sidRev+' quedó marcado como pagado · '+(rRev.error.message||'')+' · corregilo a mano','red');
+        }else{
+          const d = Array.isArray(rRev&&rRev.data) ? rRev.data[0] : (rRev&&rRev.data);
+          toast('↩ Retiro #'+_sidRev+' volvió a quedar pendiente · falta '+money(Number((d&&d.restante)||0)),'yellow');
+          try{ if(typeof cargarSolicitudesPortal==='function') await cargarSolicitudesPortal(true); }catch(_e){}
+        }
+      }catch(e){
+        toast('⚠ La plata volvió, pero no se pudo actualizar el retiro #'+_sidRev+' · '+(e.message||'')+' · corregilo a mano','red');
+      }
+    }
     toast((ok&&chuOk)?'Reversión completada OK':'Reversión con errores — revisar',(ok&&chuOk)?'green':'red');
     await window.ctrlElectron.navigateAgent();
     await cargarHistorial();

@@ -2294,3 +2294,59 @@ test('chat · el cierre automático dice de quién es la consulta y por qué se 
   assert.match(src, /ya respondida y sin contestar hace \$\{AUTOCLOSE_HORAS\} h/, 'y por qué');
   assert.match(src, /nombres\.push\(usuario\)/, 'los nombres ya estaban a mano');
 });
+
+// ── D-105 · deshacer un pago de un retiro por partes devuelve el progreso ───────────────────
+function _entornoDeshacer(rpc){
+  // El cliente de base se reemplaza al ARRANCAR: el panel lo declara como const y despues ya no
+  // se puede cambiar (por eso mi primera prueba miraba un cliente que no era el que corria).
+  const sb = arrancarPanel({ rpc: async (fn, p) => {
+    rpc.push({ fn, p });
+    return { data: [{ ok:true, total:750000, pagado:550000, restante:200000, estado:'EN_PROCESO' }], error:null };
+  }});
+  sb.avisos = [];
+  sb.toast = (m) => { sb.avisos.push(String(m).slice(0, 90)); };
+  sb.confirm = () => true;
+  sb.ctrlElectron = { navigateAgent: async () => {} };
+  sb.ensureDrexSession = async () => true;
+  sb.callDrex = async () => ({ ok: true });
+  sb.registrarCargaEnChunior = async () => ({ ok: true, movimientoId: '9999999' });
+  sb.registrarRetiroEnChunior = async () => ({ ok: true, movimientoId: '8888888' });
+  sb.registrarEnHistorial = async () => ({ id: 1 });
+  sb.ajustarSaldoBilletera = async () => {};
+  sb.cargarHistorial = async () => {};
+  sb.cargarSolicitudesPortal = async () => {};
+  sb.renderBillerasInicio = () => {};
+  sb.poblarManualBilletera = () => {};
+  sb.billeteras = [{ ID_BILLETERA: 22, NOMBRE_VISIBLE: 'GIORDANO', CHUNIOR_UID: '1170' }];
+  sb.getBilleraLanding = () => sb.billeteras[0];
+  return sb;
+}
+
+test('deshacer · un pago de retiro por partes vuelve a quedar pendiente', async () => {
+  const rpc = [];
+  const sb = _entornoDeshacer(rpc);
+  // La fila que se deshace es el tercer pago de un retiro por partes (caso #222128).
+  sb._histPorId = { '212919': { id: 212919, solicitud_id: 222128, tipo: 'RETIRO', monto: 200000, estado: 'OK' } };
+
+  await sb.deshacerOperacion('212919', 'jugadordeprueba', 'RETIRO', 200000, 22);
+
+  const rev = rpc.find(x => x.fn === 'landing_retiro_revertir_parcial');
+  assert.ok(rev, 'la plata volvia pero el retiro seguia figurando pagado · avisos: ' + sb.avisos.join(' | '));
+  assert.equal(rev.p.p_id, 222128, 'sobre la solicitud de ese movimiento');
+  assert.equal(rev.p.p_monto, 200000, 'por el monto que se deshizo');
+  assert.equal(rev.p.p_historial_id, 212919, 'queda anotado que reversion lo movio');
+  assert.ok(sb.avisos.some(a => /#222128/.test(a) && /pendiente/.test(a)),
+    'el operador tiene que enterarse de que el retiro volvio a quedar pendiente');
+  assert.ok(sb.avisos.some(a => /200.000/.test(a)), 'y de cuanto falta ahora');
+});
+
+test('deshacer · una carga suelta no toca ningun retiro', async () => {
+  const rpc = [];
+  const sb = _entornoDeshacer(rpc);
+  sb._histPorId = { '900001': { id: 900001, solicitud_id: 500500, tipo: 'CARGA', monto: 5000, estado: 'OK' } };
+
+  await sb.deshacerOperacion('900001', 'jugadordeprueba', 'CARGA', 5000, 22);
+
+  assert.equal(rpc.filter(x => x.fn === 'landing_retiro_revertir_parcial').length, 0,
+    'solo los retiros por partes tienen progreso que devolver');
+});
