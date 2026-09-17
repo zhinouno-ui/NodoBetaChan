@@ -2350,3 +2350,35 @@ test('deshacer · una carga suelta no toca ningun retiro', async () => {
   assert.equal(rpc.filter(x => x.fn === 'landing_retiro_revertir_parcial').length, 0,
     'solo los retiros por partes tienen progreso que devolver');
 });
+
+// ── D-106 · cambiar la billetera corrige de DÓNDE salió la plata ────────────────────────────
+test('cambio de billetera · corrige el "te transfirio X" que ve el jugador', async () => {
+  const rpc = [];
+  const sb = arrancarPanel({ rpc: async (fn, p) => {
+    rpc.push({ fn, p });
+    return { data: [{ ok:true, pago_actualizado:true, desde_anterior:'Pablo Leones Giordano', desde_nuevo:'Ana Matrelo' }], error:null };
+  }});
+  const avisos = [];
+  sb.toast = (m) => { avisos.push(String(m)); };
+
+  await sb._rehacerDesdeDelPago(222128,
+    { monto: 350000, created_at: '2026-09-14T21:14:55.000Z', billetera_nombre: 'GIORDANO' },
+    { ID_BILLETERA: 31, NOMBRE_VISIBLE: 'MATRELO MP', TITULAR: 'Ana Matrelo', CBU: '000', CBU_ALIAS: 'ana.mp' });
+
+  const c = rpc.find(x => x.fn === 'landing_retiro_cambiar_billetera_pago');
+  assert.ok(c, 'la billetera se cambiaba y la solicitud seguia nombrando la cuenta vieja');
+  assert.equal(c.p.p_id, 222128);
+  assert.equal(c.p.p_monto, 350000, 'el pago se ubica por su monto');
+  assert.equal(c.p.p_desde, 'Ana Matrelo', 'el jugador ve el TITULAR de la cuenta, no el nombre interno');
+  assert.equal(c.p.p_fecha, '2026-09-14T21:14:55.000Z', 'la fecha desempata si hay dos pagos iguales');
+  assert.equal(c.p.p_billetera.billetera_nombre, 'MATRELO MP');
+  assert.ok(avisos.some(a => /Ana Matrelo/.test(a)), 'y el operador se entera de que quedo corregido');
+});
+
+test('cambio de billetera · sin solicitud no inventa nada', async () => {
+  const rpc = [];
+  const sb = arrancarPanel({ rpc: async (fn, p) => { rpc.push({ fn, p }); return { data:null, error:null }; } });
+  sb.toast = () => {};
+  await sb._rehacerDesdeDelPago(null, { monto: 5000 }, { ID_BILLETERA: 31, NOMBRE_VISIBLE: 'X' });
+  assert.equal(rpc.length, 0, 'un movimiento sin solicitud no tiene pago que corregir');
+});

@@ -272,6 +272,43 @@ function abrirModalTransferirBilleteras(){
 // Esta función NO cambia nada de eso: solo deja el asiento aparte, antes de pisar.
 // El update sigue igual. Va en try porque un fallo del registro nunca debe frenar una
 // corrección que el operador necesita hacer.
+// Corrige, en la solicitud, de DÓNDE salió la plata de ese pago.
+// Cada pago de un retiro guarda el titular de la billetera que pagó: es el "te transfirió X" que ve
+// el jugador en el portal y el dato con el que se cotea la cuenta. Al cambiar la billetera de un
+// movimiento eso quedaba con la billetera vieja, así que la solicitud decía dos cosas distintas
+// (arriba la nueva, en el pago la vieja) y el jugador buscaba una transferencia que no existía.
+// Caso real: se intenta pagar de una cuenta, la transferencia no entra, se paga de otra (D-106).
+async function _rehacerDesdeDelPago(solicitudId, filaAntes, bilNueva){
+  if(!solicitudId || !bilNueva) return;
+  try{
+    const r = await supabaseClient.rpc('landing_retiro_cambiar_billetera_pago', {
+      p_id: Number(solicitudId),
+      p_monto: Math.abs(Number((filaAntes && filaAntes.monto) || 0)) || null,
+      // El jugador ve el TITULAR de la cuenta, no el nombre interno de la billetera.
+      p_desde: String(bilNueva.TITULAR || bilNueva.NOMBRE_VISIBLE || '').trim(),
+      p_billetera: {
+        billetera_id: String(bilNueva.ID_BILLETERA || ''),
+        billetera_nombre: bilNueva.NOMBRE_VISIBLE || '',
+        billetera_alias: bilNueva.CBU_ALIAS || bilNueva.ALIAS || '',
+        billetera_cbu: bilNueva.CBU || '',
+        billetera_titular: bilNueva.TITULAR || ''
+      },
+      p_fecha: (filaAntes && filaAntes.created_at) || null,
+      p_operador: (window.operador && (window.operador.usuario || window.operador.nombre)) || 'panel'
+    });
+    if(r && r.error){
+      toast('⚠ La billetera se cambió, pero el jugador sigue viendo la cuenta anterior · '+(r.error.message||'')+' · avisale','red');
+      return;
+    }
+    const d = Array.isArray(r && r.data) ? r.data[0] : (r && r.data);
+    if(d && d.pago_actualizado){
+      toast('✓ El pago ahora figura desde '+(d.desde_nuevo||bilNueva.NOMBRE_VISIBLE)+' · el jugador ve la cuenta correcta','green');
+    }
+  }catch(e){
+    toast('⚠ La billetera se cambió, pero no se pudo corregir de dónde salió el pago · '+(e.message||''),'red');
+  }
+}
+
 async function _asentarCambioBilletera(datos){
   try{
     const desde = datos.bilAnteriorNombre || (datos.bilAnteriorId ? ('id ' + datos.bilAnteriorId) : '—');
@@ -343,7 +380,7 @@ function cambiarBilleteraHistorialLocal(historialId, currentBilId, solicitudId){
           // Leer antes de pisar, igual que en el camino con N° de Chunior.
           try{
             const q = await supabaseClient.from("historial_ops")
-              .select("monto,billetera_id,billetera_nombre")
+              .select("monto,billetera_id,billetera_nombre,created_at")
               .eq("id", historialIdUUID).maybeSingle();
             _antesLocal = (q && q.data) ? q.data : null;
           }catch(_e){}
@@ -380,6 +417,8 @@ function cambiarBilleteraHistorialLocal(historialId, currentBilId, solicitudId){
               .update({ metadata: {...metaActual, ...metaPatch} })
               .eq("id", solicitudId);
           }catch(eMeta){ console.warn("update landing_solicitudes metadata local:", eMeta); }
+          // Y de DÓNDE salió la plata de ese pago: el dato que ve el jugador y con el que se cotea (D-106).
+          await _rehacerDesdeDelPago(solicitudId, _antesLocal, bilNueva);
         }
 
         toast("✅ Billetera actualizada en historial", "green");
@@ -446,7 +485,7 @@ function cambiarBilleteraMovimiento(movId, historialId, currentBilId){
           if(historialId){
             try{
               const q = await supabaseClient.from("historial_ops")
-                .select("monto,billetera_id,billetera_nombre,solicitud_id")
+                .select("monto,billetera_id,billetera_nombre,solicitud_id,created_at")
                 .eq("id", historialId).maybeSingle();
               _antes = (q && q.data) ? q.data : null;
             }catch(_e){}
@@ -469,6 +508,10 @@ function cambiarBilleteraMovimiento(movId, historialId, currentBilId){
             bilNuevaId: nuevoBilId,
             bilNuevaNombre: bilNueva.NOMBRE_VISIBLE
           });
+          // De DÓNDE salió la plata, en la solicitud: es lo que ve el jugador ("te transfirió X") y
+          // con lo que se cotea la cuenta. Este camino no tocaba la solicitud, así que quedaba
+          // nombrando la billetera vieja y el jugador buscaba una transferencia inexistente (D-106).
+          await _rehacerDesdeDelPago(_antes ? _antes.solicitud_id : null, _antes, bilNueva);
           const tagMov = r.movId ? ' (N° ' + r.movId + ')' : '';
           toast("✅ Billetera cambiada · " + bilNueva.NOMBRE_VISIBLE + tagMov, "green");
           cerrarModal();
