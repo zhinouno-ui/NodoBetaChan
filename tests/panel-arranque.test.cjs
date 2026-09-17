@@ -2382,3 +2382,74 @@ test('cambio de billetera · sin solicitud no inventa nada', async () => {
   await sb._rehacerDesdeDelPago(null, { monto: 5000 }, { ID_BILLETERA: 31, NOMBRE_VISIBLE: 'X' });
   assert.equal(rpc.length, 0, 'un movimiento sin solicitud no tiene pago que corregir');
 });
+
+// ── D-107 · la carga no se anota dos veces cuando Chunior se cae justo despues de guardar ───
+function _chuniorFalso(estado){
+  // Responde como la ventana real: el chequeo de lista, las filas, el formulario y el resultado.
+  return {
+    navigate: async (u) => { estado.navego.push(String(u)); },
+    exec: async (js) => {
+      if(js.includes('getElementById("result_list")')) return estado.listaCarga;
+      if(js.includes('#result_list tbody tr'))          return estado.filas;
+      if(js.includes('id_cuenta_destino') && js.includes('return !!(')) return true;
+      if(js.includes('s.value='))                        return { ok:true, valS:'957', valM:'10000', valN:'minombresclaudia' };
+      if(js.includes('li.success'))                      return { ok:true, id:'9999999' };
+      return null;
+    }
+  };
+}
+function _colaChunior(sb, ts){
+  sb.localStorage.setItem('nodo_chunior_pendientes', JSON.stringify([
+    { id:'cp1', ts, intentos:0, tipo:'CARGA', uid:'957', monto:10000, usuario:'minombresclaudia', histId:null }
+  ]));
+}
+function _fechaChunior(ms){
+  const d = new Date(ms), z = (n) => String(n).padStart(2,'0');
+  return z(d.getDate())+'-'+z(d.getMonth()+1)+'-'+d.getFullYear()+' '+z(d.getHours())+':'+z(d.getMinutes())+':'+z(d.getSeconds());
+}
+
+test('chunior · si la anotacion YA entro, el reintento NO la duplica', async () => {
+  const sb = arrancarPanel();
+  sb.toast = () => {}; sb.setTimeout = (fn) => setTimeout(fn, 0);
+  const ts = Date.now() - 60000;                    // el movimiento original, un minuto antes
+  const estado = { navego: [], listaCarga: true,
+    filas: [{ id:'9693249', montoTxt:'$ 10.000,00', notas:'minombresclaudia', creacion:_fechaChunior(ts), texto:'' }] };
+  sb.chunior = _chuniorFalso(estado);
+  _colaChunior(sb, ts);
+
+  await sb.chuniorPendientesReintentar(true);
+
+  assert.ok(estado.navego.some(u => u.includes('movimientoficha/?q=')), 'primero tiene que preguntar en la lista');
+  assert.ok(!estado.navego.some(u => u.includes('movimientoficha/add')),
+    'y NO volver a anotar: asi se duplico la carga de minombresclaudia el 17/09');
+  assert.equal(JSON.parse(sb.localStorage.getItem('nodo_chunior_pendientes')).length, 0,
+    'la anotacion sale de la cola porque ya estaba hecha');
+});
+
+test('chunior · si NO esta en la lista, si la anota', async () => {
+  const sb = arrancarPanel();
+  sb.toast = () => {}; sb.setTimeout = (fn) => setTimeout(fn, 0);
+  const estado = { navego: [], listaCarga: true, filas: [] };   // la lista cargo y esta vacia
+  sb.chunior = _chuniorFalso(estado);
+  _colaChunior(sb, Date.now() - 60000);
+
+  await sb.chuniorPendientesReintentar(true);
+
+  assert.ok(estado.navego.some(u => u.includes('movimientoficha/add')),
+    'con la lista leida y sin el movimiento, hay que anotarlo');
+});
+
+test('chunior · si la lista no carga, NO anota a ciegas', async () => {
+  const sb = arrancarPanel();
+  sb.toast = () => {}; sb.setTimeout = (fn) => setTimeout(fn, 0);
+  const estado = { navego: [], listaCarga: false, filas: [] };  // Chunior sigue caido
+  sb.chunior = _chuniorFalso(estado);
+  _colaChunior(sb, Date.now() - 60000);
+
+  await sb.chuniorPendientesReintentar(true);
+
+  assert.ok(!estado.navego.some(u => u.includes('movimientoficha/add')),
+    '"no pude ver" no es "no esta": anotar aca es duplicar plata');
+  assert.equal(JSON.parse(sb.localStorage.getItem('nodo_chunior_pendientes')).length, 1,
+    'queda pendiente para el proximo intento');
+});

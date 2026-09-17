@@ -22,7 +22,9 @@ function _chuVariantesMonto(monto){
 //     texto de fila si la fila no trae notas).
 // Devuelve { existe, movimientoId, creacion?, vinculadoAOtro? } (existe/movimientoId = compat con el caller).
 async function verificarMovimientoEnChunior(usuario, monto, tCargaMs, ventanaMs, excluirIds){
-  if(!window.chunior || !usuario) return { existe:false, movimientoId:null };
+  // "No pude verificar" NO es lo mismo que "no está": si el que llama no puede distinguirlo,
+  // vuelve a anotar un movimiento que ya existe y duplica la plata (D-107). Por eso va `ok`.
+  if(!window.chunior || !usuario) return { ok:false, existe:false, encontrado:false, movimientoId:null, motivo:'sin ventana de Chunior' };
   const filtraTiempo = (tCargaMs !== undefined && tCargaMs !== null);
   const tRef    = tCargaMs || Date.now();
   const ventana = ventanaMs || 10*60*1000; // ±10 min (cubre demoras y desfase de reloj)
@@ -41,7 +43,7 @@ async function verificarMovimientoEnChunior(usuario, monto, tCargaMs, ventanaMs,
       if(listo) break;
       await new Promise(function(r){ setTimeout(r,250); });
     }
-    if(!listo) return { existe:false, movimientoId:null };
+    if(!listo) return { ok:false, existe:false, encontrado:false, movimientoId:null, motivo:'la lista de Chunior no cargó' };
 
     // Leer hasta 40 filas: id, monto (varias clases posibles), notas, fecha de creación y texto de respaldo.
     const res = await window.chunior.exec(
@@ -62,7 +64,8 @@ async function verificarMovimientoEnChunior(usuario, monto, tCargaMs, ventanaMs,
       '})()'
     ).catch(function(){ return []; });
 
-    if(!res || !res.length) return { existe:false, movimientoId:null };
+    // La lista cargó y no trajo ninguna fila: eso SÍ es "no está".
+    if(!res || !res.length) return { ok:true, existe:false, encontrado:false, movimientoId:null };
 
     // Candidatos que coinciden en usuario + monto (+ horario si aplica).
     const candidatos = [];
@@ -85,18 +88,18 @@ async function verificarMovimientoEnChunior(usuario, monto, tCargaMs, ventanaMs,
       if(filtraTiempo){ if(tFila === null || Math.abs(tFila - tRef) > ventana) continue; } // horario NO coincide
       candidatos.push({ id: r.id||null, creacion: r.creacion, dt: (tFila!==null ? Math.abs(tFila - tRef) : Infinity) });
     }
-    if(!candidatos.length) return { existe:false, movimientoId:null };
+    if(!candidatos.length) return { ok:true, existe:false, encontrado:false, movimientoId:null };
     candidatos.sort(function(a,b){ return a.dt - b.dt; }); // el más cercano en horario primero
     // Descartar los que YA están vinculados a otra operación.
     const libres = candidatos.filter(function(c){ return !(c.id && excluir.has(String(c.id))); });
     if(libres.length){
       const best = libres[0];
-      return { existe:true, movimientoId: best.id || null, creacion: best.creacion };
+      return { ok:true, existe:true, encontrado:true, movimientoId: best.id || null, creacion: best.creacion };
     }
     // Hubo match(es) pero TODOS ya pertenecen a otra op → no lo reclamamos como propio.
-    return { existe:false, movimientoId:null, vinculadoAOtro:true, idVinculado: candidatos[0].id, creacion: candidatos[0].creacion };
+    return { ok:true, existe:false, encontrado:false, vinculadoAOtro:true, idVinculado: candidatos[0].id, creacion: candidatos[0].creacion };
   } catch(e){
-    return { existe:false, movimientoId:null };
+    return { ok:false, existe:false, encontrado:false, movimientoId:null, motivo:(e&&e.message)||'error leyendo la lista de Chunior' };
   }
 }
 
@@ -140,6 +143,30 @@ window.chuniorPendientesReintentar = async function(manual){
   try{
     for(const p of lista.slice()){
       if(p.intentos >= 8) continue;                      // no insistir para siempre en silencio
+      // PRIMERO: ¿ya entró? Si Chunior se cayó JUSTO DESPUÉS de guardar, el movimiento existe y
+      // volver a anotarlo duplica la carga — pasó el 17/09 en el cambio de turno. La verificación de
+      // adentro del registro no cubre este caso (sólo mira cuando no hubo ni éxito ni error, y acá
+      // hubo error). Se pregunta por el horario del movimiento ORIGINAL, no por el de ahora (D-107).
+      let ya = null;
+      try{ ya = await verificarMovimientoEnChunior(p.usuario, p.monto, p.ts || Date.now(), 15*60*1000); }
+      catch(_e){ ya = null; }
+      if(ya && ya.ok && ya.encontrado){
+        window.chuniorPendienteQuitar(p.id);
+        try{
+          if(p.histId && typeof supabaseClient!=='undefined' && ya.movimientoId){
+            await supabaseClient.from('historial_ops').update({ chunior_movimiento_id:String(ya.movimientoId) }).eq('id', p.histId);
+          }
+        }catch(_e){}
+        try{ toast('✓ '+(p.tipo||'MOV')+' de '+p.usuario+' · '+money(p.monto)+' YA estaba anotado en Chunior'+(ya.movimientoId?(' · N° '+ya.movimientoId):'')+' — no se duplicó','green'); }catch(_e){}
+        try{ if(typeof cargarHistorial==='function') cargarHistorial(); }catch(_e){}
+        continue;
+      }
+      // No se pudo confirmar (la lista no cargó, Chunior sigue caído): NO se anota a ciegas.
+      // Queda pendiente y se vuelve a intentar; es preferible a duplicar plata.
+      if(!(ya && ya.ok)){
+        if(manual) toast('No pude confirmar en Chunior si ya estaba anotado'+((ya&&ya.motivo)?(' ('+ya.motivo+')'):'')+' · no anoto para no duplicar','yellow');
+        break;
+      }
       let r = null;
       try{
         r = (String(p.tipo).toUpperCase()==='RETIRO')

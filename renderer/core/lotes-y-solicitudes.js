@@ -107,6 +107,9 @@ async function procesarColaCambioBilletera(filas, bilNueva){
           bilNuevaNombre: bilNueva.NOMBRE_VISIBLE,
           origen: 'MANUAL_LOTE'
         });
+        // El mismo motor que el cambio de a uno: corrige de DÓNDE salió la plata en la solicitud.
+        // Esta cola no lo hacía, así que el lote arrastraba el bug que se arregló de a uno (D-106).
+        try{ if(typeof _rehacerDesdeDelPago==='function') await _rehacerDesdeDelPago(h.solicitud_id, h, bilNueva); }catch(_e){}
         h.billetera_id = bilNueva.ID_BILLETERA;
         h.billetera_nombre = bilNueva.NOMBRE_VISIBLE;
       } else {
