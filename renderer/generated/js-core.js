@@ -8739,7 +8739,7 @@ function _jugLocalConfiable(k, j){
 // Devuelve { usuario:{exacto, similares[]}, telefono:{exacto, similares[]} }
 window.altaCotejarDatos = async function(usuarioDecl, telefonoDecl){
   const uD=_altaNormU(usuarioDecl), tD=_altaNormTel(telefonoDecl);
-  const out={ usuario:{exacto:null, similares:[]}, telefono:{exacto:null, similares:[]} };
+  const out={ usuario:{exacto:null, similares:[]}, telefono:{exacto:null, similares:[], otros:[]} };
   // Índice de candidatos: base LOCAL de jugadores (gratis, ya en memoria)
   const cand={};  // key usuario → {usuario, telefonos:[], titular, fuente}
   try{
@@ -8816,6 +8816,12 @@ window.altaCotejarDatos = async function(usuarioDecl, telefonoDecl){
           // otra, la tarjeta nombraba a un usuario y el confirm de vincular a otro distinto.
           const _mio = _altaNormU(c.pc||'')===_altaNormU(pcOperativa||'');
           const _yaMio = out.telefono.exacto && _altaNormU(out.telefono.exacto.pc||'')===_altaNormU(pcOperativa||'');
+          // Todos los dueños de este número, con nombre y oficina. Antes sólo quedaba la bandera
+          // "varios": la tarjeta podía avisar que el teléfono estaba repetido pero no tenía con qué
+          // decir CON QUIÉN, que es lo único que el operador puede hacer algo al respecto.
+          if(!out.telefono.otros.some(function(o){ return _altaNormU(o.usuario)===_altaNormU(c.usuario); })){
+            out.telefono.otros.push({ usuario:c.usuario, pc:c.pc||'', _tel:tn });
+          }
           if(!out.telefono.exacto || (_mio && !_yaMio)) out.telefono.exacto=Object.assign({_tel:tn}, c);
           else if(_altaNormU(out.telefono.exacto.usuario)!==_altaNormU(c.usuario) && _mio===_yaMio) out.telefono.varios=true;
           return;
@@ -9005,7 +9011,7 @@ function _altaCotejoHtml(uDecl, tDecl, r, onPick, titulo){
   };
   const sub=function(t){ return '<div style="font-size:10.5px;color:#8b949e;margin-top:1px">'+t+'</div>'; };
 
-  let filas='', alerta=false;
+  let filas='', alerta=false, _telCompartido=false;
   // ── 1) USUARIO declarado (INDEPENDIENTE del teléfono) ──
   if(uDecl){
     if(uOk){
@@ -9030,8 +9036,30 @@ function _altaCotejoHtml(uDecl, tDecl, r, onPick, titulo){
       // Si el teléfono figura en MÁS DE UN usuario, no hay "mismo dueño" posible: es ambiguo y
       // tiene que decidirlo el operador. Nunca en verde.
       const mismoDueno = !r.telefono.varios && (duenoTel===uReal || duenoTel===uDeclN);
+      // Las otras cuentas con este MISMO número (sin repetir al que ya se muestra como dueño).
+      const _otrosDuenos = (r.telefono.otros||[]).filter(function(o){
+        return _altaNormU(o.usuario)!==_altaNormU(tOk.usuario);
+      });
+      const _tambienElDecl = (r.telefono.otros||[]).some(function(o){
+        const n=_altaNormU(o.usuario); return n===uReal || n===uDeclN;
+      });
       if(mismoDueno){
         filas+=fila('Teléfono', esc(tN), '✓ mismo dueño', '#3fb950', '');
+      } else if(r.telefono.varios && _tambienElDecl && _otrosDuenos.length){
+        // El teléfono SÍ es del jugador, pero no es sólo suyo. Antes acá salía "⚠ es de veronica59x"
+        // con veronica59x declarada: parecía un error del panel, no decía con qué otra cuenta lo
+        // comparte —lo único accionable— y el cartel de arriba decía REVISAR sin motivo a la vista.
+        alerta=true; _telCompartido=true;
+        const _nom=function(o){
+          return '<b style="color:#f0f6fc">'+esc(o.usuario)+'</b>'
+            + (o.pc && _altaNormU(o.pc)!==_altaNormU(pcOperativa||'') ? ' <span style="color:#8b949e">(oficina '+esc(o.pc)+')</span>' : '');
+        };
+        filas+=fila('Teléfono', esc(tN), '⚠ lo comparten '+((r.telefono.otros||[]).length)+' cuentas', '#e3b341',
+          sub('Es de <b style="color:#f0f6fc">'+esc(uDecl||tOk.usuario)+'</b>, y el mismo número está también en '
+              + _otrosDuenos.map(_nom).join(', ')
+              + '. Si es la misma persona con dos cuentas, seguí; si no, preguntale cuál usa.')
+          + '<div>'+_otrosDuenos.map(function(o){
+              return chip(o.usuario, tN, 'usar '+esc(o.usuario), 'ambar', true); }).join('')+'</div>');
       } else {
         const grave = !!uDecl;                       // sin usuario declarado es dato, no contradicción
         if(grave) alerta=true;
@@ -9109,6 +9137,7 @@ function _altaCotejoHtml(uDecl, tDecl, r, onPick, titulo){
   }[nivel];
   const etiqueta = nivel==='conflicto' ? 'No coinciden'
                  : (nivel==='revisar' && _typoPropio) ? 'Teléfono mal tipeado'
+                 : (nivel==='revisar' && _telCompartido) ? 'Teléfono en dos cuentas'
                  : nivel==='revisar'   ? 'Revisar'
                  : nivel==='nuevo'     ? 'Sin usuario'
                  : (uOk&&tOk)          ? 'Coinciden'

@@ -2514,3 +2514,30 @@ test('reintento · si el pago YA estaba anotado, no lo cuenta dos veces', () => 
     'un pago deshecho no bloquea el nuevo');
   assert.equal(sb._pagoYaAnotado([], 35000, t), false);
 });
+
+// ── El telefono repetido en dos cuentas (sol. 238354 · veronica59x, 17/09) ──────────────────
+function _cotejoVeronica(varios){
+  const dueno = { usuario:'veronica59x', pc:'P4', _tel:'3704786459' };
+  return {
+    usuario: { exacto:{ usuario:'veronica59x', telefonos:['3704786459'] }, similares:[] },
+    telefono: { exacto:dueno, varios:varios, similares:[],
+      otros: varios ? [dueno, { usuario:'vippveronicaaaa', pc:'P4', _tel:'3704786459' }] : [dueno] }
+  };
+}
+
+test('cotejo · el telefono en dos cuentas dice CON QUIEN lo comparte', () => {
+  const sb = arrancarPanel();
+  const html = sb._altaCotejoHtml('veronica59x', '3704786459', _cotejoVeronica(true), '_altaAbrirVincular', 'declaró el cliente').html;
+  assert.ok(html.includes('vippveronicaaaa'), 'lo unico accionable es saber con que otra cuenta lo comparte');
+  assert.ok(html.includes('lo comparten 2 cuentas'), 'el motivo tiene que estar a la vista');
+  assert.ok(!html.includes('⚠ es de </span>') && !/⚠ es de <\/b>?<b[^>]*>veronica59x/.test(html),
+    'no puede avisar que el telefono "es de" el mismo usuario que estas validando');
+  assert.ok(html.includes('Teléfono en dos cuentas'), 'el cartel de arriba dice el motivo, no un REVISAR pelado');
+});
+
+test('cotejo · un telefono de un solo dueño sigue en verde', () => {
+  const sb = arrancarPanel();
+  const html = sb._altaCotejoHtml('veronica59x', '3704786459', _cotejoVeronica(false), '_altaAbrirVincular', '').html;
+  assert.ok(html.includes('✓ mismo dueño'), 'el caso normal no se toca');
+  assert.ok(!html.includes('lo comparten'), 'y no inventa un aviso donde no hay nada que revisar');
+});
