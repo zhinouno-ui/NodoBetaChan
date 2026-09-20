@@ -2827,8 +2827,13 @@ if(document.readyState !== "loading") nodoInitUpdater();
 // prefUsuario/prefTelefono: para poder crear la cuenta DESDE la consulta del chat, con lo que el
 // cliente ya declaró. Antes había que copiar los datos, irse al apartado manual, crear la cuenta
 // allá, copiar el mensaje, volver al chat y recién ahí validar.
-function abrirModalCrearUsuario(prefUsuario, prefTelefono){
+function abrirModalCrearUsuario(prefUsuario, prefTelefono, desdeChat){
   if(!window.ctrlElectron){ alert("Solo disponible en la app de escritorio."); return; }
+  // ¿El alta salió de una consulta del chat? Entonces el aviso con los datos de ingreso tiene que
+  // ir a ESE hilo. En un alta el chat está abierto con el apodo que puso el cliente ("lau"), no con
+  // el alias que se acaba de crear, así que rutear por usuario no encontraba nada y el mensaje no
+  // salía: por eso había que validar, y validar de nuevo, para que le llegara.
+  window.__altaDesdeChat = !!desdeChat;
   const _pU = escapeHtml(String(prefUsuario||'').trim());
   const _pT = escapeHtml(String(prefTelefono||'').trim());
   abrirModal(
@@ -2946,7 +2951,7 @@ async function _ejecutarCrearUsuario(){
           origen:'MANUAL', estado:'OK', notas:'clave → '+claveFinal+' · alta' });
       }catch(_e){}
       try{ cerrarModal(); }catch(_e){}
-      await ejecutarVincular(aliasFinal, telefono, false);
+      await ejecutarVincular(aliasFinal, telefono, !!window.__altaDesdeChat);
       return;
     } else if(r?.error === 'duplicado'){
       // Alias duplicado → buscar y proponer alternativas que NO estén usadas
@@ -9016,7 +9021,17 @@ async function ejecutarVincular(usuario, telefono, desdeChat){
         // portal revalida con los datos buenos y el botón "Ingresar" funciona sin re-loguear.
         const msg="✅ ¡Listo! Ya validamos tu cuenta.\n\nPara entrar al portal usá:\n👤 Usuario: "+usuario+"\n📱 Teléfono: "+telefono+"\n\nTocá el botón *Ingresar* acá abajo 👇\n⟦INGRESAR:"+usuario+"|"+telefono+"⟧";
         window.nodoEnviarMensajePortal(usuario,msg,desdeChat).then(rr=>{
-          if(!(rr&&rr.ok)) console.warn("aviso 'Ingresar' no ruteado ("+((rr&&rr.error)||"?")+") — el portal lo detecta igual por auto-chequeo");
+          if(rr&&rr.ok) return;
+          const _e=(rr&&rr.error)||"?";
+          console.warn("aviso 'Ingresar' no ruteado ("+_e+") — el portal lo detecta igual por auto-chequeo");
+          // Esto se comía el fallo en la consola: el operador creía que el cliente ya tenía sus
+          // datos, el cliente no recibía nada, y terminaba validando dos veces para que saliera.
+          try{
+            toast(_e==="sin-ticket"
+              ? "⚠ "+usuario+" quedó validado, pero no tiene chat abierto donde mandarle los datos · copiáselos y mandáselos vos"
+              : "⚠ "+usuario+" quedó validado, pero el aviso por chat no salió ("+_e+") · mandáselo a mano",
+              "yellow");
+          }catch(_t){}
         }).catch(_e=>{});
       }
     }catch(_e){}
@@ -9519,7 +9534,7 @@ window._altaCrearDesdeCotejo = function(usuario, telefono){
     try{ toast('No encontré el alta de usuarios en esta pantalla','red'); }catch(_e){}
     return;
   }
-  abrirModalCrearUsuario(usuario, telefono);
+  abrirModalCrearUsuario(usuario, telefono, true);   // el aviso va al hilo que está abierto
 };
 const _RE_DIACRITICOS = new RegExp('[\\u0300-\\u036f]', 'g');
 const _RE_SEPARADORES = new RegExp('[\\s.,;:¿?¡!\\-_/\\\\]', 'g');

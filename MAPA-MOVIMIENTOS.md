@@ -54,7 +54,7 @@ el día que dos lugares distintos anoten un pago, se va a contar dos veces.
 | Acción | Motor | 1 Drex | 2 Chunior | 3 Historial | 4 Solicitud | 5 Progreso | 6 Saldo bill. | 7 Chat |
 |---|---|---|---|---|---|---|---|---|
 | **Reintentar** una operación fallida | `historial-operaciones.js:558` | ✓ | ✓ | ✓ | ✓ *(arreglado, `e967cb6`)* | ✓ usa el motor del portal | ✗ **H-5** | ✗ **H-4** |
-| **Deshacer** | `historial-operaciones.js:735` | ✓ | ✓ espejo | ✓ + fila de reversión | ✓ sólo RETIRO · ✗ **H-3** en CARGA | ✓ | ✓ | ✗ **H-4** |
+| **Deshacer** | `historial-operaciones.js:735` | ✓ | ✓ espejo | ✓ + fila de reversión | ✓ retiro y carga | ✓ | ✓ | ✓ si la carga queda sin pagar |
 | **Cambiar la billetera** de un movimiento | `chunior-recuperacion-y-transferencias.js` | — | ✓ | ✓ | ✓ | ✓ corrige el "te transfirió X" | ✓ las dos | — |
 | **Cambio de billetera por lote** | `lotes-y-solicitudes.js:57` | — | ✓ | ✓ | ✓ mismo motor | ✓ | ✓ | — |
 | **Buscar el N° de Chunior** de una fila | `historial-operaciones.js:17` | — | lee | ✓ | ≈ en memoria | — | — | — |
@@ -88,16 +88,18 @@ caja falta esa plata y no hay con qué cotejar.
 **Qué pasa** — Si el retiro ya tenía pagos parciales, el progreso queda en lo viejo y el retiro
 figura pagado igual. Ese es exactamente el cuadro de "el parcial quedó colgado" (D-100).
 
-### H-3 · Deshacer una CARGA que vino de una solicitud deja la solicitud acreditada
+### H-3 · ✅ RESUELTO (20/09) · Deshacer una CARGA que vino de una solicitud dejaba la solicitud acreditada
 
 **Dónde** — `historial-operaciones.js:783`: `if(ok && _sidRev && tipoOriginal==='RETIRO')`. La
-condición es sólo para retiros.
+condición era sólo para retiros.
 
 **Qué pasa** — Se le sacan las fichas al jugador, vuelve la plata, se anota la reversión… y el
 jugador sigue viendo "acreditada". Ojo: el arreglo no es reabrir siempre, porque *deshacer* también
 se usa para borrar una carga duplicada — ahí la solicitud sí está bien pagada por la otra fila. El
-criterio tiene que ser: reabrir sólo si, después de la reversión, no queda otro movimiento OK que
-cubra el monto de la solicitud.
+criterio quedó así: se reabre sólo si, después de la reversión, no queda otra CARGA OK que cubra el
+monto de la solicitud (`_solicitudQuedoSinPagar`). Si se reabre, la solicitud vuelve a EN_REVISION
+con etapa `CARGA_REVERTIDA_PANEL` y el jugador recibe el aviso, porque el "✅ acreditada" que le
+mandamos ya no es cierto.
 
 ### H-4 · El jugador no se entera cuando la operación se resuelve desde el expediente
 
@@ -125,14 +127,20 @@ original tampoco lo había hecho, porque el ajuste está en su rama de éxito
 **A definir con Juan** — puede ser a propósito (esa plata no es de la caja del portal). Si lo es,
 se anota como decidido y se deja de mirar.
 
-### H-7 · `agent-preload-bet300.js` no tiene nada del blindaje de sesión
+### H-7 · ✅ RESUELTO (20/09) · El loop de BET300
 
-**Dónde** — expone los mismos nueve métodos que `agent-preload.js`, pero sin `LOGOUT_URL`, sin
-`_marcarSesionMuerta`, sin `_opsEnCurso` y sin `detectarModalSesionInvalida` (0 apariciones de cada
-uno).
+**La causa no estaba en el preload** — `refrescarSaldoAgente` (el widget del saldo, cada 60 s) era el
+único lector periódico que NO tomaba `_drexGlobalLock`. La cola de Agentes serializa llamada por
+llamada, pero una carga son dos llamadas (buscar el usuario y después cargarle), así que el refresco
+se colaba justo en el medio. En BET300 leer las fichas obliga a irse a `tokens-report` y volver: la
+pantalla se movía abajo de la operación, el panel lo veía como "la página se recargó durante la
+operación", reintentaba, y al minuto volvía a pasar. Ese es el loop corto que reportaron.
 
-**Qué pasa** — En las oficinas con BET300, la sesión caída del casino vuelve a hacer lo de antes:
-el cartel pasa, el preload lo acepta y la operación sale mal sin que nadie lo vea.
+**Cómo quedó** — el widget toma el candado y se saltea el refresco si hay algo operando (lo lee al
+minuto siguiente). Además, del lado del preload de BET300: una sola puerta para recargar
+(`_navegarA`, que no recarga con una operación en curso ni dos veces en 25 s), `obtenerSaldoAgente`
+no se mueve de pantalla si hay un modal de trabajo abierto, y **todo error ahora dice dónde quedó
+parada la ventana** (`_resumenPantalla`), que era lo que faltaba para poder arreglarlo a distancia.
 
 ### Por revisar (todavía sin evidencia)
 
@@ -152,6 +160,9 @@ el cartel pasa, el preload lo acepta y la operación sale mal sin que nadie lo v
 | Cambio de billetera → lo que ve el jugador | Un solo motor para los tres caminos (ficha, historial y lote) | `cambio de billetera · corrige el "te transfirio X"` |
 | Cola de Chunior | Verifica en la lista real antes de anotar; si no pudo ver, no anota a ciegas | `chunior · si la anotacion YA entro…`, `· si la lista no carga, NO anota a ciegas` |
 | Anotación en Chunior (gasto/propina/depósito) | El script inyectado se arma derecho (`_readyChuniorJs`) | prueba que **ejecuta** el depósito contra una pantalla simulada |
+| Deshacer una carga → solicitud | Se reabre sólo si no quedó otra carga que la cubra; si se reabre, se le avisa al jugador | `deshacer carga · el criterio distingue…`, `· si queda sin pagar…` |
+| El widget del saldo → operaciones | Toma el candado global; se saltea el refresco si hay algo operando | `saldo del agente · no lee las fichas con una operacion en curso` |
+| Tarjeta de cotejo | Sugiere sólo lo que tiene respaldo (mismo teléfono), y deja crear la cuenta ahí mismo | `cotejo · un alias corto no dispara cuatro sugerencias`, `· si la cuenta parecida tiene el telefono` |
 
 ---
 

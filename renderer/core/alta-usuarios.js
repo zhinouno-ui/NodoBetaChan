@@ -1,8 +1,13 @@
 // prefUsuario/prefTelefono: para poder crear la cuenta DESDE la consulta del chat, con lo que el
 // cliente ya declaró. Antes había que copiar los datos, irse al apartado manual, crear la cuenta
 // allá, copiar el mensaje, volver al chat y recién ahí validar.
-function abrirModalCrearUsuario(prefUsuario, prefTelefono){
+function abrirModalCrearUsuario(prefUsuario, prefTelefono, desdeChat){
   if(!window.ctrlElectron){ alert("Solo disponible en la app de escritorio."); return; }
+  // ¿El alta salió de una consulta del chat? Entonces el aviso con los datos de ingreso tiene que
+  // ir a ESE hilo. En un alta el chat está abierto con el apodo que puso el cliente ("lau"), no con
+  // el alias que se acaba de crear, así que rutear por usuario no encontraba nada y el mensaje no
+  // salía: por eso había que validar, y validar de nuevo, para que le llegara.
+  window.__altaDesdeChat = !!desdeChat;
   const _pU = escapeHtml(String(prefUsuario||'').trim());
   const _pT = escapeHtml(String(prefTelefono||'').trim());
   abrirModal(
@@ -120,7 +125,7 @@ async function _ejecutarCrearUsuario(){
           origen:'MANUAL', estado:'OK', notas:'clave → '+claveFinal+' · alta' });
       }catch(_e){}
       try{ cerrarModal(); }catch(_e){}
-      await ejecutarVincular(aliasFinal, telefono, false);
+      await ejecutarVincular(aliasFinal, telefono, !!window.__altaDesdeChat);
       return;
     } else if(r?.error === 'duplicado'){
       // Alias duplicado → buscar y proponer alternativas que NO estén usadas

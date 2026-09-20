@@ -217,7 +217,17 @@ async function ejecutarVincular(usuario, telefono, desdeChat){
         // portal revalida con los datos buenos y el botón "Ingresar" funciona sin re-loguear.
         const msg="✅ ¡Listo! Ya validamos tu cuenta.\n\nPara entrar al portal usá:\n👤 Usuario: "+usuario+"\n📱 Teléfono: "+telefono+"\n\nTocá el botón *Ingresar* acá abajo 👇\n⟦INGRESAR:"+usuario+"|"+telefono+"⟧";
         window.nodoEnviarMensajePortal(usuario,msg,desdeChat).then(rr=>{
-          if(!(rr&&rr.ok)) console.warn("aviso 'Ingresar' no ruteado ("+((rr&&rr.error)||"?")+") — el portal lo detecta igual por auto-chequeo");
+          if(rr&&rr.ok) return;
+          const _e=(rr&&rr.error)||"?";
+          console.warn("aviso 'Ingresar' no ruteado ("+_e+") — el portal lo detecta igual por auto-chequeo");
+          // Esto se comía el fallo en la consola: el operador creía que el cliente ya tenía sus
+          // datos, el cliente no recibía nada, y terminaba validando dos veces para que saliera.
+          try{
+            toast(_e==="sin-ticket"
+              ? "⚠ "+usuario+" quedó validado, pero no tiene chat abierto donde mandarle los datos · copiáselos y mandáselos vos"
+              : "⚠ "+usuario+" quedó validado, pero el aviso por chat no salió ("+_e+") · mandáselo a mano",
+              "yellow");
+          }catch(_t){}
         }).catch(_e=>{});
       }
     }catch(_e){}
@@ -720,5 +730,5 @@ window._altaCrearDesdeCotejo = function(usuario, telefono){
     try{ toast('No encontré el alta de usuarios en esta pantalla','red'); }catch(_e){}
     return;
   }
-  abrirModalCrearUsuario(usuario, telefono);
+  abrirModalCrearUsuario(usuario, telefono, true);   // el aviso va al hilo que está abierto
 };
