@@ -57,6 +57,17 @@ if(enElectron){
 async function refrescarSaldoAgente(){
   if(!enElectron) return;
   const el = document.getElementById("agentBalanceVal");
+  // Esto es un WIDGET: no puede meterse en el medio de una operación. La cola de Agentes serializa
+  // llamada por llamada, pero una carga son dos llamadas (buscar el usuario y después cargarle), y
+  // este refresco de cada 60 s se colaba justo en el medio. En BET300 leer las fichas obliga a irse
+  // a "tokens-report" y volver, así que la pantalla se movía abajo de la operación: el panel lo veía
+  // como "la página se recargó durante la operación", reintentaba, y al minuto volvía a pasar. Ese
+  // es el loop corto que siguen reportando las oficinas de BET300 (H-7).
+  const _conCandado = typeof _drexGlobalLock === 'function' && typeof _drexGlobalUnlock === 'function';
+  if(_conCandado && !_drexGlobalLock('saldo del agente')){
+    if(el && !el.textContent.trim()) el.textContent = "—";
+    return;                               // hay algo operando: se lee en el próximo minuto
+  }
   if(el) el.textContent = "Cargando...";
   try{
     await window.ctrlElectron.openAgentWindow();
@@ -66,6 +77,8 @@ async function refrescarSaldoAgente(){
     else { if(el) el.textContent = "—"; }
   }catch(e){
     if(el) el.textContent = "⚠ Error";
+  }finally{
+    if(_conCandado) _drexGlobalUnlock();
   }
 }
 if(enElectron){

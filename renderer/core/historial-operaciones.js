@@ -468,6 +468,74 @@ function renderHistorial(lista){
 //   - Chunior: detectable por chunior_movimiento_id (null = NO registrado)
 //   - Drex/Agentes: leemos el saldo ACTUAL del jugador y lo mostramos. El operador
 //     ve el número y decide si la carga ya está reflejada o falta.
+// Deshacer una carga NO siempre significa que el jugador se quedó sin su plata: también se usa
+// para borrar una carga duplicada, y ahí la solicitud sigue bien acreditada por la otra fila.
+// Esto responde la única pregunta que decide: sacando la fila revertida, ¿queda otra CARGA OK que
+// cubra lo que pidió?
+function _solicitudQuedoSinPagar(total, filas, idRevertido){
+  const t = Math.abs(Number(total)) || 0;
+  const cubierto = (filas || []).reduce(function(a, h){
+    if(!h) return a;
+    if(String(h.id) === String(idRevertido)) return a;
+    if(String(h.estado || '').toUpperCase() !== 'OK') return a;
+    if(String(h.tipo || '').toUpperCase() !== 'CARGA') return a;
+    return a + (Math.abs(Number(h.monto)) || 0);
+  }, 0);
+  return { sinPagar: !(t > 0 && cubierto >= t - 0.5), cubierto: cubierto };
+}
+window._solicitudQuedoSinPagar = _solicitudQuedoSinPagar;
+
+// Suelta la solicitud cuando la carga revertida era la única que la sostenía (H-3). Antes esto
+// pasaba sólo con los retiros: se le sacaban las fichas al jugador y su pedido seguía diciendo
+// "acreditada", así que ni él ni el próximo operador se enteraban.
+async function _reabrirSolicitudSiQuedoSinPagar(solicitudId, historialIdRevertido, monto, usuario){
+  const sid = String(solicitudId || ''); if(!sid) return;
+  try{
+    let total = 0;
+    try{
+      const q = await supabaseClient.from('landing_solicitudes').select('monto, estado').eq('id', sid).maybeSingle();
+      const f = (q && q.data && !Array.isArray(q.data)) ? q.data : null;
+      total = Math.abs(Number(f && f.monto)) || 0;
+      const est = String((f && f.estado) || '').toUpperCase();
+      // Si ya no figuraba acreditada, no hay nada que soltar.
+      if(est && est !== 'ACREDITADA' && est !== 'PAGADA') return;
+    }catch(_e){}
+
+    let filas = [];
+    try{
+      const q2 = await supabaseClient.from('historial_ops').select('id, monto, estado, tipo').eq('solicitud_id', sid);
+      filas = (q2 && Array.isArray(q2.data)) ? q2.data : [];
+    }catch(_e){}
+
+    const v = _solicitudQuedoSinPagar(total, filas, historialIdRevertido);
+    if(!v.sinPagar){
+      toast('La solicitud #'+sid+' sigue acreditada · la cubre otro movimiento de '+money(v.cubierto),'blue');
+      return;
+    }
+
+    const apFn = (typeof actualizarSolicitudPortal === 'function') ? actualizarSolicitudPortal
+               : (typeof window.actualizarSolicitudPortal === 'function' ? window.actualizarSolicitudPortal : null);
+    if(!apFn) throw new Error('falta el puente con el portal');
+    await apFn(sid, 'EN_REVISION', {
+      etapa: 'CARGA_REVERTIDA_PANEL',
+      operador: (window.operador && (window.operador.usuario || window.operador.nombre)) || 'panel',
+      historial_id: Number(historialIdRevertido) || null,
+      motivo: 'Se deshizo la carga de ' + money(Math.abs(Number(monto)) || 0)
+    });
+    toast('↩ La solicitud #'+sid+' volvió a quedar pendiente · el jugador ya no la ve acreditada','yellow');
+    // El jugador tenía un "✅ acreditada" nuestro y ya no es cierto: se lo decimos.
+    try{
+      if(usuario && typeof notificarUsuarioEnChat === 'function'){
+        await notificarUsuarioEnChat(usuario,
+          '⚠️ Tu carga de $'+(Math.abs(Number(monto))||0).toLocaleString('es-AR')+' quedó sin efecto y la estamos revisando. Cualquier duda escribinos por acá.');
+      }
+    }catch(_e){}
+    try{ if(typeof cargarSolicitudesPortal === 'function') await cargarSolicitudesPortal(true); }catch(_e){}
+  }catch(e){
+    toast('⚠ Las fichas volvieron, pero la solicitud #'+sid+' sigue figurando acreditada · '+(e.message||'')+' · corregila a mano','red');
+  }
+}
+
 // ¿Este pago ya está anotado en el progreso del retiro? Mismo monto y a menos de 10 minutos del
 // movimiento. Sin esto, cerrar la solicitud desde el reintento contaría el pago dos veces.
 function _pagoYaAnotado(pagos, montoAbs, tFilaMs){
@@ -797,6 +865,11 @@ async function deshacerOperacion(id, usuario, tipoOriginal, monto, bilId){
       }catch(e){
         toast('⚠ La plata volvió, pero no se pudo actualizar el retiro #'+_sidRev+' · '+(e.message||'')+' · corregilo a mano','red');
       }
+    }
+    // Y la carga, lo mismo: es el MISMO movimiento. Si la revertida era la única que sostenía la
+    // solicitud, el pedido del jugador vuelve a quedar abierto (H-3).
+    if(ok && _sidRev && String(tipoOriginal||'').toUpperCase()==='CARGA'){
+      await _reabrirSolicitudSiQuedoSinPagar(_sidRev, id, montoNum, usuario);
     }
     toast((ok&&chuOk)?'Reversión completada OK':'Reversión con errores — revisar',(ok&&chuOk)?'green':'red');
     await window.ctrlElectron.navigateAgent();

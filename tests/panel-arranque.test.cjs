@@ -72,6 +72,9 @@ function arrancarPanel(opciones) {
   }) };
   sb.window = sb; sb.globalThis = sb; sb.self = sb;
   vm.createContext(sb);
+  // Hay cosas que el bundle lee UNA vez, al cargar (`const enElectron = !!window.ctrlElectron`).
+  // Para esas, ponerlas después no sirve: el test miente porque la función sale por el early return.
+  if (opciones && typeof opciones.antes === 'function') opciones.antes(sb);
 
   // El orden EXACTO que declara el HTML. Si el test carga de menos, una función parece no
   // existir y el test miente: ya pasó dos veces (faltaba js-modules.js y normalizar() tiraba
@@ -2540,4 +2543,82 @@ test('cotejo · un telefono de un solo dueño sigue en verde', () => {
   const html = sb._altaCotejoHtml('veronica59x', '3704786459', _cotejoVeronica(false), '_altaAbrirVincular', '').html;
   assert.ok(html.includes('✓ mismo dueño'), 'el caso normal no se toca');
   assert.ok(!html.includes('lo comparten'), 'y no inventa un aviso donde no hay nada que revisar');
+});
+
+// ── H-3 · deshacer una CARGA que vino de una solicitud ──────────────────────────────────────
+test('deshacer carga · el criterio distingue "se quedó sin plata" de "borré una duplicada"', () => {
+  const sb = arrancarPanel();
+  const sola      = [{ id: 10, tipo: 'CARGA', estado: 'OK', monto: 5000 }];
+  const duplicada = [{ id: 10, tipo: 'CARGA', estado: 'OK', monto: 5000 }, { id: 11, tipo: 'CARGA', estado: 'OK', monto: 5000 }];
+
+  assert.equal(sb._solicitudQuedoSinPagar(5000, sola, 10).sinPagar, true,
+    'era la unica carga: el jugador se quedo sin su plata');
+  assert.equal(sb._solicitudQuedoSinPagar(5000, duplicada, 10).sinPagar, false,
+    'habia dos cargas iguales: deshacer una NO deja al jugador sin nada');
+  assert.equal(sb._solicitudQuedoSinPagar(5000, [{ id: 11, tipo: 'CARGA', estado: 'REVERTIDA', monto: 5000 }], 10).sinPagar, true,
+    'una carga ya revertida no cubre nada');
+  assert.equal(sb._solicitudQuedoSinPagar(5000, [{ id: 11, tipo: 'CARGA', estado: 'ERROR', monto: 5000 }], 10).sinPagar, true,
+    'una carga fallida tampoco');
+  assert.equal(sb._solicitudQuedoSinPagar(10000, [{ id: 11, tipo: 'CARGA', estado: 'OK', monto: 5000 }], 10).sinPagar, true,
+    'media carga no alcanza: pidio 10000 y solo entraron 5000');
+});
+
+test('deshacer carga · si queda sin pagar, la solicitud vuelve a la bandeja y el jugador se entera', async () => {
+  const sb = arrancarPanel();
+  const avisos = []; sb.toast = (m) => avisos.push(String(m));
+  let escrito = null, alJugador = null;
+  sb.actualizarSolicitudPortal = async (id, estado, extra) => { escrito = { id, estado, extra }; };
+  sb.notificarUsuarioEnChat = async (u, t) => { alJugador = { u, t }; };
+
+  await sb._reabrirSolicitudSiQuedoSinPagar('500999', 10, 5000, 'pruebaxx');
+
+  assert.ok(escrito, 'la solicitud no puede quedar acreditada si las fichas volvieron');
+  assert.equal(escrito.estado, 'EN_REVISION', 'vuelve a manos del operador, no se cierra sola');
+  assert.equal(escrito.extra.etapa, 'CARGA_REVERTIDA_PANEL');
+  assert.equal(escrito.extra.historial_id, 10, 'queda atada al movimiento que se deshizo');
+  assert.ok(alJugador && /sin efecto/.test(alJugador.t), 'le dijimos "acreditada" y ya no es cierto');
+});
+
+test('deshacer carga · sin solicitud no toca nada', async () => {
+  const sb = arrancarPanel();
+  let escrito = false;
+  sb.actualizarSolicitudPortal = async () => { escrito = true; };
+  await sb._reabrirSolicitudSiQuedoSinPagar('', 10, 5000, 'pruebaxx');
+  assert.equal(escrito, false);
+});
+
+// ── H-7 · el loop de BET300: el widget de saldo se metía en el medio de una operación ───────
+function _panelElectron(llamadas){
+  return arrancarPanel({ antes: (s) => {
+    s.ctrlElectron = {
+      openAgentWindow: async () => {},
+      navigateAgent: async () => {},
+      drexAutomation: async (m) => { llamadas.push(m); return { ok:true, balance:{ raw:'$ 1.000', value:1000 } }; }
+    };
+  }});
+}
+
+test('saldo del agente · no lee las fichas con una operacion en curso', async () => {
+  const llamadas = [];
+  const sb = _panelElectron(llamadas);
+  sb.toast = () => {};
+
+  assert.equal(sb._drexGlobalLock('carga de prueba'), true, 'simula una carga en curso');
+  await sb.refrescarSaldoAgente();
+  assert.equal(llamadas.length, 0,
+    'en BET300 leer las fichas cambia de pantalla: hacerlo en el medio de una carga la rompe');
+
+  sb._drexGlobalUnlock();
+  await sb.refrescarSaldoAgente();
+  assert.ok(llamadas.includes('obtenerSaldoAgente'), 'sin nada en curso, el widget sí se refresca');
+});
+
+test('saldo del agente · devuelve el candado aunque falle', async () => {
+  const sb = arrancarPanel({ antes: (s) => {
+    s.ctrlElectron = { openAgentWindow: async () => {}, drexAutomation: async () => { throw new Error('se cayó'); } };
+  }});
+  sb.toast = () => {};
+  await sb.refrescarSaldoAgente();
+  assert.equal(sb._drexGlobalLock('lo que venga'), true,
+    'si se queda con el candado, no se puede operar nunca más');
 });

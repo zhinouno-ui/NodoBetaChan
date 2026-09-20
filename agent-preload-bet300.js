@@ -298,6 +298,33 @@ function pageIsBlocked() {
     return errRe.test(body) || errRe.test(document.title || '');
   } catch (_) { return false; }
 }
+// ── Recargas: nada se mueve de pantalla encima de una operación (H-7) ────────
+let _opsEnCurso = 0;          // llamadas de operación del panel corriendo en esta ventana
+let _ultimaNavegacion = 0;    // cuándo se recargó por última vez
+// Antes cualquier flujo podía recargar en el medio de una carga: el panel lo veía como "la página
+// se recargó durante la operación", reintentaba, y volvía a pasar lo mismo.
+function _navegarA(url, motivo) {
+  if (_opsEnCurso > 0) { console.warn('[bet300] NO se recarga (' + motivo + '): hay una operación en curso'); return false; }
+  if (now() - _ultimaNavegacion < 25000) { console.warn('[bet300] NO se recarga (' + motivo + '): ya se recargó hace menos de 25 s'); return false; }
+  _ultimaNavegacion = now();
+  console.warn('[bet300] recargando la ventana (' + motivo + ') → ' + url);
+  try { location.assign(url); } catch (_) { return false; }
+  return true;
+}
+// Qué hay REALMENTE en pantalla. Sin esto, cuando algo falla el reporte es "no anduvo" y no hay
+// manera de arreglarlo a distancia: hay que saber dónde quedó parada la ventana.
+function _resumenPantalla() {
+  try {
+    const p = [String(location.pathname || '/').slice(0, 40)];
+    if (findSearchInput()) p.push('buscador');
+    if (findActiveModal()) p.push('modal abierto');
+    if (document.querySelector('input[placeholder="Alias"]')) p.push('formulario de login');
+    if (findMenuItem(/control de agentes/i)) p.push('menú');
+    const t = (document.title || '').trim();
+    if (t) p.push('«' + t.slice(0, 30) + '»');
+    return p.join(' · ');
+  } catch (_) { return 'no se pudo leer la pantalla'; }
+}
 function status(extra = {}) {
   const pageError = pageIsBlocked();
   const needsLogin = !pageError && pageNeedsLogin();
@@ -311,6 +338,7 @@ function status(extra = {}) {
       : needsLogin
       ? 'BET300 requiere iniciar sesión. Iniciá sesión y volvé a intentar.'
       : 'Módulo de agentes BET300 disponible.',
+    pantalla: _resumenPantalla(),
     ...extra
   };
 }
@@ -1050,7 +1078,7 @@ async function irAReporteFichas(timeout = 12000) {
     if (!/tokens-report/i.test(location.href)) {
       const it = findMenuItem(/reporte de carga|carga y descarga|tokens.?report/i);
       if (it) { clickElement(it); }
-      else if (!usedUrl) { usedUrl = true; try { location.assign(BASE_URL + 'agents/tokens-report'); } catch (_e) {} }
+      else if (!usedUrl) { usedUrl = true; _navegarA(BASE_URL + 'agents/tokens-report', 'reporte de fichas'); }
     } else if (!leerBalanceFichasReporte()) {
       const filtrar = findByText(/^filtrar$/i, 'button, .v-btn');
       if (filtrar) clickElement(filtrar);
@@ -1077,6 +1105,12 @@ async function volverABusqueda(timeout = 8000) {
 }
 async function obtenerSaldoAgente(options = {}) {
   if (pageNeedsLogin()) return { ok: false, needsLogin: true };
+  // En BET300 leer las fichas obliga a irse al reporte y volver. Si hay un modal de trabajo abierto,
+  // alguien está en el medio de una carga o un retiro: se lee el header y listo. Moverse de pantalla
+  // acá le rompía la operación al operador.
+  if (findActiveModal()) {
+    return { ok: true, balance: readAgentBalance(), fuente: 'header', message: 'Hay una operación abierta: no me moví de pantalla.' };
+  }
   let result = null;
   // BET300: el header trae el saldo con error → leemos la fila MÁS RECIENTE de tokens-report.
   try {
@@ -1096,7 +1130,7 @@ async function obtenerSaldoAgente(options = {}) {
 
 function irABusquedaUsuarios() {
   if (!/agentesbet\.(net|io)/i.test(location.href) || pageNeedsLogin()) {
-    try { location.assign(BASE_URL); } catch (_) {}
+    _navegarA(BASE_URL, 'volver al inicio');
   }
   return { ok: true, url: BASE_URL };
 }
@@ -1124,7 +1158,7 @@ async function _asegurarInicio() {
       }
     }
     if (item) { clickElement(item); await delay(400); }
-    else { try { location.assign(BASE_URL); } catch (_) {} }
+    else { _navegarA(BASE_URL, 'no encontré Control de agentes en el menú'); }
     await waitFor(findSearchInput, 12000, 150, 'inicio-buscador').catch(() => {});
     return !!findSearchInput();
   } finally { _navegandoAInicio = false; }
@@ -1205,13 +1239,18 @@ ipcRenderer.on('drex:automation:run', async (event, request = {}) => {
   const { requestId, method, args = [] } = request;
   try {
     if (!Object.prototype.hasOwnProperty.call(api, method)) throw new Error(`Método no permitido: ${method}`);
-    if (METODOS_OPERACION.has(method)) _abortOperacion = false;
+    if (METODOS_OPERACION.has(method)) { _abortOperacion = false; _opsEnCurso++; }
     // [perf] cronometrar las operaciones (buscar/carga/retiro/crear/clave) → un log por operación.
     const _fn = api[method];
     const result = METODOS_OPERACION.has(method) ? await _perfWrap(method, _fn)(...args) : await _fn(...args);
     ipcRenderer.send('drex:automation:result', { requestId, ok: true, result });
   } catch (error) {
-    ipcRenderer.send('drex:automation:result', { requestId, ok: false, error: error.message || String(error) });
+    // El error dice DÓNDE quedó la ventana: "no anduvo" no se puede arreglar a distancia.
+    let _donde = '';
+    try { _donde = ' · pantalla: ' + _resumenPantalla(); } catch (_e) {}
+    ipcRenderer.send('drex:automation:result', { requestId, ok: false, error: (error.message || String(error)) + _donde });
+  } finally {
+    if (METODOS_OPERACION.has(method)) _opsEnCurso = Math.max(0, _opsEnCurso - 1);
   }
 });
 ipcRenderer.on('drex:verify:run', async (event, request = {}) => {
