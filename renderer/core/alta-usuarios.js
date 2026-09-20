@@ -1,15 +1,20 @@
-function abrirModalCrearUsuario(){
+// prefUsuario/prefTelefono: para poder crear la cuenta DESDE la consulta del chat, con lo que el
+// cliente ya declaró. Antes había que copiar los datos, irse al apartado manual, crear la cuenta
+// allá, copiar el mensaje, volver al chat y recién ahí validar.
+function abrirModalCrearUsuario(prefUsuario, prefTelefono){
   if(!window.ctrlElectron){ alert("Solo disponible en la app de escritorio."); return; }
+  const _pU = escapeHtml(String(prefUsuario||'').trim());
+  const _pT = escapeHtml(String(prefTelefono||'').trim());
   abrirModal(
     '➕ Crear nuevo usuario',
     '<div style="color:#c0cad8;font-size:13px;margin-bottom:12px">Se crea en el casino y queda <b>validado y agendado</b> en el mismo paso.</div>' +
     '<label style="color:#c0cad8;font-size:12px;font-weight:700">USUARIO (alias)</label>' +
-    '<input id="nuevoJugUsuario" type="text" placeholder="ej: martin2024" autocomplete="off" oninput="_altaNuevoCotejar()" style="margin-bottom:8px">' +
+    '<input id="nuevoJugUsuario" type="text" placeholder="ej: martin2024" autocomplete="off" value="'+_pU+'" oninput="_altaNuevoCotejar()" style="margin-bottom:8px">' +
     // El teléfono es lo que ata la cuenta a la persona: sin él la cuenta nace suelta y cuando
     // entra al portal el cotejo no cierra — termina en soporte pidiendo que la validen a mano,
     // por algo que ya sabíamos en el momento de crearla.
     '<label style="color:#c0cad8;font-size:12px;font-weight:700">TELÉFONO <span style="font-weight:400;text-transform:none;color:#777">(con código de área, sin 0 ni 15)</span></label>' +
-    '<input id="nuevoJugTelefono" type="tel" inputmode="tel" placeholder="ej: 11 2345 6789" autocomplete="off" oninput="_altaNuevoCotejar()" style="margin-bottom:8px">' +
+    '<input id="nuevoJugTelefono" type="tel" inputmode="tel" placeholder="ej: 11 2345 6789" autocomplete="off" value="'+_pT+'" oninput="_altaNuevoCotejar()" style="margin-bottom:8px">' +
     '<label style="color:#c0cad8;font-size:12px;font-weight:700">CLAVE INICIAL <span style="font-weight:400;text-transform:none;color:#777">(mín 6 caracteres)</span></label>' +
     '<input id="nuevoJugClave" type="text" placeholder="12345a" value="12345a" autocomplete="off" style="margin-bottom:4px">' +
     // El veredicto va ARRIBA del botón, no abajo: es lo que decide si hay que crear la cuenta o no.
@@ -24,7 +29,14 @@ function abrirModalCrearUsuario(){
     if(btn){ btn.onclick = _ejecutarCrearUsuario; }
     const cancelBtn = document.querySelector('#modalOverlay .btn-gray');
     if(cancelBtn){ cancelBtn.onclick = function(){ cerrarModal(); }; }
-    document.getElementById("nuevoJugUsuario")?.focus();
+    // Con los datos ya puestos, el foco va a lo que falta (la clave) y el cotejo corre solo: el
+    // operador ve el veredicto sin tener que tocar nada.
+    if(_pU && _pT){
+      document.getElementById("nuevoJugClave")?.focus();
+      try{ _altaNuevoCotejarYa(); }catch(_e){}
+    } else {
+      document.getElementById("nuevoJugUsuario")?.focus();
+    }
   }, 30);
 }
 

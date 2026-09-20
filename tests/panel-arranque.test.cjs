@@ -2622,3 +2622,48 @@ test('saldo del agente · devuelve el candado aunque falle', async () => {
   assert.equal(sb._drexGlobalLock('lo que venga'), true,
     'si se queda con el candado, no se puede operar nunca más');
 });
+
+// ── La tarjeta de "lau": 4 sugerencias sin datos y ninguna forma de crear la cuenta ─────────
+function _cotejoSimilares(similares){
+  return { usuario: { exacto: null, similares: similares },
+           telefono: { exacto: null, similares: [], otros: [] } };
+}
+
+test('cotejo · un alias corto no dispara cuatro sugerencias al azar', () => {
+  const sb = arrancarPanel();
+  const r = _cotejoSimilares([
+    { usuario: 'lauu30x',       telefonos: ['3885794443'] },
+    { usuario: 'lauttaros',     telefonos: ['2213543606'] },
+    { usuario: 'lauty677',      telefonos: ['3888572677'] },
+    { usuario: 'lauraaaok4564', telefonos: ['1159690016'] }
+  ]);
+  const html = sb._altaCotejoHtml('lau', '2323669344', r, '_altaAbrirVincular', 'declaró el cliente').html;
+
+  assert.ok(!html.includes('lauraaaok4564') && !html.includes('lauttaros'),
+    'ninguna de esas cuentas tiene el telefono declarado: sugerirlas es tirar una moneda');
+  assert.ok(html.includes('muy corto'), 'y hay que decir por que no se sugiere nada');
+  assert.ok(html.includes('_altaCrearDesdeCotejo'),
+    'si no existe ni el usuario ni el telefono, la cuenta se tiene que poder crear desde aca');
+});
+
+test('cotejo · si la cuenta parecida tiene el telefono declarado, esa sí se sugiere', () => {
+  const sb = arrancarPanel();
+  const r = _cotejoSimilares([{ usuario: 'pepe123xxs', telefonos: ['1123456789'] }]);
+  const html = sb._altaCotejoHtml('pepe', '1123456789', r, '_altaAbrirVincular', '').html;
+  assert.ok(html.includes('pepe123xxs'), 'ese es el caso que el cotejo existe para agarrar');
+  assert.ok(html.includes('teléfono que declaró'), 'y se dice por que se sugiere');
+});
+
+test('cotejo · con alias largo y sin telefono en comun, dos sugerencias como mucho', () => {
+  const sb = arrancarPanel();
+  const r = _cotejoSimilares([
+    { usuario: 'martin2024a', telefonos: ['1111111111'] },
+    { usuario: 'martin2024b', telefonos: ['2222222222'] },
+    { usuario: 'martin2024c', telefonos: ['3333333333'] },
+    { usuario: 'martin2024d', telefonos: ['4444444444'] }
+  ]);
+  const html = sb._altaCotejoHtml('martin2024', '9999999999', r, '_altaAbrirVincular', '').html;
+  const chips = html.split('_altaAbrirVincular').length - 1;
+  assert.ok(chips <= 2, 'cuatro opciones sin con que elegir confunden; salieron ' + chips);
+  assert.ok(html.includes('Sólo se parece el alias'), 'el operador tiene que saber que son corazonadas');
+});

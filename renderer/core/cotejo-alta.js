@@ -322,9 +322,27 @@ function _altaCotejoHtml(uDecl, tDecl, r, onPick, titulo){
                 : (tl.length ? '' : sub('sin teléfono registrado')));
     } else if(r.usuario.similares.length){
       alerta=true;
+      // Un alias corto ("lau") es el principio de media base: sugerir cuatro cuentas que sólo
+      // empiezan igual no ayuda, confunde — el operador no tiene con qué elegir. Vale la
+      // sugerencia cuando además coincide el TELÉFONO declarado; si no, se muestran dos a lo
+      // sumo y se dice que son sólo parecidos.
+      const _conTel = r.usuario.similares.filter(function(c){
+        return telsDe(c).some(function(t){
+          return t===tN || (t.length>=8 && tN.length>=8 && t.slice(-8)===tN.slice(-8));
+        });
+      });
+      const _aliasCorto = uDeclN.length <= 4;
+      const _mostrar = _conTel.length ? _conTel.slice(0,3)
+                     : (_aliasCorto ? [] : r.usuario.similares.slice(0,2));
+      const _nota = _conTel.length
+        ? 'Tiene el teléfono que declaró — es casi seguro su cuenta.'
+        : _aliasCorto
+          ? '«'+esc(uDecl)+'» es muy corto: cualquier cuenta que empiece igual aparecería acá, así que no sugiero ninguna.'
+          : 'Sólo se parece el alias: ninguna tiene el teléfono que declaró. Preguntale el usuario completo antes de elegir.';
       filas+=fila('Usuario', esc(uDecl), '⚠ no figura así', '#e3b341',
-        '<div>'+r.usuario.similares.map(function(c){ const tl=telsDe(c);
-          return chip(c.usuario, tl[0]||tN, esc(c.usuario)+(tl.length?(' · '+esc(tl[0])):''), 'ambar'); }).join('')+'</div>');
+        sub(_nota)
+        + (_mostrar.length ? '<div>'+_mostrar.map(function(c){ const tl=telsDe(c);
+            return chip(c.usuario, tl[0]||tN, esc(c.usuario)+(tl.length?(' · '+esc(tl[0])):''), 'ambar'); }).join('')+'</div>' : ''));
     } else {
       filas+=fila('Usuario', esc(uDecl), '✗ no hay cuenta con este usuario', '#8b949e', '');
     }
@@ -425,7 +443,23 @@ function _altaCotejoHtml(uDecl, tDecl, r, onPick, titulo){
                    && (uDecl || tN.length >= 6);
   if(!pie && _sinNada){
     pie = 'No hay ninguna cuenta con ' + (uDecl ? 'este usuario' : '') + (uDecl && tN.length >= 6 ? ' ni con ' : '')
-        + (tN.length >= 6 ? 'este teléfono' : '') + '. Es un alta nueva: creala en Agentes y validá con el usuario que creaste.';
+        + (tN.length >= 6 ? 'este teléfono' : '') + '. Es un alta nueva: creala acá mismo con el botón de arriba.';
+  }
+  // ── 4) No hay cuenta ni por usuario ni por teléfono: se crea desde acá ──
+  // Antes había que copiar los datos, ir al apartado manual, crear la cuenta allá, copiar el
+  // mensaje de ingreso, volver al chat, pegarlo, validar y volver a validar. Todo eso ya lo hace
+  // el modal de alta (crea, vincula el teléfono, agenda y le manda los datos por el chat): lo
+  // único que faltaba era llegar hasta él con lo que el cliente ya declaró.
+  const _esAltaNueva = !uOk && !tOk && (uDecl || tN.length>=6);
+  let acciones = '';
+  if(_esAltaNueva){
+    // La comilla se arma aparte: el valor viaja DENTRO de un onclick, y una comilla suelta en el
+    // alias rompía el atributo entero (el botón quedaba muerto sin decir nada).
+    const _q = String.fromCharCode(39);
+    const _u = esc(String(uDecl||'').split(_q).join('')), _t = esc(String(tDecl||'').split(_q).join(''));
+    acciones = '<div style="margin-top:7px"><button type="button" onclick="_altaCrearDesdeCotejo('+_q+_u+_q+','+_q+_t+_q+')"'
+      + ' style="cursor:pointer;background:rgba(18,183,106,.12);border:1px solid rgba(18,183,106,.55);color:#3fb950'
+      + ';border-radius:8px;padding:5px 11px;font-size:11px;font-weight:800">➕ Crear la cuenta y mandarle los datos</button></div>';
   }
   const nivel = conflicto ? 'conflicto' : alerta ? 'revisar' : (uOk||tOk) ? 'ok' : 'nuevo';
   const T = {
@@ -449,7 +483,7 @@ function _altaCotejoHtml(uDecl, tDecl, r, onPick, titulo){
     +     '<span style="font-weight:800;font-size:11px;letter-spacing:.5px;text-transform:uppercase;color:'+T.c+'">'+etiqueta+'</span>'
     +     (titulo?'<span style="margin-left:auto;font-size:8.5px;letter-spacing:.6px;text-transform:uppercase;color:#6e7681;white-space:nowrap">'+esc(titulo)+'</span>':'')
     +   '</div>'
-    +   '<div style="padding:5px 10px 7px">'+filas+'</div>'
+    +   '<div style="padding:5px 10px 7px">'+filas+acciones+'</div>'
     +   (pie?'<div style="padding:6px 10px;border-top:1px solid '+T.bd+';background:'+T.bg+';font-size:11.5px;line-height:1.35;color:'+T.c+'">'+pie+'</div>':'')
     + '</div>';
   return { html:html, alerta:(nivel==='conflicto'||nivel==='revisar'), nivel:nivel };
@@ -678,3 +712,13 @@ window.vincularDesdeConsulta=function(){
 // Normaliza un alias para mandarlo al casino (sin acentos, sin puntos, espacios, signos).
 // El casino registra a los usuarios sin acentos ni separadores, así que normalizamos
 // del lado de NODO para que coincidan incluso si el operador o el jugador los tipea con tildes/punto.
+// Crear la cuenta desde la tarjeta de cotejo, con lo que el cliente ya declaró. El modal de alta
+// se encarga del resto: la crea en Agentes, vincula el teléfono, la agenda y le manda los datos
+// de ingreso por el chat del portal.
+window._altaCrearDesdeCotejo = function(usuario, telefono){
+  if(typeof abrirModalCrearUsuario !== 'function'){
+    try{ toast('No encontré el alta de usuarios en esta pantalla','red'); }catch(_e){}
+    return;
+  }
+  abrirModalCrearUsuario(usuario, telefono);
+};
