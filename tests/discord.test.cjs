@@ -131,3 +131,19 @@ test('los pipes son los que Discord usa', () => {
     assert.match(r[0], /discord-ipc-0$/);
   }
 });
+
+// El Application ID va como CONSTANTE en main.js: no es un secreto (se ve en la presencia de
+// cualquiera que la tenga puesta) y es el mismo para las siete oficinas. No pasa por el entorno
+// porque el .env no se edita PC por PC (Juan, 26/9).
+test('el Application ID es una constante, no una variable de entorno', () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const raiz = path.join(__dirname, '..');
+  const src = fs.readFileSync(path.join(raiz, 'main.js'), 'utf8');
+  const m = src.match(/const DISCORD_APP_ID = '(\d+)'/);
+  assert.ok(m, 'main.js tiene que traer el id como constante');
+  assert.match(m[1], /^\d{17,20}$/, 'un id de Discord son 17 a 20 dígitos: ' + m[1]);
+  assert.ok(!/process\.env\.DISCORD_APP_ID/.test(src), 'no va por el entorno');
+  const env = fs.readFileSync(path.join(raiz, '.env.example'), 'utf8');
+  assert.ok(!/DISCORD/.test(env), 'ni se documenta en el .env, que no se edita');
+});

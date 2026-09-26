@@ -62,10 +62,13 @@ const verificationRequests = createRequestRegistry();
 const agents = createAgentWindowService({ BrowserWindow, icon, partition: proxy.partition, backends, headers, requests: automationRequests });
 const automation = createAutomationService({ agents, backends, requests: automationRequests });
 const verification = createVerificationService({ BrowserWindow, icon, partition: proxy.partition, backends, requests: verificationRequests });
-// NODO en Discord. Sin DISCORD_APP_ID no hace nada, y si Discord no esta abierto tampoco:
-// en los dos casos es un no-op silencioso que no puede frenar ni romper el panel.
+// NODO en Discord. El Application ID NO es un secreto — se ve en la presencia de cualquiera que la
+// tenga puesta — y es el mismo para las siete oficinas, así que va como constante y no por el
+// entorno: el .env no se edita PC por PC. Si Discord no está abierto, no pasa nada: es un no-op
+// silencioso que no puede frenar ni romper el panel.
+const DISCORD_APP_ID = '1553460302849249351';
 const discord = createDiscordPresence({
-  appId: process.env.DISCORD_APP_ID || '',
+  appId: DISCORD_APP_ID,
   version: (function(){ try { return app.getVersion(); } catch (_e) { return ''; } })()
 });
 
