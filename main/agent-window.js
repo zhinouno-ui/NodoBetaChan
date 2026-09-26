@@ -1,5 +1,6 @@
 'use strict';
 const { whenWindowReady, waitForWindowLoad } = require('./window-ready');
+const { taparCarteles } = require('./carteles');
 
 function createAgentWindowService({ BrowserWindow, icon, partition, backends, headers, requests }) {
   let agentWindow = null;
@@ -58,6 +59,9 @@ function createAgentWindowService({ BrowserWindow, icon, partition, backends, he
 
     // PATCH 01 · si Agentes se recarga/redirecta solo mientras hay una operación pendiente,
     // abortamos esa espera para que el panel no quede colgado.
+    // Los carteles de promo tapan la pantalla y se comen los clicks: ver main/carteles.js.
+    taparCarteles(agentWindow);
+
     // Sólo lo que sirve para diagnosticar: avisos y errores. Lo verboso se descarta.
     agentWindow.webContents.on('console-message', (_e, nivel, mensaje, linea, fuente) => {
       if (Number(nivel) < 2) return;

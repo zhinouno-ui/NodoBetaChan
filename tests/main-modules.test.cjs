@@ -20,6 +20,7 @@ const { registerPanelIpc } = require('../main/panel-rpc');
 const { registerOfficeCredentialsIpc } = require('../main/office-credentials');
 const { registerUpdaterIpc } = require('../main/updater');
 const { registerNexoIpc } = require('../main/nexo-files');
+ const { CSS_SIN_CARTELES, taparCarteles } = require('../main/carteles');
 
 function tempDir(t) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nodo-main-test-'));
@@ -68,6 +69,7 @@ function windowFakes() {
         getURL: () => this.loaded.at(-1) || '', getTitle: () => '',
         getUserAgent: () => 'Chrome/128.0.0.0 Electron/32', setUserAgent() {},
         setVisualZoomLevelLimits() {}, reload() {},
+        css: [], insertCSS: (hoja) => { this.webContents.css.push(hoja); return Promise.resolve('k'); },
         executeJavaScript: async source => source.includes("return 'ready'") ? 'ready' : false,
         send: (channel, payload) => this.webContents.sent.push({ channel, payload })
       });
@@ -438,4 +440,56 @@ test('the agent window console is captured so a failure can carry what actually 
   const nav = agents.consola().consola.filter(c => /navegó a/.test(c.msg));
   assert.equal(nav.length, 2, 'dos vueltas a la misma url es exactamente la firma del loop');
   assert.equal(windows.length, 1);
+});
+
+// Los carteles promocionales del backoffice aparecen encima de todo y se comen los clicks: frenan
+// al operador y a la automatización detrás de una publicidad de un torneo. Cerrarlos desde el
+// preload llega tarde — para cuando se los ve, ya taparon la pantalla.
+test('promo popups are hidden before they paint, without touching the real work dialogs', () => {
+  const { Window } = windowFakes();
+  const requests = createRequestRegistry(timersFake());
+  const backends = { current: { url: 'https://agents.test/search', appSel: 'input', spa: true, preload: 'agent.js' } };
+  const agents = createAgentWindowService({ BrowserWindow: Window, icon: 'icon',
+    partition: 'persist:nodo-agentes', backends, headers: { configure() {} }, requests });
+  const wc = agents.get().webContents;
+
+  wc.emit('dom-ready');
+  assert.equal(wc.css.length, 1, 'se tapa apenas hay DOM, antes de que pinte');
+  const hoja = wc.css[0];
+
+  // Lo que Juan vio en el backoffice.
+  assert.match(hoja, /tournament-popup/, 'el contenedor del cartel');
+  assert.match(hoja, /\/images\/tournaments\//, 'y la imagen del torneo');
+  assert.match(hoja, /display: none !important/);
+
+  // Lo que NO puede hacer: los modales de carga y retiro son .v-dialog igual que el cartel.
+  // Esconderlos a todos rompe las operaciones.
+  assert.ok(!/^\s*\.v-dialog\s*\{/m.test(hoja), 'no puede esconder TODOS los diálogos');
+  assert.ok(!/^\s*\.v-overlay\s*\{/m.test(hoja), 'ni todos los overlays');
+  for (const selector of hoja.split(',')) {
+    if (/v-dialog|v-overlay/.test(selector)) {
+      assert.match(selector, /:has\(/, 'un diálogo sólo se esconde si TIENE el cartel adentro: ' + selector);
+    }
+  }
+
+  // El backoffice es una SPA: cambia de ruta sin recargar y el CSS se pierde.
+  wc.emit('did-navigate-in-page');
+  assert.equal(wc.css.length, 2, 'se vuelve a poner al cambiar de ruta');
+  wc.emit('did-navigate');
+  assert.equal(wc.css.length, 3, 'y al navegar de verdad también');
+});
+
+// La ventana de verificación carga el MISMO backoffice, así que le entran los mismos carteles.
+// Tener dos copias del selector es como quedaron desincronizados los dos preloads (H-7).
+test('both windows that open the backoffice share one popup rule', () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const raiz = path.join(__dirname, '..');
+  for (const archivo of ['agent-window.js', 'verification.js']) {
+    const src = fs.readFileSync(path.join(raiz, 'main', archivo), 'utf8');
+    assert.match(src, /require\('\.\/carteles'\)/, archivo + ' tiene que usar el módulo compartido');
+    assert.match(src, /taparCarteles\(/, archivo + ' tiene que aplicarlo');
+    assert.ok(!/tournament-popup/.test(src), archivo + ' no puede tener su propia copia del selector');
+  }
+  assert.match(CSS_SIN_CARTELES, /tournament-popup/);
 });

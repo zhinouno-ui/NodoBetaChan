@@ -1,5 +1,6 @@
 'use strict';
 const { whenWindowReady } = require('./window-ready');
+const { taparCarteles } = require('./carteles');
 
 function createVerificationService({ BrowserWindow, icon, partition, backends, requests }) {
   let verifyWindow = null;
@@ -18,6 +19,8 @@ function createVerificationService({ BrowserWindow, icon, partition, backends, r
         sandbox:          true,
       }
     });
+    // Mismo backoffice, mismos carteles encima (ver main/carteles.js).
+    taparCarteles(verifyWindow);
     verifyWindow.loadURL(backends.current.url);
     verifyWindow.on('closed', () => { verifyWindow = null; requests.rejectAll(new Error('La ventana de verificación se cerró.')); });
     return verifyWindow;
