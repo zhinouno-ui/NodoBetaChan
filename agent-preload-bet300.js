@@ -589,7 +589,7 @@ async function ejecutarBusqueda(alias, timeout = DEFAULT_TIMEOUT) {
 
   // 1) Escribir Y VERIFICAR (antes: si no aceptaba, tiraba error y cortaba todo el flujo).
   let input = await _asegurarTextoBusqueda(wanted, 3);
-  if (!input) return { refresco: false, textoOk: false };
+  if (!input) return { refresco: false, textoOk: false, vistaOk: false };
 
   const firmaAntes = firmaFilas(); // foto de la lista ANTES de buscar
 
@@ -602,12 +602,18 @@ async function ejecutarBusqueda(alias, timeout = DEFAULT_TIMEOUT) {
   } catch (_) {}
   await delay(350);
 
+  // vistaOk = pudimos pararnos en la lista de JUGADORES. Si Enter solo ya trajo filas de jugador,
+  // es que ya estábamos ahí. Este dato es el que faltaba: sin él, una búsqueda que nunca se ejecutó
+  // se leía igual que «no hay resultados» (Juan, 26/9).
+  let vistaOk = filasJugador().length > 0;
   if (firmaFilas() === firmaAntes) {
     const lupa = iconBtn('mdi-magnify');
     if (lupa) clickElement(lupa);
     await delay(250);
     input = (await _asegurarTextoBusqueda(wanted, 2)) || input;  // el menú pudo limpiar el campo
-    await elegirTodosLosJugadores(6000);                          // robusto: no deja el dropdown colgado
+    // El valor de vuelta SE MIRA. Antes se descartaba, y su propio comentario ya decía que este
+    // paso fallando deja la búsqueda sin ejecutar.
+    if (await elegirTodosLosJugadores(6000)) vistaOk = true;
   }
 
   // 3) Esperar a que la lista se REFRESQUE (firma distinta) = llegó el resultado real.
@@ -623,7 +629,7 @@ async function ejecutarBusqueda(alias, timeout = DEFAULT_TIMEOUT) {
       // que la lista se asiente y se informa si se pudo o no leer con confianza.
       const estable = await esperarListaEstable(wanted, 8000);
       await delay(150);
-      return { refresco: true, textoOk: true, estable: estable };
+      return { refresco: true, textoOk: true, estable: estable, vistaOk: vistaOk || filasJugador().length > 0 };
     }
     if (!reintentado && now() - inicio > 5000) {
       reintentado = true;
@@ -631,7 +637,7 @@ async function ejecutarBusqueda(alias, timeout = DEFAULT_TIMEOUT) {
       const l2 = iconBtn('mdi-magnify');
       if (l2) clickElement(l2);
       await delay(250);
-      await elegirTodosLosJugadores(4000);
+      if (await elegirTodosLosJugadores(4000)) vistaOk = true;
     }
     await delay(150);
   }
@@ -640,10 +646,27 @@ async function ejecutarBusqueda(alias, timeout = DEFAULT_TIMEOUT) {
   // firma nunca haya cambiado (lista vacía, o el mismo usuario que ya estaba en pantalla).
   if (_listaCorrespondeA(wanted)) {
     const estable = await esperarListaEstable(wanted, 4000);
-    return { refresco: true, textoOk: true, estable: estable };
+    return { refresco: true, textoOk: true, estable: estable, vistaOk: vistaOk || filasJugador().length > 0 };
   }
   console.warn('[buscar] sin refresco tras 12s · filas en pantalla: ' + filasJugador().length + ' · input="' + ((findSearchInput() || {}).value || '') + '"');
-  return { refresco: false, textoOk: true, estable: false }; // no hubo refresco → NO se puede concluir nada
+  return { refresco: false, textoOk: true, estable: false, vistaOk: vistaOk }; // no hubo refresco → NO se puede concluir nada
+}
+
+// ¿Se puede concluir que el usuario NO EXISTE? Las cuatro condiciones, y las cuatro hacen falta:
+//   refresco  · la lista se movió: llegó una respuesta
+//   textoOk   · el alias quedó escrito en el buscador (Vuetify a veces lo limpia)
+//   estable   · la lista dejó de moverse (Vue la vacía ANTES de pintar los resultados)
+//   vistaOk   · estuvimos parados en la lista de JUGADORES
+//
+// La última es la que faltaba. El backoffice tiene otra vista, la de AGENTES (columna «Cantidad»),
+// donde filasJugador() da cero aunque la pantalla esté llena de filas: ahí una lista vacía y quieta
+// parecía «no hay resultados» y se cantaba «el usuario no existe» sin haber buscado nunca. Le pasó
+// a pruebaxx el 26/9, con cargas de hacía una hora.
+//
+// Decir «no existe» sin haber mirado no es un error cosmético: con eso se crean usuarios
+// duplicados y se rechazan cargas buenas. Ante la duda, falla técnica y se reintenta.
+function _puedeConcluirQueNoExiste(r) {
+  return !!(r && r.refresco && r.textoOk && r.estable && r.vistaOk);
 }
 
 // ⛔ Núcleo estable: busca y (opcional) lee saldo. Deja _currentUser para las operaciones.
@@ -694,16 +717,23 @@ async function buscarUsuario(usuario, options = {}) {
     // El "estable" es lo que faltaba: sin él alcanzaba con que Vue vaciara la tabla para dar por
     // buena la conclusión, y un backend lento se leía como "el usuario no existe". Ese era el
     // origen de los ERROR_OPERATIVO que al reintentar cargaban normal.
-    if (r && r.refresco && r.textoOk && r.estable) {
+    if (_puedeConcluirQueNoExiste(r)) {
       return { ok: true, exists: false, user: wanted, message: 'No apareció el usuario buscado en BET300.', intentos: intento };
     }
 
     // Falla técnica → reintentar desde el inicio de la pantalla de carga.
     console.warn('[buscar] intento ' + intento + '/' + INTENTOS + ' sin resultado confiable (texto '
       + (r && r.textoOk ? 'OK' : 'NO SE ESCRIBIÓ') + ', refresco ' + (r && r.refresco ? 'sí' : 'NO') + ') — reintentando');
+    // El caso que más engaña: la lista quedó quieta y vacía, así que "parece" que no hay
+    // resultados — pero nunca estuvimos en la lista de jugadores. Se dice fuerte en la consola,
+    // que ahora viaja con la falla (ver main/carteles.js y la caja negra).
+    if (r && r.estable && !r.vistaOk) {
+      console.warn('[buscar] la lista quedó quieta y vacía, pero nunca se llegó a la vista de',
+        'JUGADORES: no se puede concluir que el usuario no exista · ' + _resumenPantalla());
+    }
     _logFallaBusqueda({
       alias: wanted, intento: intento, de: INTENTOS,
-      textoOk: !!(r && r.textoOk), refresco: !!(r && r.refresco),
+      textoOk: !!(r && r.textoOk), refresco: !!(r && r.refresco), vistaOk: !!(r && r.vistaOk),
       inputAhora: ((findSearchInput() || {}).value || ''),
       filasVisibles: filasJugador().length,
       modalAbierto: !!findActiveModal(),
