@@ -3200,3 +3200,47 @@ test('caja negra · la falla se lleva la consola de la ventana de Agentes', asyn
   assert.match(texto, /blocked by CORS policy/);
   assert.match(texto, /logout:1/);
 });
+
+// ── NODO en Discord ──────────────────────────────────────────────────────────
+test('discord · el panel arma los dos renglones y sólo manda lo que cambió', async () => {
+  const { sb } = panelConAgentes(() => Promise.resolve({ ok: true, needsLogin: false }));
+  const mandados = [];
+  sb.ctrlElectron.discordPresencia = (p) => { mandados.push(p); return Promise.resolve({ ok: true }); };
+  sb.window._versionApp = '2.1.3';
+  sb.window.pcOperativa = 'P4';
+
+  const ahora = Date.now();
+  const haceMin = (m) => new Date(ahora - m * 60000).toISOString();
+  sb.V154P.solicitudes = [
+    { ID: 1, TIPO: 'CARGA',  ESTADO: 'PENDIENTE',  FECHA_CREACION: haceMin(1), metadata: {}, METADATA: {} },
+    { ID: 2, TIPO: 'RETIRO', ESTADO: 'PENDIENTE',  FECHA_CREACION: haceMin(2), metadata: {}, METADATA: {} },
+    { ID: 3, TIPO: 'CARGA',  ESTADO: 'ACREDITADA', FECHA_CREACION: haceMin(3), metadata: {}, METADATA: {} },
+    // Un retiro pagándose por partes NO cuenta: ya se aceptó y se está trabajando.
+    { ID: 4, TIPO: 'RETIRO', ESTADO: 'EN_PROCESO', FECHA_CREACION: haceMin(9),
+      MONTO: 100000, MONTO_REAL: 100000,
+      metadata:  { retiro_parcial: { total: 100000, pagado: 40000 } },
+      METADATA:  { retiro_parcial: { total: 100000, pagado: 40000 } } }
+  ];
+
+  sb.actualizarPresenciaDiscord();
+  assert.equal(mandados.length, 1);
+  assert.equal(mandados[0].details, '2 solicitudes pendientes', 'el parcial no cuenta: ' + JSON.stringify(mandados[0]));
+  assert.equal(mandados[0].state, 'Última carga hace 3 min');
+  assert.equal(mandados[0].largeText, 'NODO 2.1.3 · P4');
+
+  // Sin cambios no se vuelve a mandar.
+  sb.actualizarPresenciaDiscord();
+  assert.equal(mandados.length, 1);
+
+  // Entra una solicitud nueva y sí se manda.
+  sb.V154P.solicitudes.push({ ID: 5, TIPO: 'CARGA', ESTADO: 'PENDIENTE', FECHA_CREACION: haceMin(0), metadata: {}, METADATA: {} });
+  sb.actualizarPresenciaDiscord();
+  assert.equal(mandados.length, 2);
+  assert.equal(mandados[1].details, '3 solicitudes pendientes');
+});
+
+test('discord · sin el puente de Electron no se cae ni molesta', () => {
+  const sb = arrancarPanel();
+  delete sb.ctrlElectron;
+  assert.doesNotThrow(() => sb.actualizarPresenciaDiscord(), 'en el navegador esto no existe');
+});

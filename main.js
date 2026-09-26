@@ -47,6 +47,7 @@ const { registerUpdaterIpc } = require('./main/updater');
 const { registerExternalLinksIpc } = require('./main/external-links');
 const { registerAgentIpc } = require('./main/agent-ipc');
 const { registerOfficeCredentialsIpc } = require('./main/office-credentials');
+const { createDiscordPresence } = require('./main/discord');
 
 const rootDir = __dirname;
 const icon = path.join(rootDir, 'icons', 'icon-n.png');
@@ -61,6 +62,12 @@ const verificationRequests = createRequestRegistry();
 const agents = createAgentWindowService({ BrowserWindow, icon, partition: proxy.partition, backends, headers, requests: automationRequests });
 const automation = createAutomationService({ agents, backends, requests: automationRequests });
 const verification = createVerificationService({ BrowserWindow, icon, partition: proxy.partition, backends, requests: verificationRequests });
+// NODO en Discord. Sin DISCORD_APP_ID no hace nada, y si Discord no esta abierto tampoco:
+// en los dos casos es un no-op silencioso que no puede frenar ni romper el panel.
+const discord = createDiscordPresence({
+  appId: process.env.DISCORD_APP_ID || '',
+  version: (function(){ try { return app.getVersion(); } catch (_e) { return ''; } })()
+});
 
 registerPanelIpc({ ipcMain });
 registerNexoIpc({ ipcMain, app });
@@ -68,6 +75,11 @@ registerUpdaterIpc({ ipcMain, app, BrowserWindow, shell, panel });
 registerExternalLinksIpc({ ipcMain, shell });
 registerAgentIpc({ ipcMain, agents, automation, verification, backends, automationRequests, verificationRequests });
 registerOfficeCredentialsIpc({ ipcMain, automation, proxy });
+// El panel manda lo que hay que mostrar; decidir QUE mostrar es del panel, no de main.
+ipcMain.handle('nodo:discord', (_e, estado) => {
+  try { discord.actualizar(estado); } catch (_err) {}
+  return { ok: true, habilitado: discord.habilitado, conectado: discord.conectado };
+});
 chunior.registerIpc(ipcMain);
 
 // ── App lifecycle ─────────────────────────────────────────────────────────────

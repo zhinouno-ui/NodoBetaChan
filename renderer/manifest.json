@@ -25,6 +25,7 @@
         "domain/conciliacion.js",
         "domain/caja-negra.js",
         "domain/parciales.js",
+        "domain/presencia.js",
         "runtime/refresh-coordinator.js",
         "runtime/realtime.js",
         "chat/metrics.js"
@@ -58,6 +59,7 @@
         "core/chat-acciones.js",
         "core/cotejo-alta.js",
         "core/caja-negra-panel.js",
+        "core/discord-presencia.js",
         "core/agentes-cola-y-sesion.js",
         "core/automatizaciones.js",
         "core/navegacion-y-verificaciones.js",

@@ -20,6 +20,8 @@ contextBridge.exposeInMainWorld('ctrlElectron', {
   navigateAgent:   (url) => ipcRenderer.invoke('drex:navigate', url),
   // Consola de la ventana de Agentes: la usa la caja negra al anotar una falla.
   leerConsolaAgentes: () => ipcRenderer.invoke('drex:consola'),
+  // NODO en Discord: el panel arma los dos renglones y main los publica.
+  discordPresencia: (estado) => ipcRenderer.invoke('nodo:discord', estado),
   drexAutomation: (method, ...args) => {
     if (!ALLOWED_AUTOMATION_METHODS.has(method)) {
       return Promise.reject(new Error(`Método no permitido: ${method}`));

@@ -1,0 +1,54 @@
+// ── NODO en Discord ──────────────────────────────────────────────────────────
+// Arma los dos renglones y se los pasa a main, que los publica. Decidir QUÉ mostrar es del panel:
+// main sólo sabe hablar el protocolo.
+//
+//   NODO OPERATIVO            ← el nombre de la app, sale de Discord
+//   3 solicitudes pendientes
+//   Última carga hace 3 min
+//
+// Esto no puede romper ni frenar nada: todo envuelto, y si algo falla se calla.
+(function(){
+  'use strict';
+  let ultima = null;
+
+  function armar(){
+    try{
+      const dom = window.NodoDomain && window.NodoDomain.presencia;
+      if(!dom) return null;
+      return dom.armar({
+        solicitudes: (window.V154P && window.V154P.solicitudes) || [],
+        version: window._versionApp || '',
+        pc: (typeof pcOperativa !== 'undefined' ? pcOperativa : '') || window.pcOperativa || '',
+        // El MISMO criterio con el que la pantalla decide qué es un parcial. Un retiro pagándose
+        // por partes ya se aceptó: no está esperando que alguien lo agarre.
+        esParcial: function(s){
+          try{
+            const par = window.NodoDomain && window.NodoDomain.parciales;
+            if(!par) return false;
+            return par.enProceso(s, {
+              info: window._retiroParcialInfo,
+              cerrado: window._retiroCerradoAMano,
+              sigueAbierto: window._retiroParcialSigueAbierto
+            });
+          }catch(_e){ return false; }
+        }
+      });
+    }catch(_e){ return null; }
+  }
+
+  window.actualizarPresenciaDiscord = function(forzar){
+    try{
+      if(!window.ctrlElectron || !window.ctrlElectron.discordPresencia) return;
+      const p = armar();
+      if(!p) return;
+      const dom = window.NodoDomain && window.NodoDomain.presencia;
+      // Mandar lo mismo una y otra vez es ruido: Discord lo descarta igual.
+      if(!forzar && dom && !dom.distinta(p, ultima)) return;
+      ultima = p;
+      window.ctrlElectron.discordPresencia(p).catch(function(){});
+    }catch(_e){}
+  };
+
+  // Cada minuto, aunque no haya cambiado nada: el "hace 3 min" tiene que envejecer solo.
+  try{ setInterval(function(){ window.actualizarPresenciaDiscord(); }, 60000); }catch(_e){}
+})();
