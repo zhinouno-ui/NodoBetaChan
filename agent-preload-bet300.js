@@ -424,14 +424,31 @@ function firmaFilas() {
   return filasJugador().map(r => normAlias(aliasDeFila(r))).join('|');
 }
 
-// Selecciona "Todos los jugadores" del menú que abre la lupa. ROBUSTO: espera a que el
+// La opción del menú que deja JUGADORES en la lista. Se llamaba "Todos los jugadores" y pasó a
+// ser "Agentes y jugadores directos" (26/9). El preload la buscaba por texto EXACTO, así que dejó
+// de encontrarla: esperaba 6 s, se rendía, y la búsqueda corría en la vista de AGENTES — donde
+// filasJugador() da cero y se concluía "el usuario no existe" con el usuario cargando hacía una
+// hora (pruebaxx).
+//
+// Por eso ya no se busca un texto exacto: alcanza con que la opción hable de jugadores. Se excluye
+// lo que los ESCONDE ("sin jugadores", "ocultar"), que sería el tiro en el pie. Si mañana le
+// cambian el nombre otra vez, esto lo aguanta.
+function _esOpcionJugadores(texto) {
+  const t = String(texto == null ? '' : texto).replace(/\s+/g, ' ').trim().toLowerCase();
+  if (!t || t.length > 60) return false;
+  if (!/jugador/.test(t)) return false;
+  if (/\bsin\b|ocultar|esconder|excluir|^no /.test(t)) return false;
+  return true;
+}
+
+// Selecciona esa opción del menú que abre la lupa. ROBUSTO: espera a que el
 // item aparezca (el menú puede tardar más que una ventana corta), lo clickea, y CONFIRMA
 // que el menú se cerró; si el menú no está abierto, lo reabre con la lupa. Devuelve true
 // si logró elegirlo. (Este paso fallando = la ventana queda colgada con el dropdown abierto
 // y la búsqueda nunca se ejecuta → era la causa del ERROR_OPERATIVO / timeout.)
 async function elegirTodosLosJugadores(timeout = 6000) {
   const SEL = '.v-overlay__content .v-list-item, .v-list-item, [role="option"], .v-list-item__content';
-  const buscarOpt = () => findByText(/^\s*todos\s+los\s+jugadores\s*$/i, SEL);
+  const buscarOpt = () => visibleElements(SEL).find(el => _esOpcionJugadores(normalizeText(el.textContent)));
   const fin = now() + timeout;
   let vueltas = 0;
   while (now() < fin) {

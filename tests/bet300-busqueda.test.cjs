@@ -42,3 +42,43 @@ test('el preload usa esta función y no repite la condición suelta', () => {
   const sueltas = afuera.match(/r\.refresco && r\.textoOk && r\.estable/g) || [];
   assert.equal(sueltas.length, 0, 'la condición no puede quedar copiada en otro lado');
 });
+
+// ── La opción del menú que deja JUGADORES en la lista ────────────────────────
+// Se llamaba "Todos los jugadores" y pasó a ser "Agentes y jugadores directos" (26/9). El preload
+// la buscaba por texto EXACTO: dejó de encontrarla, esperaba 6 s, se rendía, y la búsqueda corría
+// en la vista de AGENTES. De ahí el "pruebaxx no existe en el casino" con cargas de hacía una hora.
+
+const mOpcion = src.match(/function _esOpcionJugadores\([^)]*\) ?\{[\s\S]*?\n\}/);
+assert.ok(mOpcion, 'no encontré _esOpcionJugadores en el preload');
+const esOpcion = new Function(mOpcion[0] + '\nreturn _esOpcionJugadores;')();
+
+test('reconoce el nombre nuevo y el viejo', () => {
+  assert.equal(esOpcion('Agentes y jugadores directos'), true, 'el de ahora');
+  assert.equal(esOpcion('Todos los jugadores'), true, 'el de antes, por si vuelve');
+  // Tal cual viene del DOM, con espacios y saltos de Vuetify.
+  assert.equal(esOpcion('  Agentes y jugadores   directos \n'), true);
+  assert.equal(esOpcion('AGENTES Y JUGADORES DIRECTOS'), true);
+});
+
+test('NO elige las opciones que esconden a los jugadores', () => {
+  // Clickear una de estas sería el tiro en el pie: la lista quedaría sin jugadores y volveríamos
+  // a concluir "no existe".
+  for (const t of ['Sin jugadores', 'Ocultar jugadores', 'Excluir jugadores', 'No mostrar jugadores']) {
+    assert.equal(esOpcion(t), false, t);
+  }
+});
+
+test('no se cuelga de cualquier cosa del menú', () => {
+  for (const t of ['Agentes', 'Cerrar sesión', 'Estadísticas', 'Reporte global', '', null, undefined]) {
+    assert.equal(esOpcion(t), false, String(t));
+  }
+  // Un texto larguísimo no es una opción de menú: es la página entera colándose.
+  assert.equal(esOpcion('jugadores ' + 'x'.repeat(200)), false);
+});
+
+test('el preload ya no busca el texto exacto viejo', () => {
+  // El patrón viejo, tal cual estaba escrito en el preload: /^\s*todos\s+los\s+jugadores\s*$/i
+  assert.ok(!src.includes('todos\\s+los\\s+jugadores'),
+    'si vuelve el texto exacto, vuelve el bug en cuanto le cambien el nombre');
+  assert.match(src, /_esOpcionJugadores\(normalizeText/, 'la elección tiene que pasar por la función');
+});
