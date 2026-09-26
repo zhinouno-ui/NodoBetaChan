@@ -3276,6 +3276,196 @@ Huecos que aparecieron (detalle y evidencia en el mapa, sección 3):
 | H-4 | El expediente del portal no le avisa al jugador por chat | el mismo pedido avisa o no según por dónde entró |
 | H-5 | El reintento no ajusta el saldo de la billetera | la billetera muestra plata que ya salió |
 | H-6 | Gasto/propina/depósito no descuentan el saldo local | a definir: puede ser a propósito |
-| H-7 | `agent-preload-bet300.js` sin el blindaje de sesión | en BET300 la sesión caída vuelve a pasar |
+| H-7 | `agent-preload-bet300.js` atrasado respecto al de drex | el respaldo no es respaldo: si drex cae y se cambia, cae casi todo igual (Juan, 26/09). Ya tiene el freno del login (D-102); le siguen faltando el manejo de `sesionInvalida` y el resto de lo que drex fue juntando |
 
 **Estado** — ABIERTO (el mapa, RESUELTO; los huecos, en cola)
+
+---
+
+## D-102 · El loop del login de Agentes: la recarga sale de `main`, no del preload
+
+**Evidencia** — El panel llama `window.ctrlElectron.navigateAgent()` desde **21 lugares**
+(`renderer/core/automatizaciones.js` ×8, `agentes-cola-y-sesion.js` ×3, `operaciones-manuales.js` ×3,
+y seis más). Ninguno pasa por la cola serial `_drexEncolar`: son llamadas directas. Todas terminan
+en `main/agent-window.js` → `navigateAgentTo`, que **no miraba si el operador estaba entrando**.
+
+Drex se lleva la peor parte por cómo se decide si hace falta recargar: `sameUrl` compara la ruta
+completa cuando el backend **no** es SPA. Durante el login la página está en `/login` y la app pide
+`/agents/user_search` → nunca coinciden → **recarga siempre**. La recarga descarga la página, el
+`iniciarSesion` en vuelo no contesta nunca, el panel lo muestra como "se recargó durante la
+operación", el operador reintenta y vuelve a pasar. BET300 es SPA y compara por origin, así que ahí
+la página se reusaba y el loop casi no se veía.
+
+Por eso el blindaje del preload no alcanzaba: `_loginEnCurso` existía en `agent-preload.js` desde
+D-101, pero sólo frenaba a `_irAlLogin`. Las recargas de `main` le pasan por al lado, y además
+`irABusquedaUsuarios` navegaba crudo sin mirar ningún freno.
+
+**Impacto** — Una PC que entra a Agentes queda en loop y no puede operar. Lo reportó EYF-F el
+26/09, después de que esa PC se pasara a drex. La elección de backend se persiste en
+`%APPDATA%\nodo-operativo\nodo-agent-backend`, así que la PC queda clavada en ese backend hasta
+que alguien la cambie a mano: por eso falla **una sola** PC y no las siete.
+
+**Estado** — RESUELTO. El freno quedó en el único punto por donde pasan las 21 llamadas
+(`navigateAgentTo`), marcado desde `main/automation.js` mientras el `iniciarSesion` está en vuelo,
+con un tope de 90 s para que un login que nunca contesta no deje la ventana clavada. Se le sumó el
+freno que faltaba en `irABusquedaUsuarios` (drex) y en `_navegarA` (BET300).
+Prueba: `tests/agentes-login-sin-recargas.test.cjs` **ejecuta** los dos preloads y falla si alguno
+navega con el login en vuelo. Fallaba en los dos antes del arreglo.
+
+**Reproducido en dev** — `npm run repro:loop` (`scripts/repro-loop-login.cjs`). Corre Electron real,
+el preload real y los módulos reales de main contra un drex FALSO en 127.0.0.1, con la salida a
+internet bloqueada en la sesión: no se toca el backoffice del casino. Resultado: **0 de 3 entradas**
+con el freno saltado (timeout de la automatización, que es lo que veía el operador) y **3 de 3** con
+el freno puesto.
+
+**Límite conocido, encontrado al reproducirlo** — el arreglo sirve porque el ingreso de drex es un
+SPA de React: cambia la ruta por dentro y NO recarga el documento. Si alguna vez el ingreso pasara
+a navegar el documento de verdad, el `did-navigate` de `agent-window.js` lo toma como "se recargó
+durante la operación" y corta el login igual — la reproducción lo muestra (tanda APARTE, 0 de 3).
+No se tocó a propósito: no rechazar ahí sería PEOR, porque el preload viejo ya se destruyó con la
+página y la llamada en vuelo no puede contestar nunca — se colgaría los 40 s del timeout en vez de
+cortar en 3 s. El arreglo de verdad sería que main vuelva a mirar la página después de esa
+navegación y dé el login por bueno. Queda para decidir, no para improvisar.
+
+**Ojo para el próximo** — en drex el ipc sube `_opsEnCurso` para **todos** los métodos, así que
+mirar ese contador dentro de un método del `api` lo desactiva siempre. Ahí va `_loginEnCurso` solo.
+
+---
+
+## D-103 · No hay forma de ver, PC por PC, hasta dónde llegó lo que falló
+
+**Evidencia** — Lo que existe no sale de la máquina:
+
+- `_trazaInit/_trazaPaso/_trazaFin` (`renderer/core/operaciones-manuales.js:114-130`) muestra los
+  pasos **en pantalla**, para el operador. No se guarda ni se manda a ningún lado.
+- `nodo_busqueda_fallas` (`agent-preload.js:824`) guarda las últimas 40 fallas de búsqueda en el
+  `localStorage` **de la ventana de Agentes**. Para leerlo hay que estar sentado en esa PC con el
+  devtools abierto. BET300 tiene su propia copia (`agent-preload-bet300.js:457`), sin unificar.
+- `panel_actividad` es un latido: una fila por máquina (upsert sobre `pc_codigo, clave_maquina`),
+  con `version`, `instalacion` y `last_seen`. Dice si la PC está viva, no qué le pasó.
+- `worker_logs` y `panel_operativo_auditoria` existen en la base y están **en cero**.
+
+**Impacto** — Cuando una oficina avisa "no anda", lo único que llega es eso. No se sabe si cortó el
+panel, `main` o el preload, ni en qué paso. Se diagnostica preguntando y probando a distancia, que
+es exactamente lo que pasó con EYF-F y D-102.
+
+**Estado** — ABIERTO. Pendiente de decidir el lugar de consulta; el registro tiene que ser de
+**pasos recorridos**, no de errores previstos: no se puede escribir de antemano el cartel de una
+falla que todavía no ocurrió (criterio de Juan, 26/09).
+
+---
+
+## D-104 · El cierre a mano de un parcial lo borraba el pago siguiente
+
+**Evidencia** — Retiro **#266250** (`Maria6981x`). Cerrado **siete veces** entre el 25 y el 26/9
+(02:42 ×2, 05:46, 06:16, 11:49, 11:50, 11:59 — todas en `historial_ops`). El cierre SÍ se guardaba:
+la marca era `metadata.etapa = RETIRO_CIERRE_MANUAL`. Pero `withdrawals-execution.js:496` escribe
+`etapa: RETIRO_V2_PARCIAL` en CADA pago parcial, así que el pago de las 11:48 borró el cierre de
+las 06:16 y el retiro volvió a la caja.
+
+**Impacto** — El operador cierra y el retiro reaparece. Además, mientras está visible, otro operador
+le sigue pagando: por eso salió el pago de las 11:48 sobre un retiro ya cerrado.
+
+**Estado** — RESUELTO. La marca pasó a `metadata.cierre_manual`, llave propia que no escribe ningún
+otro camino. Se sigue aceptando la marca vieja para los ya cerrados. Pruebas en
+`tests/panel-arranque.test.cjs` sobre el bundle real, incluida una que verifica que un parcial de
+verdad NO se tape por error.
+
+**Segunda causa, sin resolver** — los cierres sin pago en el medio (02:42 → 05:46) son de PCs
+distintas: la caja de Parciales lee `window._parcialesEnProceso`, una lista en memoria, y el panel
+que no refrescó sigue mostrando lo que otro ya cerró.
+
+---
+
+## D-105 · El aviso de descuadre mostraba dos veces el mismo número
+
+**Evidencia** — En la caja de Parciales: *"El progreso no coincide entre los dos registros:
+**$1.700.000** vs **$1.700.000**"*. `archivo-historial.js` imprimía `pp.pagado` (que es el MÁXIMO de
+las tres fuentes) contra `pp.pagadoAlt`, cuando la que discrepaba era la tercera (la suma del
+historial). El operador leía dos números iguales y un pedido de ir a buscar una diferencia invisible.
+
+**Estado** — RESUELTO. Ahora nombra cada fuente: "según el contador de parciales", "según el retiro
+normal", "sumando el historial", y sólo muestra las que de verdad difieren.
+
+---
+
+## D-106 · Una carga nueva no cancelaba el retiro parcial abierto
+
+**Evidencia** — `Maria6981x` cargó **tres veces** con el retiro #266250 a medio pagar: 250.000 (26/9
+11:45), 300.000 (12:05) y 400.000 (12:22). Se había jugado las fichas del retiro y volvió a cargar.
+El parcial siguió vivo pidiendo $38.907 que ya no correspondían.
+
+**Estado** — RESUELTO, por decisión de Juan (26/9): al entrar una carga posterior al retiro, el
+parcial se cierra **solo**, sin confirmar, con motivo `CARGO_DE_NUEVO`. Lo pagado queda pagado y el
+resto se da de baja. No mueve plata. El operador recibe un aviso amarillo bien visible y queda la
+fila en el historial.
+Decisión pura y testeada en `renderer/domain/parciales.js` (12 pruebas); el enganche, probado sobre
+el bundle real. Sólo entra si la carga es POSTERIOR al retiro, si todavía debe plata y si nadie lo
+cerró antes.
+
+**Riesgo que se aceptó a sabiendas** — una carga chica cierra igual un parcial con mucho pendiente.
+Se planteó y Juan eligió el cierre automático.
+
+---
+
+## D-107 · El retiro que se paga por el flujo normal no suma al contador de parciales
+
+**Evidencia** — #266250 otra vez. `historial_ops` tiene **cinco** pagos (600.000 + 400.000 + 500.000
++ **500.000** + 200.000 = **2.200.000**), pero `retiro_parcial.pagos` tiene **cuatro** (1.700.000).
+El que falta es el del 26/9 02:37 — su nota dice "Retiro · pagado…" sin "PARCIAL": salió por el
+camino del retiro completo, que no toca el contador de parciales.
+
+**Impacto** — Es el origen del descuadre que ve el operador y del cartel de D-105. Y acá pega en la
+plata: contra un retiro de **$1.738.907**, el historial suma **$2.200.000** pagados — **$461.093 de
+más**. O se pagó de más, o ese movimiento está mal anotado. **Pendiente de revisión de Juan.**
+
+**Estado** — ABIERTO. Lo que pide Juan: que el retiro manual/normal se adose al parcial y sume como
+un pago más, en vez de romperlo. Hay tres motores que pagan un retiro y cada uno anota distinto; el
+arreglo es que todos escriban en el mismo libro — el principio que el propio código ya declara:
+"la verdad es el registro de los movimientos, no un contador paralelo".
+---
+
+## D-108 · La caja de Parciales mostraba una foto vieja, y el modal y el filtro no coincidían
+
+**Evidencia** — #266250 figuraba con «falta $38.907 · $1.700.000 de $1.738.907» cuando en la base ya
+estaba en 1.738.907 de 1.738.907 (cobrado entero el 26/9 10:41). La caja leía
+`window._parcialesEnProceso`, una lista que sólo se rearma cuando el Inicio se repinta. Además el
+criterio del modal y el del filtro estaban escritos aparte y se contradecían.
+
+**Estado** — RESUELTO. Un solo criterio en `NodoDomain.parciales.enProceso`, usado por el render y
+por el modal; `_parcialesAhora()` recalcula al abrir y deja el contador al día. Los que ya cobraron
+todo pero nadie cerró **siguen entrando a propósito**: es el único lugar desde donde cerrarlos.
+
+---
+
+## D-109 · La copia local de un parcial no se refrescaba nunca: no había forma de sacarlo
+
+**Evidencia** — `renderer/portal/requests.js`. Cuando un retiro parcial deja de venir de la RPC (que
+filtra por estado), el panel **sostiene la copia de memoria** para no perder de vista plata debida.
+Esa copia se volvía a empujar en cada ciclo **sin refrescarse**.
+
+Consecuencia, con #266250: se pagaron los $38.907 que faltaban → la base quedó saldada, pero el panel
+siguió mostrando su foto de 1.700.000. Se cerró → la base guardó el cierre, pero la copia local no
+lo tenía y volvía a aparecer. **Ni pagándolo entero ni cerrándolo se podía sacar.** Eso explica los
+siete cierres de D-104 mejor que la pisada de `etapa` sola.
+
+**Estado** — RESUELTO. Antes de sostener una copia se le pregunta a la base por
+`landing_retiro_progreso`: si está saldada o cerrada, se suelta; si falta plata, se sostiene **con
+los números de la base**. Si la base no contesta, se sostiene igual — un retiro con plata debida no
+se pierde de vista por un error de red. Cuatro pruebas que ejecutan los cuatro caminos.
+
+---
+
+## D-110 · Los cierres se anotaban como retiros de $0 y tapaban los retiros reales
+
+**Evidencia** — Cada cierre de un parcial escribe una fila `historial_ops` con `tipo=RETIRO` y
+`monto=0`. La lista «Retiros de X en las últimas 24hs» las mostraba como «$ 0 · —» sin decir qué
+eran, y con `limit(10)` **tapaban retiros de verdad**: Maria6981x tenía 6 de 10 filas ocupadas por
+cierres.
+
+El control de 24hs (`verificarRetiro24h`) no se veía afectado: `_blEsParcial` los descarta porque la
+nota contiene «parcial».
+
+**Estado** — RESUELTO. La consulta pide `monto > 0`; los cierres nuevos se anotan con
+`origen: CIERRE` para no depender del monto; y los tramos de un retiro grande quedan marcados
+«parte de un retiro», que es el mismo criterio con el que la regla de 24hs los descarta.

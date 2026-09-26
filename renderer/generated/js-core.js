@@ -2600,9 +2600,13 @@ async function consultarRetirosUsuarioRealtime(){
     // No filtramos por pc_codigo: queremos detectar si el usuario retiró desde OTRA oficina
     const { data } = await supabaseClient
       .from("historial_ops")
-      .select("created_at, monto, billetera_nombre, estado, origen, chunior_movimiento_id, pc_codigo")
+      .select("created_at, monto, billetera_nombre, estado, origen, chunior_movimiento_id, pc_codigo, notas")
       .ilike("usuario", _uPat)
       .eq("tipo", "RETIRO")
+      // Los CIERRES de un retiro parcial se anotan como RETIRO de $0. No son un retiro: son una
+      // decisión administrativa. Salían acá como "$ 0 · —" sin decir qué eran y, con el tope de 10
+      // filas, TAPABAN retiros de verdad — Maria6981x tenía 6 de 10 filas ocupadas por cierres.
+      .gt("monto", 0)
       .gte("created_at", desde)
       .order("created_at", { ascending: false })
       .limit(10);
@@ -2634,7 +2638,8 @@ async function consultarRetirosUsuarioRealtime(){
         PANEL:   { txt: 'NODO panel',  color: '#7aa2ff' },
         AUTO:    { txt: 'NODO auto',   color: '#7aa2ff' },
         MANUAL:  { txt: 'NODO manual', color: '#7aa2ff' },
-        CHAT:    { txt: 'NODO chat',   color: '#7aa2ff' }
+        CHAT:    { txt: 'NODO chat',   color: '#7aa2ff' },
+        CIERRE:  { txt: 'cierre',      color: '#c084fc' }
       };
       const m = map[o] || { txt: (o||'?'), color: '#9aa4b2' };
       return '<span style="font-size:9px;color:'+m.color+';border:1px solid '+m.color+'55;border-radius:4px;padding:1px 5px;margin-left:4px">'+escapeHtml(m.txt)+'</span>';
@@ -2649,8 +2654,13 @@ async function consultarRetirosUsuarioRealtime(){
       const pcBadge   = r.pc_codigo
         ? '<span class="badge '+(esExterna?'badge-danger':'badge-muted')+'" style="font-size:9px;padding:2px 6px;margin-left:4px">'+escapeHtml(r.pc_codigo)+'</span>'
         : '';
+      // Un tramo de un retiro grande NO es un retiro aparte: es el mismo criterio con el que la
+      // regla de 24hs los descarta (_blEsParcial). Sin decirlo, la lista parece cinco retiros.
+      const tagParcial = (typeof _blEsParcial === "function" && _blEsParcial(r))
+        ? ' <span style="font-size:9px;color:#c084fc;border:1px solid #c084fc55;border-radius:4px;padding:1px 5px;margin-left:4px">parte de un retiro</span>'
+        : '';
       filas += '<div style="display:flex;justify-content:space-between;gap:8px;padding:5px 0;border-top:1px solid rgba(255,255,255,.08);font-size:12px">'
-        +   '<span style="color:#c0cad8;white-space:nowrap">'+escapeHtml(fecha)+tagErr+pcBadge+origenLabel(r.origen)+'</span>'
+        +   '<span style="color:#c0cad8;white-space:nowrap">'+escapeHtml(fecha)+tagErr+pcBadge+origenLabel(r.origen)+tagParcial+'</span>'
         +   '<span style="text-align:right"><b>'+money(r.monto)+'</b> <span class="small">· '+escapeHtml(billetera)+'</span></span>'
         + '</div>';
     });
@@ -4527,8 +4537,34 @@ window._retiroParcialInfo = function(s){
 // parciales salían mezclados con las solicitudes nuevas y se perdían de vista — de hecho pasamos
 // media sesión peleando con uno que "desaparecía". La lista la arma el render del Inicio en
 // window._parcialesEnProceso.
+// Recalcula la caja con lo que hay AHORA en memoria. Antes leía window._parcialesEnProceso, que es
+// una foto que sólo se rearma cuando el Inicio se repinta: un retiro cobrado entero (o cerrado
+// desde otra PC) seguía apareciendo con «falta $X» aunque en la base ya no faltara nada (D-108).
+window._parcialesAhora = function(){
+  try{
+    const dom = window.NodoDomain && window.NodoDomain.parciales;
+    const todas = (window.V154P && window.V154P.solicitudes) || [];
+    if(!dom || !todas.length) return (window._parcialesEnProceso || []).slice();
+    const vivos = todas.filter(function(s){
+      return dom.enProceso(s, {
+        info: window._retiroParcialInfo, cerrado: window._retiroCerradoAMano,
+        sigueAbierto: window._retiroParcialSigueAbierto
+      });
+    });
+    window._parcialesEnProceso = vivos;   // que el contador y la caja digan lo mismo
+    try{
+      ['btnParcialesCount','btnParcialesCCCount'].forEach(function(id){
+        const el = document.getElementById(id); if(el) el.textContent = String(vivos.length);
+      });
+      ['btnParcialesEnProceso','btnParcialesCC'].forEach(function(id){
+        const el = document.getElementById(id); if(el) el.style.display = vivos.length ? '' : 'none';
+      });
+    }catch(_e){}
+    return vivos.slice();
+  }catch(_e){ return (window._parcialesEnProceso || []).slice(); }
+};
 window.verRetirosParciales = function(){
-  const arr = (window._parcialesEnProceso || []).slice();
+  const arr = window._parcialesAhora();
   if(!arr.length){ try{ toast('No hay retiros pagándose por partes.','blue'); }catch(_e){} return; }
   const filas = arr.map(function(s){
     const id  = Number(s.ID || s.SOLICITUD_ID || 0);
@@ -4556,11 +4592,18 @@ window.verRetirosParciales = function(){
 };
 
 // ¿Este retiro cerrado lo cerró el operador A MANO desde la caja de Parciales?
-// cerrarRetiroSaldado deja esa marca en la metadata. Es una decisión explícita y manda.
+// El cierre a mano es DEFINITIVO: es una decisión del operador y no la revierte nadie.
+//
+// Vivía en `etapa`, y ese campo lo pisa CADA pago parcial (withdrawals-execution: etapa =
+// RETIRO_V2_PARCIAL). O sea que un pago posterior borraba el cierre y el retiro volvía a la caja.
+// El #266250 de Maria6981x se cerró SIETE veces por esto (25-26/9). Ahora la marca va en su
+// propia llave, que no escribe ningún otro camino.
+// Se sigue aceptando la marca vieja en `etapa` para los retiros que ya se cerraron así.
 function _retiroCerradoAMano(s){
   try{
     let m = (s&&(s.METADATA!==undefined?s.METADATA:s.metadata))||{};
     if(typeof m==='string'){ try{ m=JSON.parse(m); }catch(_e){ m={}; } }
+    if(m && m.cierre_manual) return true;
     return String((m&&m.etapa)||'').toUpperCase()==='RETIRO_CIERRE_MANUAL';
   }catch(_e){ return false; }
 }
@@ -4614,7 +4657,10 @@ window.verRetirosParciales = function(){
       // operador elige (cobró todo → Cerrar · falta → Pagar más).
       + (pp.discrepa
           ? ('<div style="margin-top:8px;padding:6px 9px;border-radius:8px;background:rgba(245,197,24,.10);border:1px solid rgba(245,197,24,.35);font-size:11.5px;color:#fde68a">'
-             + '⚠ El progreso no coincide entre los dos registros: <b>'+money(pp.pagado)+'</b> vs <b>'+money(pp.pagadoAlt)+'</b>. '
+             + '⚠ El progreso no coincide: <b>'+money(pp.pagadoRpc)+'</b> según el contador de parciales'
+             + (pp.pagadoAlt>0.5 && Math.abs(pp.pagadoAlt-pp.pagadoRpc)>1 ? ', <b>'+money(pp.pagadoAlt)+'</b> según el retiro normal' : '')
+             + (pp.pagadoHistorial>0.5 && Math.abs(pp.pagadoHistorial-pp.pagadoRpc)>1 ? ', <b>'+money(pp.pagadoHistorial)+'</b> sumando el historial' : '')
+             + '. '
              + 'Fijate en el historial cuánto cobró y elegí.</div>')
           : '')
       + '<div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px;gap:8px;flex-wrap:wrap">'
@@ -4760,6 +4806,72 @@ window._MOTIVOS_CIERRE_PARCIAL = [
   { k:'OTRO',             t:'Otro (explicar abajo)' }
 ];
 
+// ── Cierre automático: el jugador volvió a cargar con el retiro a medio pagar ────────────────
+// Decisión de Juan (26/9): se cierra SOLO, sin confirmar. El caso: Maria6981x se jugó las fichas
+// del retiro, volvió a cargar, y el parcial siguió pidiendo una plata que ya no correspondía.
+// Esto NO mueve plata: cierra la solicitud y anota por qué. Lo pagado queda pagado.
+// El operador se entera igual — el aviso es a propósito bien visible.
+window._parcialesCerradosAuto = window._parcialesCerradosAuto || new Set();
+window._cerrandoParcialesAuto = false;
+window.cerrarParcialesPorCarga = async function(){
+  // Al final recarga, y la recarga vuelve a llamar acá. El Set ya corta el reproceso, pero esto
+  // lo deja explícito: una sola pasada por vez.
+  if(window._cerrandoParcialesAuto) return 0;
+  window._cerrandoParcialesAuto = true;
+  try{
+    if(!window.NodoDomain || !NodoDomain.parciales) return 0;
+    const casos = NodoDomain.parciales.aCerrarPorCarga({
+      solicitudes: (window.V154P && window.V154P.solicitudes) || [],
+      info: window._retiroParcialInfo,
+      cerrado: window._retiroCerradoAMano,
+      yaVistos: window._parcialesCerradosAuto
+    });
+    let hechos = 0;
+    for(const caso of casos){
+      // Se marca ANTES de escribir: si la escritura falla, no se reintenta en cada refresco.
+      window._parcialesCerradosAuto.add(caso.id);
+      const nota = NodoDomain.parciales.notaCierre(caso, money);
+      let rpPrevio = {};
+      try{
+        let m = (caso.solicitud && (caso.solicitud.METADATA!==undefined ? caso.solicitud.METADATA : caso.solicitud.metadata)) || {};
+        if(typeof m === "string"){ try{ m = JSON.parse(m); }catch(_e){ m = {}; } }
+        rpPrevio = (m && m.retiro_parcial) || {};
+      }catch(_e){}
+      const cierre = {
+        motivo: caso.motivo, etiqueta: caso.etiqueta, nota: nota,
+        operador: "automático", fecha: new Date().toISOString(),
+        pagado: caso.pagado, total: caso.total, faltante: caso.restante,
+        carga_id: caso.cargaId, carga_monto: caso.cargaMonto
+      };
+      try{
+        await window.actualizarSolicitudPortal(String(caso.id), "PAGADA", {
+          etapa: "RETIRO_CIERRE_AUTO",
+          // Misma llave que el cierre a mano: definitivo, no lo pisa un pago posterior.
+          cierre_manual: { fecha: cierre.fecha, operador: "automático", motivo: caso.motivo, auto: true },
+          cierre_motivo: caso.motivo,
+          cierre_nota: nota,
+          retiro_parcial: Object.assign({}, rpPrevio, { cierre: cierre })
+        });
+        hechos++;
+        try{
+          await registrarEnHistorial({
+            usuario: String((caso.solicitud && (caso.solicitud.USUARIO || caso.solicitud.USUARIO_JUGADOR)) || ""),
+            tipo: "RETIRO", monto: 0, origen: "CIERRE", estado: "OK", solicitud_id: String(caso.id),
+            notas: "Cierre automático de retiro parcial · " + caso.etiqueta + " · " + nota
+          });
+        }catch(_e){}
+        // Que NO pase desapercibido: es una solicitud que se cerró sin que nadie la toque.
+        try{ toast("💸 Retiro #"+caso.id+" cerrado solo · "+caso.etiqueta+" · quedaron sin pagar "+money(caso.restante), "yellow"); }catch(_e){}
+      }catch(e){
+        try{ toast("No se pudo cerrar solo el retiro #"+caso.id+": "+(e.message||e), "red"); }catch(_e){}
+      }
+    }
+    // Se repinta con lo que ya está en memoria: recargar acá volvería a entrar por el mismo camino.
+    if(hechos){ try{ if(typeof cargarSolicitudesPortal==="function") await cargarSolicitudesPortal(true); }catch(_e){} }
+    return hechos;
+  }catch(_e){ return 0; }
+  finally{ window._cerrandoParcialesAuto = false; }
+};
 window.cerrarRetiroSaldado = async function(id){
   const s = (window._parcialesEnProceso||[]).find(function(x){ return String(x.ID||x.SOLICITUD_ID||0)===String(id); });
   const pp = (s && window._retiroParcialInfo) ? window._retiroParcialInfo(s) : null;
@@ -4815,6 +4927,9 @@ window.cerrarRetiroSaldado = async function(id){
       try{
         await window.actualizarSolicitudPortal(String(id), 'PAGADA', {
           etapa:'RETIRO_CIERRE_MANUAL',
+          // Llave propia: `etapa` la pisa cada pago parcial y el cierre se perdía. Esto no lo
+          // escribe ningún otro camino, así que el cierre a mano queda firme.
+          cierre_manual: { fecha: new Date().toISOString(), operador: opNombre, motivo: motivo },
           operador: opNombre,
           cierre_motivo: motivo,
           cierre_nota: nota,
@@ -4826,7 +4941,9 @@ window.cerrarRetiroSaldado = async function(id){
         try{
           await registrarEnHistorial({
             usuario: String((s && (s.USUARIO||s.USUARIO_JUGADOR)) || ''),
-            tipo:'RETIRO', monto: 0, origen:'MANUAL', estado:'OK', solicitud_id:String(id),
+            // origen CIERRE: no es un retiro, es una decisión administrativa. Así la lista de
+            // retiros de 24hs puede dejarlo afuera sin adivinar por el monto.
+            tipo:'RETIRO', monto: 0, origen:'CIERRE', estado:'OK', solicitud_id:String(id),
             notas:'Cierre de retiro parcial · '+etiqueta+' · '+nota
                   + (quedaPlata ? (' · quedó sin pagar '+money(faltante)) : '')
           });
@@ -9536,6 +9653,109 @@ window._altaCrearDesdeCotejo = function(usuario, telefono){
   }
   abrirModalCrearUsuario(usuario, telefono, true);   // el aviso va al hilo que está abierto
 };
+// ── Caja negra del panel ──────────────────────────────────────────────────────
+// Adaptador de NodoDomain.cajaNegra. Anota el camino de cada llamada a Agentes para que, cuando
+// algo corte, se vea hasta dónde llegó y de qué capa salió — en vez del "no anda" de siempre.
+//
+// Regla de oro: esto NO puede cambiar el comportamiento ni romper una operación. Todo va envuelto
+// en try/catch y se traga cualquier error propio. Si el registro falla, la operación sigue.
+//
+// Qué NO se guarda: los argumentos de las llamadas. Una clave viaja en los de iniciarSesion.
+// Se anota el nombre del método y lo que devuelve la pantalla, nada más.
+(function(){
+  'use strict';
+  const CLAVE = 'nodo_caja_negra';
+  const caja = NodoDomain.cajaNegra.crear({ topePasos: 120, topeFallas: 15 });
+
+  // Lo de antes del reinicio sigue sirviendo: la falla puede ser de ayer y el panel se reabrió.
+  try{
+    const guardado = localStorage.getItem(CLAVE);
+    if(guardado) caja.importar(JSON.parse(guardado));
+  }catch(_e){}
+
+  let timerGuardar = null;
+  function guardar(){
+    // Agrupado: una operación anota varios pasos seguidos y no hace falta escribir en cada uno.
+    if(timerGuardar) return;
+    timerGuardar = setTimeout(function(){
+      timerGuardar = null;
+      try{ localStorage.setItem(CLAVE, JSON.stringify(caja.exportar())); }catch(_e){}
+    }, 1500);
+  }
+
+  function contextoDelPanel(){
+    try{
+      const pc = (typeof pcOperativa !== 'undefined' ? pcOperativa : '') || window.pcOperativa || '';
+      const op = (window.operador && (window.operador.usuario || window.operador.nombre)) || '';
+      const backend = (window._agentBackendState && window._agentBackendState.backend) || '';
+      return { pc: pc, oficina: window.oficinaId || '', operador: op,
+               version: window._versionApp || '', backend: backend };
+    }catch(_e){ return {}; }
+  }
+
+  // Dónde quedó la pantalla de Agentes, según lo que devolvió el preload. Es el dato que no se
+  // puede reconstruir después: para cuando alguien mira, la ventana ya cambió.
+  function pantallaDe(r){
+    try{
+      if(!r || typeof r !== 'object') return '';
+      const p = [];
+      if(r.url) p.push(String(r.url).replace(/^https?:\/\/[^/]+/, ''));
+      if(r.flujo) p.push('flujo: ' + r.flujo);
+      if(r.needsLogin) p.push('pide login');
+      if(r.pageError) p.push('página bloqueada');
+      if(Array.isArray(r.carteles) && r.carteles.length) p.push('carteles: ' + r.carteles.slice(0, 3).join(' | '));
+      return p.join(' · ');
+    }catch(_e){ return ''; }
+  }
+
+  window._cnPaso = function(paso, estado, datos){
+    try{
+      const d = datos || {};
+      caja.contexto(contextoDelPanel());
+      caja.anotar({ paso: paso, capa: d.capa || 'preload', estado: estado, ms: d.ms,
+                    detalle: d.detalle, pantalla: d.pantalla });
+      guardar();
+    }catch(_e){}
+  };
+
+  window._cnFalla = function(paso, mensaje, datos){
+    try{
+      const d = datos || {};
+      caja.contexto(contextoDelPanel());
+      const falla = caja.anotarFalla({ paso: paso, mensaje: mensaje, capa: d.capa, pantalla: d.pantalla });
+      guardar();
+      // Al toque en la consola de la PC: si el operador abre el devtools, lo primero que ve es
+      // hasta dónde llegó, no un stack.
+      try{ console.warn('%c[caja negra] ' + caja.resumen(falla), 'color:#f97316'); }catch(_e){}
+      return falla;
+    }catch(_e){ return null; }
+  };
+
+  // Para consultar sentado en la PC, o para que el operador lo copie y lo mande.
+  window.cajaNegra = {
+    fallas: function(){ return caja.fallas; },
+    pasos: function(){ return caja.pasos; },
+    resumen: function(){ return caja.resumen(); },
+    exportar: function(){ return caja.exportar(); },
+    texto: function(){
+      const e = caja.exportar();
+      const ctx = e.contexto;
+      const cab = 'CAJA NEGRA · pc ' + (ctx.pc || '?') + ' · operador ' + (ctx.operador || '?')
+                + ' · backend ' + (ctx.backend || '?') + ' · versión ' + (ctx.version || '?');
+      const fallas = e.fallas.slice().reverse().map(function(f){
+        return '\n[' + new Date(f.t).toLocaleString() + '] ' + caja.resumen(f)
+             + '\n   camino: ' + f.rastro.map(function(p){
+                 return p.paso + '(' + p.estado + (p.ms ? ' ' + p.ms + 'ms' : '') + ')';
+               }).join(' → ');
+      }).join('\n');
+      return cab + '\n' + (fallas || '\n(sin fallas registradas)');
+    },
+    limpiar: function(){ caja.limpiar(); try{ localStorage.removeItem(CLAVE); }catch(_e){} return 'caja negra vacía'; }
+  };
+  // Atajo para leerlo de un vistazo en la consola de la PC.
+  window.verCajaNegra = function(){ const t = window.cajaNegra.texto(); console.log(t); return t; };
+  window._cnPantallaDe = pantallaDe;
+})();
 const _RE_DIACRITICOS = new RegExp('[\\u0300-\\u036f]', 'g');
 const _RE_SEPARADORES = new RegExp('[\\s.,;:¿?¡!\\-_/\\\\]', 'g');
 function normalizarUsuarioCasino(u){
@@ -9657,6 +9877,7 @@ function _drexEncolar(nombre, fn, opts){
     if(window._drexSinSesion && nombre!=='estadoPagina' && nombre!=='iniciarSesion'){
       if(st.pendientes > 0) st.pendientes--;
       try{ (window._drexCanceladas||[]).push(_DREX_NOMBRE[nombre] || nombre); }catch(_e){}
+      try{ if(window._cnFalla) window._cnFalla(nombre, 'no se ejecutó: la sesión ya estaba caída', { capa:'panel' }); }catch(_e){}
       return Promise.reject(new Error('Sesión de Agentes caída — "'+(_DREX_NOMBRE[nombre]||nombre)+'" no se ejecutó. Se abrió el login: entrá y reintentá.'));
     }
     st.activo = { nombre:nombre, desde:Date.now() };
@@ -9689,9 +9910,15 @@ async function callDrex(method, ...args){
   // El freno de emergencia NO espera en la cola (si no, no frenaría nada).
   if(method === 'abortarOperacion') return window.ctrlElectron.drexAutomation(method, ...args);
   return _drexEncolar(method, async function(){
+    // Caja negra: por acá pasan TODAS las llamadas al preload, así que es el lugar donde anotar
+    // el camino sin tocar cada operación. No se anotan los argumentos (en iniciarSesion viaja la
+    // clave): sólo el método y dónde quedó la pantalla.
+    const _cnT0 = Date.now();
+    try{ if(window._cnPaso) window._cnPaso(method, 'inicio'); }catch(_e){}
     // Solo buscarUsuario resuelve el alias inteligentemente.
     // crearUsuario / cambiarClave NO se tocan.
     let _r;
+    try{
     if(method === 'buscarUsuario' && args.length > 0 && typeof args[0] === 'string'){
       const aliasFinal = await _resolverAliasParaCasino(args[0]);
       // Reenviamos los args extra (ej: options { skipBalance: true })
@@ -9699,6 +9926,25 @@ async function callDrex(method, ...args){
     } else {
       _r = await window.ctrlElectron.drexAutomation(method, ...args);
     }
+    }catch(_cnE){
+      // El corte puede venir de main (timeout, recarga, ventana cerrada) o del preload. De quién
+      // fue lo deduce la caja negra por la firma del mensaje: lo que no reconoce queda
+      // 'desconocida' en vez de colgárselo a alguien.
+      try{ if(window._cnFalla) window._cnFalla(method, _cnE && (_cnE.message || String(_cnE)), { ms: Date.now()-_cnT0 }); }catch(_e){}
+      throw _cnE;
+    }
+    try{
+      const _cnMs = Date.now()-_cnT0;
+      const _cnPant = (window._cnPantallaDe && window._cnPantallaDe(_r)) || '';
+      // estadoPagina e iniciarSesion devuelven needsLogin como parte NORMAL de su trabajo: eso no
+      // es una falla (mismo criterio que _esChequeo, unas líneas más abajo).
+      const _cnChequeo = (method==='estadoPagina' || method==='iniciarSesion');
+      if(_r && _r.ok === false && !_cnChequeo){
+        if(window._cnFalla) window._cnFalla(method, _r.message || 'devolvió ok:false', { ms:_cnMs, pantalla:_cnPant, capa:'preload' });
+      } else if(window._cnPaso){
+        window._cnPaso(method, (_r && _r.needsLogin) ? 'pide-login' : 'ok', { ms:_cnMs, pantalla:_cnPant });
+      }
+    }catch(_e){}
     // Punto único donde se ve el estado de la sesión: TODO pasa por acá. Si la página pide login,
     // se levanta la bandera y lo que quedó en cola se cancela solo en vez de morir de a 120s.
     // El login exitoso la baja — así se retoma sin tener que reiniciar nada.

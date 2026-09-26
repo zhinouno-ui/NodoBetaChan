@@ -19,15 +19,19 @@ const api = {};
     // propio botón: son trabajo en curso (a veces por días) y tapaban las solicitudes nuevas.
     // Al botón 💸 van los retiros CON PROGRESO parcial, estén a medio pagar o ya saldados pero sin
     // cerrar (esos últimos quedaban tapando la lista principal sin forma de sacarlos).
+    // UN solo criterio, el mismo que usa el modal al abrirse (NodoDomain.parciales.enProceso).
+    // Estaban escritos aparte: el modal decía «saldado» y este filtro lo devolvía a la caja, y al
+    // revés — un retiro ya cobrado entero seguía figurando con «falta $38.907» (D-108).
     const _esParc = function(s){
       try{
-        if(String(s.TIPO||s.TIPO_SOLICITUD||'').toUpperCase()!=='RETIRO') return false;
-        if(/RECHAZ|CANCEL/.test(String(s.ESTADO||'').toUpperCase())) return false;
-        // Cerrado a mano por el operador → no vuelve, aunque el estado no haya llegado a guardarse.
-        // Antes se cerraba, reaparecía en el refresco siguiente y no había forma de sacarlo (D-100).
-        if(deps.window._retiroCerradoAMano && deps.window._retiroCerradoAMano(s)) return false;
-        const pp = deps.window._retiroParcialInfo ? deps.window._retiroParcialInfo(s) : null;
-        return !!(pp && pp.hasProg && pp.total>0);
+        const dom = deps.window.NodoDomain && deps.window.NodoDomain.parciales;
+        if(!dom) return false;
+        return dom.enProceso(s, {
+          info: deps.window._retiroParcialInfo,
+          cerrado: deps.window._retiroCerradoAMano,
+          estadoCerrado: deps.estadoCerrado,
+          sigueAbierto: deps.window._retiroParcialSigueAbierto
+        });
       }catch(_e){ return false; }
     };
     const parciales = [], pendientes = [];

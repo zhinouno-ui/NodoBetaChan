@@ -2163,9 +2163,16 @@ test('parcial · un retiro cerrado a mano no vuelve a la caja', () => {
     metadata:{ etapa:'RETIRO_CIERRE_MANUAL', retiro_parcial:{ total:750000, pagado:550000 } } };
   assert.equal(sb._retiroCerradoAMano(cerrado), true);
   assert.equal(sb._retiroParcialSigueAbierto(cerrado), false);
+  // El criterio pasó a NodoDomain.parciales.enProceso, compartido por el render y el modal.
   const b = _bundlePortal();
-  assert.match(b, /_retiroCerradoAMano && deps\.window\._retiroCerradoAMano\(s\)\) return false/,
-    'la caja de parciales tiene que respetar el cierre del operador');
+  assert.match(b, /dom\.enProceso\(s, \{/, 'la caja tiene que usar el criterio compartido');
+  assert.match(b, /cerrado: deps\.window\._retiroCerradoAMano/,
+    'y ese criterio tiene que recibir el cierre del operador');
+  // Y lo que de verdad importa, ejecutado en vez de mirado: no entra a la caja.
+  assert.equal(sb.NodoDomain.parciales.enProceso(cerrado, {
+    info: sb._retiroParcialInfo, cerrado: sb._retiroCerradoAMano,
+    sigueAbierto: sb._retiroParcialSigueAbierto
+  }), false, 'la caja de parciales tiene que respetar el cierre del operador');
 });
 
 test('parcial · si el pago no entró en la base, el panel lo nota y no pierde los anteriores', () => {
@@ -2666,4 +2673,335 @@ test('cotejo · con alias largo y sin telefono en comun, dos sugerencias como mu
   const chips = html.split('_altaAbrirVincular').length - 1;
   assert.ok(chips <= 2, 'cuatro opciones sin con que elegir confunden; salieron ' + chips);
   assert.ok(html.includes('Sólo se parece el alias'), 'el operador tiene que saber que son corazonadas');
+});
+
+// ── Caja negra ────────────────────────────────────────────────────────────────
+// No alcanza con que el módulo pase sus pruebas: lo que importa es que el enganche de callDrex
+// registre de verdad. Estas pruebas EJECUTAN el camino completo contra un ctrlElectron falso.
+
+function panelConAgentes(responder) {
+  const llamadas = [];
+  const sb = arrancarPanel({ antes(s) {
+    s.ctrlElectron = {
+      drexAutomation: (method, ...args) => { llamadas.push(method); return responder(method, args); },
+      openAgentWindow: async () => ({ ok: true }),
+      showAgentWindow: async () => ({ ok: true }),
+      navigateAgent: async () => ({ ok: true })
+    };
+  } });
+  return { sb, llamadas };
+}
+
+test('caja negra · un corte de main queda anotado con su capa y su camino', async () => {
+  const { sb } = panelConAgentes((method) => {
+    if (method === 'estadoPagina') return Promise.resolve({ ok: true, needsLogin: false, url: 'https://bo.casinodrex.com/agents/user_search' });
+    return Promise.reject(new Error('Timeout: la automatización tardó demasiado.'));
+  });
+
+  await sb.callDrex('estadoPagina');
+  await assert.rejects(() => sb.callDrex('cargarSaldo', 'pepe', 1000), /tardó demasiado/);
+
+  const fallas = sb.cajaNegra.fallas();
+  assert.equal(fallas.length, 1, 'tenía que quedar anotada una falla');
+  const f = fallas[0];
+  assert.equal(f.paso, 'cargarSaldo');
+  assert.equal(f.capa, 'main', 'el timeout lo emite main: no es culpa del preload');
+  // Lo que importa del rastro: que se vea qué anduvo ANTES de cortar.
+  assert.ok(f.rastro.some(p => p.paso === 'estadoPagina' && p.estado === 'ok'),
+    'el camino previo tiene que estar: ' + JSON.stringify(f.rastro));
+  assert.match(sb.cajaNegra.resumen(), /cortó en "cargarSaldo".*capa: main/);
+});
+
+test('caja negra · un ok:false del preload se anota como preload, y un chequeo no es falla', async () => {
+  const { sb } = panelConAgentes((method) => {
+    if (method === 'estadoPagina') return Promise.resolve({ ok: false, needsLogin: true, url: 'https://bo.casinodrex.com/login', flujo: 'login' });
+    return Promise.resolve({ ok: false, message: 'No se encontró el campo de monto.', url: 'https://bo.casinodrex.com/agents/user_search', flujo: 'modal-monto' });
+  });
+
+  // estadoPagina devolviendo needsLogin es trabajo NORMAL: no puede contarse como falla, o el
+  // registro se llena de ruido cada vez que hay que loguearse.
+  await sb.callDrex('estadoPagina');
+  assert.equal(sb.cajaNegra.fallas().length, 0, 'un chequeo que pide login no es una falla');
+  assert.ok(sb.cajaNegra.pasos().some(p => p.paso === 'estadoPagina' && p.estado === 'pide-login'));
+
+  await sb.callDrex('cargarSaldo', 'pepe', 1000);
+  const f = sb.cajaNegra.fallas()[0];
+  assert.equal(f.capa, 'preload');
+  assert.match(f.mensaje, /campo de monto/);
+  assert.match(f.pantalla, /modal-monto/, 'dónde quedó la pantalla es el dato que no se reconstruye después');
+});
+
+test('caja negra · lo que la cola cancela sin ejecutar también queda anotado', async () => {
+  const { sb, llamadas } = panelConAgentes(() => Promise.resolve({ ok: true, needsLogin: false }));
+  sb.window._drexSinSesion = true;                 // el cortacircuitos ya se disparó
+
+  await assert.rejects(() => sb.callDrex('cargarSaldo', 'pepe', 1000), /no se ejecutó/);
+  assert.equal(llamadas.length, 0, 'no tiene que tocar Agentes');
+  const f = sb.cajaNegra.fallas()[0];
+  assert.equal(f.capa, 'panel');
+  assert.match(f.mensaje, /la sesión ya estaba caída/);
+});
+
+test('caja negra · nunca rompe una operación, ni si el registro explota', async () => {
+  const { sb } = panelConAgentes(() => Promise.resolve({ ok: true, needsLogin: false, saldo: 500 }));
+  // Si el registro se rompe (localStorage lleno, lo que sea), la operación tiene que seguir igual.
+  sb.window._cnPaso = () => { throw new Error('registro roto'); };
+  sb.window._cnFalla = () => { throw new Error('registro roto'); };
+  const r = await sb.callDrex('cargarSaldo', 'pepe', 1000);
+  assert.equal(r.saldo, 500, 'la operación tiene que devolver lo suyo aunque el registro falle');
+});
+
+// ── Cierre manual de un retiro parcial ────────────────────────────────────────
+// El cierre a mano es una decisión del operador y es DEFINITIVA. Vivía en `etapa`, que cada pago
+// parcial pisa, así que un pago posterior lo borraba y el retiro volvía a la caja: el #266250 de
+// Maria6981x se cerró siete veces entre el 25 y el 26/9.
+
+function solicitudRetiro(metadata) {
+  return { ID: 266250, SOLICITUD_ID: 266250, TIPO: 'RETIRO', ESTADO: 'PAGADA',
+           USUARIO: 'Maria6981x', MONTO: 1738907, MONTO_REAL: 1738907,
+           metadata: metadata, METADATA: metadata };
+}
+
+test('parciales · un pago posterior NO reabre un retiro cerrado a mano', () => {
+  const sb = arrancarPanel();
+  // Así quedó #266250: cerrado a las 06:16 y pagado otra vez a las 11:48. El pago reescribió
+  // `etapa`, que es lo que borraba el cierre.
+  const s = solicitudRetiro({
+    etapa: 'RETIRO_V2_PARCIAL',                                   // lo pisó el pago de después
+    cierre_manual: { fecha: '2026-09-26T06:16:30Z', operador: 'juancarlos', motivo: 'SIN_FICHAS' },
+    retiro_parcial: { total: 1738907, pagado: 1700000 }
+  });
+  assert.equal(sb._retiroCerradoAMano(s), true, 'el cierre a mano tiene que sobrevivir al pago');
+  assert.equal(sb._retiroParcialSigueAbierto(s), false, 'cerrado a mano no vuelve a la caja');
+});
+
+test('parciales · sigue valiendo la marca vieja, para los que ya se cerraron así', () => {
+  const sb = arrancarPanel();
+  const s = solicitudRetiro({ etapa: 'RETIRO_CIERRE_MANUAL', retiro_parcial: { total: 1738907, pagado: 1700000 } });
+  assert.equal(sb._retiroCerradoAMano(s), true);
+  assert.equal(sb._retiroParcialSigueAbierto(s), false);
+});
+
+test('parciales · uno que NO se cerró sigue abierto (el arreglo no tapa los de verdad)', () => {
+  const sb = arrancarPanel();
+  const s = solicitudRetiro({ etapa: 'RETIRO_V2_PARCIAL', retiro_parcial: { total: 1600000, pagado: 1000000 } });
+  s.ESTADO = 'EN_PROCESO';
+  assert.equal(sb._retiroCerradoAMano(s), false);
+  assert.equal(sb._retiroParcialSigueAbierto(s), true, 'falta plata y nadie lo cerró: tiene que seguir en la caja');
+});
+
+test('parciales · el aviso de descuadre nombra cada fuente y no repite el mismo número', () => {
+  const sb = arrancarPanel();
+  // El caso real: el contador de parciales dice 1.700.000 y el historial suma otra cosa, porque un
+  // pago salió por el flujo de retiro normal y no tocó el contador.
+  const s = solicitudRetiro({ retiro_parcial: { total: 1738907, pagado: 1700000 }, monto_pagado: 1700000 });
+  sb.window._historialData = [
+    { solicitud_id: '266250', tipo: 'RETIRO', estado: 'OK', monto: 1700000, created_at: '2026-09-26T11:48:00Z' },
+    { solicitud_id: '266250', tipo: 'RETIRO', estado: 'OK', monto: 38907,   created_at: '2026-09-26T02:37:00Z' }
+  ];
+  const pp = sb._retiroParcialInfo(s);
+  assert.equal(pp.discrepa, true, 'el historial no coincide con el contador: hay que avisarlo');
+  assert.equal(pp.pagadoRpc, 1700000, 'la fuente del contador se conserva aparte del máximo');
+  assert.ok(pp.pagadoHistorial > pp.pagadoRpc, 'y la del historial también, para poder nombrarlas');
+  // Lo que rompía el cartel: imprimía el máximo contra una fuente, y salía "1.700.000 vs 1.700.000".
+  assert.notEqual(sb.money(pp.pagadoRpc), sb.money(pp.pagadoHistorial),
+    'las dos que se muestran tienen que ser DISTINTAS, si no el aviso no dice nada');
+});
+
+// ── Cierre automático del parcial cuando el jugador vuelve a cargar ───────────
+// La decisión pura tiene sus propias pruebas. Acá se prueba el ENGANCHE: que dispare de verdad
+// sobre el bundle real y que escriba lo que tiene que escribir.
+
+test('parciales · una carga nueva cierra el parcial solo y deja el cierre firme', async () => {
+  const sb = arrancarPanel();
+  const parches = [], historial = [], avisos = [];
+
+  sb.V154P.solicitudes = [
+    { ID: 266250, SOLICITUD_ID: 266250, TIPO: 'RETIRO', ESTADO: 'EN_PROCESO', USUARIO: 'Maria6981x',
+      FECHA_CREACION: '2026-09-25T12:08:58Z', MONTO: 1738907, MONTO_REAL: 1738907,
+      metadata: { retiro_parcial: { total: 1738907, pagado: 1700000 } },
+      METADATA: { retiro_parcial: { total: 1738907, pagado: 1700000 } } },
+    { ID: 270368, SOLICITUD_ID: 270368, TIPO: 'CARGA', ESTADO: 'ACREDITADA', USUARIO: 'Maria6981x',
+      FECHA_CREACION: '2026-09-26T11:45:11Z', MONTO: 250000, MONTO_REAL: 250000, metadata: {}, METADATA: {} }
+  ];
+  sb.actualizarSolicitudPortal = async (id, estado, meta) => { parches.push({ id, estado, meta }); return { ok: true }; };
+  sb.registrarEnHistorial = async (fila) => { historial.push(fila); return { id: 1 }; };
+  sb.cargarSolicitudesPortal = async () => {};
+  sb.toast = (msg) => { avisos.push(String(msg)); };
+
+  const hechos = await sb.cerrarParcialesPorCarga();
+  assert.equal(hechos, 1, 'tenía que cerrar uno');
+
+  const p = parches[0];
+  assert.equal(String(p.id), '266250');
+  assert.equal(p.estado, 'PAGADA');
+  assert.ok(p.meta.cierre_manual, 'va con la misma llave que el cierre a mano: definitivo');
+  assert.equal(p.meta.cierre_manual.auto, true);
+  assert.equal(p.meta.cierre_motivo, 'CARGO_DE_NUEVO');
+  assert.equal(p.meta.retiro_parcial.pagado, 1700000, 'lo ya cobrado no se toca');
+  assert.equal(p.meta.retiro_parcial.cierre.faltante, 38907);
+
+  // Que el operador se entere: es una solicitud que se cerró sin que nadie la toque.
+  assert.ok(avisos.some(a => /cerrado solo/i.test(a) && /38\.907/.test(a)), 'avisos: ' + avisos.join(' | '));
+  assert.ok(historial.some(h => /Cierre autom/i.test(h.notas) && Number(h.monto) === 0),
+    'queda anotado en el historial, y sin mover plata');
+
+  // Y el cierre tiene que aguantar: con la marca puesta, ya no vuelve a la caja.
+  const cerrada = Object.assign({}, sb.V154P.solicitudes[0], { metadata: p.meta, METADATA: p.meta });
+  assert.equal(sb._retiroCerradoAMano(cerrada), true);
+  assert.equal(sb._retiroParcialSigueAbierto(cerrada), false);
+});
+
+test('parciales · no se cierra dos veces aunque se llame de nuevo', async () => {
+  const sb = arrancarPanel();
+  const parches = [];
+  sb.V154P.solicitudes = [
+    { ID: 266250, SOLICITUD_ID: 266250, TIPO: 'RETIRO', ESTADO: 'EN_PROCESO', USUARIO: 'Maria6981x',
+      FECHA_CREACION: '2026-09-25T12:08:58Z', MONTO: 1738907, MONTO_REAL: 1738907,
+      metadata: { retiro_parcial: { total: 1738907, pagado: 1700000 } },
+      METADATA: { retiro_parcial: { total: 1738907, pagado: 1700000 } } },
+    { ID: 270368, SOLICITUD_ID: 270368, TIPO: 'CARGA', ESTADO: 'ACREDITADA', USUARIO: 'Maria6981x',
+      FECHA_CREACION: '2026-09-26T11:45:11Z', MONTO: 250000, MONTO_REAL: 250000, metadata: {}, METADATA: {} }
+  ];
+  sb.actualizarSolicitudPortal = async (id, estado, meta) => { parches.push(id); return { ok: true }; };
+  sb.registrarEnHistorial = async () => ({ id: 1 });
+  sb.cargarSolicitudesPortal = async () => {};
+  sb.toast = () => {};
+
+  assert.equal(await sb.cerrarParcialesPorCarga(), 1);
+  assert.equal(await sb.cerrarParcialesPorCarga(), 0, 'la segunda pasada no tiene que tocar nada');
+  assert.equal(parches.length, 1);
+});
+
+test('parciales · la caja recalcula al abrirse y saca el que ya se cobró entero', () => {
+  const sb = arrancarPanel();
+  const saldado = {
+    ID: 266250, SOLICITUD_ID: 266250, TIPO: 'RETIRO', ESTADO: 'PAGADA', USUARIO: 'Maria6981x',
+    FECHA_CREACION: '2026-09-25T12:08:58Z', MONTO: 1738907, MONTO_REAL: 1738907,
+    metadata: { retiro_parcial: { total: 1738907, pagado: 1738907 } },
+    METADATA: { retiro_parcial: { total: 1738907, pagado: 1738907 } }
+  };
+  const vivo = {
+    ID: 270642, SOLICITUD_ID: 270642, TIPO: 'RETIRO', ESTADO: 'EN_PROCESO', USUARIO: 'Maria6981x',
+    FECHA_CREACION: '2026-09-26T13:46:25Z', MONTO: 1000000, MONTO_REAL: 1000000,
+    metadata: { retiro_parcial: { total: 1000000, pagado: 600000 } },
+    METADATA: { retiro_parcial: { total: 1000000, pagado: 600000 } }
+  };
+  sb.V154P.solicitudes = [saldado, vivo];
+  // La foto vieja: los dos, como los mostraba la pantalla.
+  sb.window._parcialesEnProceso = [saldado, vivo];
+
+  const ahora = sb._parcialesAhora();
+  assert.equal(ahora.length, 1, 'el cobrado entero tiene que salir de la caja');
+  assert.equal(String(ahora[0].ID), '270642', 'queda el nuevo, que sí debe plata');
+  assert.equal(sb.window._parcialesEnProceso.length, 1, 'y la lista guardada queda al día');
+});
+
+// ── Lista de "retiros en las últimas 24hs" ────────────────────────────────────
+// Los cierres de un retiro parcial se anotan como RETIRO de $0. Salían acá como "$ 0 · —" sin
+// decir qué eran y, con el tope de 10 filas, tapaban retiros de verdad: Maria6981x tenía 6 de 10
+// filas ocupadas por cierres (26/9).
+
+test('24hs · la consulta pide sólo movimientos con plata, y los tramos quedan marcados', async () => {
+  const llamadas = [];
+  const filas = [
+    { created_at: '2026-09-26T13:41:00Z', monto: 38907,  billetera_nombre: 'MATRELO mp', estado: 'OK',
+      origen: 'LANDING', pc_codigo: 'P4', notas: 'Retiro PARCIAL · pagado $ 38.907' },
+    { created_at: '2026-09-25T23:37:00Z', monto: 500000, billetera_nombre: 'MATRELO mp', estado: 'OK',
+      origen: 'LANDING', pc_codigo: 'P4', notas: 'Retiro · pagado $ 500.000' }
+  ];
+  const cadena = {};
+  for (const m of ['select','ilike','eq','gt','gte','order']) {
+    cadena[m] = (...args) => { llamadas.push([m, ...args]); return cadena; };
+  }
+  cadena.limit = (...args) => { llamadas.push(['limit', ...args]); return Promise.resolve({ data: filas }); };
+
+  const sb = arrancarPanel({ antes(s) {
+    s.__from = [];
+    s.supabase = { createClient: () => ({
+      rpc: async () => ({ data: null, error: null }),
+      from: (t) => { s.__from.push(t); return cadena; },
+      channel: () => ({ on: () => ({ subscribe: () => {} }) }), removeChannel: () => {}
+    }) };
+  } });
+
+  const caja = { dataset: {}, innerHTML: '' };
+  sb.document.getElementById = (id) => (id === 'manualUsuario' ? { value: 'Maria6981x' } : caja);
+  sb.pcOperativa = 'P4';
+
+  await sb.consultarRetirosUsuarioRealtime();
+
+  // Lo que importa: la base nunca devuelve los cierres, así que no pueden tapar nada.
+  assert.ok(llamadas.some(c => c[0] === 'gt' && c[1] === 'monto' && Number(c[2]) === 0),
+    'tiene que pedir monto > 0 · llamadas: ' + JSON.stringify(llamadas));
+  assert.ok(llamadas.some(c => c[0] === 'eq' && c[1] === 'tipo' && c[2] === 'RETIRO'));
+  assert.ok(llamadas.some(c => c[0] === 'select' && /notas/.test(String(c[1]))),
+    'necesita las notas para distinguir un tramo de un retiro entero');
+
+  // Y que el tramo se vea como tramo: si no, la lista parece dos retiros separados.
+  assert.match(caja.innerHTML, /parte de un retiro/, 'el tramo tiene que quedar marcado');
+  assert.equal((caja.innerHTML.match(/parte de un retiro/g) || []).length, 1,
+    'sólo el que es parcial · el retiro entero no lleva la marca');
+});
+
+// ── D-109 · la copia local de un parcial que dejó de venir del server ─────────
+// El panel sostiene en memoria un retiro parcial que la RPC dejó de devolver, para no perder de
+// vista plata debida. Esa copia NO se refrescaba: se pagaba el resto o se cerraba, y la foto vieja
+// se volvía a empujar en cada ciclo diciendo "falta $X". #266250 quedó así (26/9).
+
+function panelConSolicitudes(progreso) {
+  const pedidos = [];
+  // El panel no llama a Supabase directo: todo pasa por window.panelAPI.rpc (ver portal/data.js).
+  const sb = arrancarPanel({ antes(s) {
+    s.panelAPI = { rpc: async (fn, params) => {
+      pedidos.push([fn, params]);
+      if (fn === 'panel_v15_5_listar_solicitudes_portal') return { data: [], error: null };
+      if (fn === 'landing_retiro_progreso') return progreso(params);
+      return { data: null, error: null };
+    } };
+  } });
+  // La foto vieja: 1.700.000 de 1.738.907, como la tenía el panel.
+  const vieja = { ID: 266250, SOLICITUD_ID: 266250, TIPO: 'RETIRO', ESTADO: 'EN_PROCESO',
+    USUARIO: 'Maria6981x', MONTO: 1738907, MONTO_REAL: 1738907,
+    metadata: { retiro_parcial: { total: 1738907, pagado: 1700000 } },
+    METADATA: { retiro_parcial: { total: 1738907, pagado: 1700000 } } };
+  sb.V154P.solicitudes = [vieja];
+  return { sb, pedidos, vieja };
+}
+
+test('D-109 · si la base dice que ya se cobró entero, la copia local se suelta', async () => {
+  const { sb, pedidos } = panelConSolicitudes(() => ({
+    data: [{ ok: true, total: 1738907, pagado: 1738907, restante: 0, estado: 'PAGADA' }], error: null
+  }));
+  await sb.cargarSolicitudesPortal(true);
+  assert.ok(pedidos.some(p => p[0] === 'landing_retiro_progreso' && Number(p[1].p_solicitud_id) === 266250),
+    'tiene que preguntarle a la base por ese retiro');
+  assert.equal(sb.V154P.solicitudes.length, 0, 'ya no falta nada: no se sostiene más');
+});
+
+test('D-109 · si la base dice que está cerrado, también se suelta', async () => {
+  const { sb } = panelConSolicitudes(() => ({
+    data: [{ ok: true, total: 1738907, pagado: 1700000, restante: 38907, estado: 'PAGADA',
+             cierre: { motivo: 'SE_LO_JUGO' } }], error: null
+  }));
+  await sb.cargarSolicitudesPortal(true);
+  assert.equal(sb.V154P.solicitudes.length, 0, 'lo cerró alguien: no vuelve');
+});
+
+test('D-109 · si todavía falta plata, se sostiene y con los números de la base', async () => {
+  const { sb } = panelConSolicitudes(() => ({
+    data: [{ ok: true, total: 1738907, pagado: 1500000, restante: 238907, estado: 'EN_PROCESO' }], error: null
+  }));
+  await sb.cargarSolicitudesPortal(true);
+  assert.equal(sb.V154P.solicitudes.length, 1, 'falta plata: no se puede perder de vista');
+  const pp = sb._retiroParcialInfo(sb.V154P.solicitudes[0]);
+  assert.equal(pp.pagado, 1500000, 'y con lo que dice la base, no con la foto vieja de 1.700.000');
+  assert.equal(pp.restante, 238907);
+});
+
+test('D-109 · si la base no contesta, NO se suelta (plata debida no se pierde de vista)', async () => {
+  const { sb } = panelConSolicitudes(() => ({ data: null, error: { message: 'sin red' } }));
+  await sb.cargarSolicitudesPortal(true);
+  assert.equal(sb.V154P.solicitudes.length, 1, 'ante la duda se sostiene');
+  assert.equal(sb.V154P.solicitudes[0].__soloLocal, true);
 });

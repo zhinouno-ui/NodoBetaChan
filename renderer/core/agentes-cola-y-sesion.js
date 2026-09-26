@@ -119,6 +119,7 @@ function _drexEncolar(nombre, fn, opts){
     if(window._drexSinSesion && nombre!=='estadoPagina' && nombre!=='iniciarSesion'){
       if(st.pendientes > 0) st.pendientes--;
       try{ (window._drexCanceladas||[]).push(_DREX_NOMBRE[nombre] || nombre); }catch(_e){}
+      try{ if(window._cnFalla) window._cnFalla(nombre, 'no se ejecutó: la sesión ya estaba caída', { capa:'panel' }); }catch(_e){}
       return Promise.reject(new Error('Sesión de Agentes caída — "'+(_DREX_NOMBRE[nombre]||nombre)+'" no se ejecutó. Se abrió el login: entrá y reintentá.'));
     }
     st.activo = { nombre:nombre, desde:Date.now() };
@@ -151,9 +152,15 @@ async function callDrex(method, ...args){
   // El freno de emergencia NO espera en la cola (si no, no frenaría nada).
   if(method === 'abortarOperacion') return window.ctrlElectron.drexAutomation(method, ...args);
   return _drexEncolar(method, async function(){
+    // Caja negra: por acá pasan TODAS las llamadas al preload, así que es el lugar donde anotar
+    // el camino sin tocar cada operación. No se anotan los argumentos (en iniciarSesion viaja la
+    // clave): sólo el método y dónde quedó la pantalla.
+    const _cnT0 = Date.now();
+    try{ if(window._cnPaso) window._cnPaso(method, 'inicio'); }catch(_e){}
     // Solo buscarUsuario resuelve el alias inteligentemente.
     // crearUsuario / cambiarClave NO se tocan.
     let _r;
+    try{
     if(method === 'buscarUsuario' && args.length > 0 && typeof args[0] === 'string'){
       const aliasFinal = await _resolverAliasParaCasino(args[0]);
       // Reenviamos los args extra (ej: options { skipBalance: true })
@@ -161,6 +168,25 @@ async function callDrex(method, ...args){
     } else {
       _r = await window.ctrlElectron.drexAutomation(method, ...args);
     }
+    }catch(_cnE){
+      // El corte puede venir de main (timeout, recarga, ventana cerrada) o del preload. De quién
+      // fue lo deduce la caja negra por la firma del mensaje: lo que no reconoce queda
+      // 'desconocida' en vez de colgárselo a alguien.
+      try{ if(window._cnFalla) window._cnFalla(method, _cnE && (_cnE.message || String(_cnE)), { ms: Date.now()-_cnT0 }); }catch(_e){}
+      throw _cnE;
+    }
+    try{
+      const _cnMs = Date.now()-_cnT0;
+      const _cnPant = (window._cnPantallaDe && window._cnPantallaDe(_r)) || '';
+      // estadoPagina e iniciarSesion devuelven needsLogin como parte NORMAL de su trabajo: eso no
+      // es una falla (mismo criterio que _esChequeo, unas líneas más abajo).
+      const _cnChequeo = (method==='estadoPagina' || method==='iniciarSesion');
+      if(_r && _r.ok === false && !_cnChequeo){
+        if(window._cnFalla) window._cnFalla(method, _r.message || 'devolvió ok:false', { ms:_cnMs, pantalla:_cnPant, capa:'preload' });
+      } else if(window._cnPaso){
+        window._cnPaso(method, (_r && _r.needsLogin) ? 'pide-login' : 'ok', { ms:_cnMs, pantalla:_cnPant });
+      }
+    }catch(_e){}
     // Punto único donde se ve el estado de la sesión: TODO pasa por acá. Si la página pide login,
     // se levanta la bandera y lo que quedó en cola se cancela solo en vez de morir de a 120s.
     // El login exitoso la baja — así se retoma sin tener que reiniciar nada.

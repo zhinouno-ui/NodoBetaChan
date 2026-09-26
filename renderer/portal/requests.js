@@ -43,18 +43,56 @@ async function cargarSolicitudesPortal(silencioso=false){
       // plata todavía debida — no había forma de terminar de pagarlo. Los que tienen progreso
       // parcial y ya no vienen del server se conservan del ciclo anterior, marcados, hasta que se
       // salden o los cierre alguien a mano.
+      // La copia que se sostiene NO se refrescaba nunca: quedaba congelada con los números del
+      // momento en que dejó de venir. Se pagaba el resto o se cerraba, y la copia vieja se volvía a
+      // empujar en cada ciclo diciendo «falta $X» — no había forma de sacarla. Le pasó a #266250
+      // (Maria6981x): pagado entero el 26/9 10:41 y seguía en la caja pidiendo $38.907 (D-109).
+      // Ahora, antes de sostenerla, se le pregunta a la base cómo está.
       try{
         const _ids = new Set(_nuevas.map(function(x){ return String(x.ID||x.SOLICITUD_ID||''); }));
+        const _candidatos = [];
         (deps.V154P.solicitudes||[]).forEach(function(v){
           const id = String(v.ID||v.SOLICITUD_ID||'');
           if(!id || _ids.has(id)) return;
           const pp = deps.window._retiroParcialInfo ? deps.window._retiroParcialInfo(v) : null;
-          if(pp && pp.hasProg && pp.restante > 0.5){
-            v.__soloLocal = true;                       // ya no viene del server, lo sostenemos acá
-            _nuevas.push(v);
-            console.warn('[portal] retiro #'+id+' con '+deps.money(pp.restante)+' sin pagar dejó de venir de la RPC — se conserva local');
-          }
+          if(pp && pp.hasProg && pp.restante > 0.5) _candidatos.push({ id: id, v: v, pp: pp });
         });
+        for(const c of _candidatos){
+          let fresco = null;
+          try{
+            const rp = await deps.rpc('landing_retiro_progreso', { p_solicitud_id: Number(c.id) });
+            const row = Array.isArray(rp && rp.data) ? rp.data[0] : (rp && rp.data);
+            if(!(rp && rp.error) && row && row.ok !== false) fresco = row;
+          }catch(_e){}
+          if(fresco){
+            // Lo que dice la base pisa a la copia vieja.
+            try{
+              let m = (c.v.METADATA !== undefined ? c.v.METADATA : c.v.metadata) || {};
+              if(typeof m === 'string'){ try{ m = JSON.parse(m); }catch(_e){ m = {}; } }
+              const rpPrev = (m && m.retiro_parcial) || {};
+              const rpNuevo = Object.assign({}, rpPrev, {
+                total: Number(fresco.total) || rpPrev.total,
+                pagado: Number(fresco.pagado) || 0
+              });
+              if(fresco.pagos) rpNuevo.pagos = fresco.pagos;
+              if(fresco.cierre) rpNuevo.cierre = fresco.cierre;
+              const mNuevo = Object.assign({}, m, { retiro_parcial: rpNuevo });
+              c.v.metadata = mNuevo; c.v.METADATA = mNuevo;
+              if(fresco.estado) c.v.ESTADO = String(fresco.estado);
+            }catch(_e){}
+            // Saldado o cerrado en la base → se suelta. Es lo que antes no podía pasar nunca.
+            const restante = Number(fresco.restante);
+            if(fresco.cierre || (Number.isFinite(restante) && restante <= 0.5)){
+              console.warn('[portal] retiro #'+c.id+' ya está saldado o cerrado en la base — se suelta');
+              continue;
+            }
+          }
+          // Sin respuesta de la base NO se suelta: un retiro con plata debida no puede perderse de
+          // vista por un error de red.
+          c.v.__soloLocal = true;
+          _nuevas.push(c.v);
+          console.warn('[portal] retiro #'+c.id+' con '+deps.money(c.pp.restante)+' sin pagar dejó de venir de la RPC — se conserva local');
+        }
       }catch(_e){}
       deps.V154P.solicitudes = _nuevas;
       try{ deps._portalAutoRechazar(deps.V154P.solicitudes); }catch(_e){}
@@ -92,6 +130,9 @@ async function cargarSolicitudesPortal(silencioso=false){
       // Actualizamos stats generales, pero la caja de inicio queda en manos del render portal.
       try{ if(typeof deps.renderInicio === "function") deps.renderInicio(); }catch(e){}
       deps.renderSolicitudesPortalEnInicio();
+      // Si entró una carga con un retiro a medio pagar, ese parcial se cierra solo (Juan, 26/9).
+      // Va después del render para no demorar la pantalla, y sin await: si falla, no arrastra nada.
+      try{ if(deps.window.cerrarParcialesPorCarga) deps.window.cerrarParcialesPorCarga(); }catch(_e){}
       // Alertas de retiro (bono sin liberar / CBU compartido): async y cacheadas 60 s.
       // Cuando llegan, vuelven a pintar la lista solas.
       try{ deps.cargarAlertasRetiro(); }catch(_e){}

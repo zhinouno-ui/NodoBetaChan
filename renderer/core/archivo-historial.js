@@ -145,8 +145,34 @@ window._retiroParcialInfo = function(s){
 // parciales salían mezclados con las solicitudes nuevas y se perdían de vista — de hecho pasamos
 // media sesión peleando con uno que "desaparecía". La lista la arma el render del Inicio en
 // window._parcialesEnProceso.
+// Recalcula la caja con lo que hay AHORA en memoria. Antes leía window._parcialesEnProceso, que es
+// una foto que sólo se rearma cuando el Inicio se repinta: un retiro cobrado entero (o cerrado
+// desde otra PC) seguía apareciendo con «falta $X» aunque en la base ya no faltara nada (D-108).
+window._parcialesAhora = function(){
+  try{
+    const dom = window.NodoDomain && window.NodoDomain.parciales;
+    const todas = (window.V154P && window.V154P.solicitudes) || [];
+    if(!dom || !todas.length) return (window._parcialesEnProceso || []).slice();
+    const vivos = todas.filter(function(s){
+      return dom.enProceso(s, {
+        info: window._retiroParcialInfo, cerrado: window._retiroCerradoAMano,
+        sigueAbierto: window._retiroParcialSigueAbierto
+      });
+    });
+    window._parcialesEnProceso = vivos;   // que el contador y la caja digan lo mismo
+    try{
+      ['btnParcialesCount','btnParcialesCCCount'].forEach(function(id){
+        const el = document.getElementById(id); if(el) el.textContent = String(vivos.length);
+      });
+      ['btnParcialesEnProceso','btnParcialesCC'].forEach(function(id){
+        const el = document.getElementById(id); if(el) el.style.display = vivos.length ? '' : 'none';
+      });
+    }catch(_e){}
+    return vivos.slice();
+  }catch(_e){ return (window._parcialesEnProceso || []).slice(); }
+};
 window.verRetirosParciales = function(){
-  const arr = (window._parcialesEnProceso || []).slice();
+  const arr = window._parcialesAhora();
   if(!arr.length){ try{ toast('No hay retiros pagándose por partes.','blue'); }catch(_e){} return; }
   const filas = arr.map(function(s){
     const id  = Number(s.ID || s.SOLICITUD_ID || 0);
@@ -174,11 +200,18 @@ window.verRetirosParciales = function(){
 };
 
 // ¿Este retiro cerrado lo cerró el operador A MANO desde la caja de Parciales?
-// cerrarRetiroSaldado deja esa marca en la metadata. Es una decisión explícita y manda.
+// El cierre a mano es DEFINITIVO: es una decisión del operador y no la revierte nadie.
+//
+// Vivía en `etapa`, y ese campo lo pisa CADA pago parcial (withdrawals-execution: etapa =
+// RETIRO_V2_PARCIAL). O sea que un pago posterior borraba el cierre y el retiro volvía a la caja.
+// El #266250 de Maria6981x se cerró SIETE veces por esto (25-26/9). Ahora la marca va en su
+// propia llave, que no escribe ningún otro camino.
+// Se sigue aceptando la marca vieja en `etapa` para los retiros que ya se cerraron así.
 function _retiroCerradoAMano(s){
   try{
     let m = (s&&(s.METADATA!==undefined?s.METADATA:s.metadata))||{};
     if(typeof m==='string'){ try{ m=JSON.parse(m); }catch(_e){ m={}; } }
+    if(m && m.cierre_manual) return true;
     return String((m&&m.etapa)||'').toUpperCase()==='RETIRO_CIERRE_MANUAL';
   }catch(_e){ return false; }
 }
@@ -232,7 +265,10 @@ window.verRetirosParciales = function(){
       // operador elige (cobró todo → Cerrar · falta → Pagar más).
       + (pp.discrepa
           ? ('<div style="margin-top:8px;padding:6px 9px;border-radius:8px;background:rgba(245,197,24,.10);border:1px solid rgba(245,197,24,.35);font-size:11.5px;color:#fde68a">'
-             + '⚠ El progreso no coincide entre los dos registros: <b>'+money(pp.pagado)+'</b> vs <b>'+money(pp.pagadoAlt)+'</b>. '
+             + '⚠ El progreso no coincide: <b>'+money(pp.pagadoRpc)+'</b> según el contador de parciales'
+             + (pp.pagadoAlt>0.5 && Math.abs(pp.pagadoAlt-pp.pagadoRpc)>1 ? ', <b>'+money(pp.pagadoAlt)+'</b> según el retiro normal' : '')
+             + (pp.pagadoHistorial>0.5 && Math.abs(pp.pagadoHistorial-pp.pagadoRpc)>1 ? ', <b>'+money(pp.pagadoHistorial)+'</b> sumando el historial' : '')
+             + '. '
              + 'Fijate en el historial cuánto cobró y elegí.</div>')
           : '')
       + '<div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px;gap:8px;flex-wrap:wrap">'
@@ -378,6 +414,72 @@ window._MOTIVOS_CIERRE_PARCIAL = [
   { k:'OTRO',             t:'Otro (explicar abajo)' }
 ];
 
+// ── Cierre automático: el jugador volvió a cargar con el retiro a medio pagar ────────────────
+// Decisión de Juan (26/9): se cierra SOLO, sin confirmar. El caso: Maria6981x se jugó las fichas
+// del retiro, volvió a cargar, y el parcial siguió pidiendo una plata que ya no correspondía.
+// Esto NO mueve plata: cierra la solicitud y anota por qué. Lo pagado queda pagado.
+// El operador se entera igual — el aviso es a propósito bien visible.
+window._parcialesCerradosAuto = window._parcialesCerradosAuto || new Set();
+window._cerrandoParcialesAuto = false;
+window.cerrarParcialesPorCarga = async function(){
+  // Al final recarga, y la recarga vuelve a llamar acá. El Set ya corta el reproceso, pero esto
+  // lo deja explícito: una sola pasada por vez.
+  if(window._cerrandoParcialesAuto) return 0;
+  window._cerrandoParcialesAuto = true;
+  try{
+    if(!window.NodoDomain || !NodoDomain.parciales) return 0;
+    const casos = NodoDomain.parciales.aCerrarPorCarga({
+      solicitudes: (window.V154P && window.V154P.solicitudes) || [],
+      info: window._retiroParcialInfo,
+      cerrado: window._retiroCerradoAMano,
+      yaVistos: window._parcialesCerradosAuto
+    });
+    let hechos = 0;
+    for(const caso of casos){
+      // Se marca ANTES de escribir: si la escritura falla, no se reintenta en cada refresco.
+      window._parcialesCerradosAuto.add(caso.id);
+      const nota = NodoDomain.parciales.notaCierre(caso, money);
+      let rpPrevio = {};
+      try{
+        let m = (caso.solicitud && (caso.solicitud.METADATA!==undefined ? caso.solicitud.METADATA : caso.solicitud.metadata)) || {};
+        if(typeof m === "string"){ try{ m = JSON.parse(m); }catch(_e){ m = {}; } }
+        rpPrevio = (m && m.retiro_parcial) || {};
+      }catch(_e){}
+      const cierre = {
+        motivo: caso.motivo, etiqueta: caso.etiqueta, nota: nota,
+        operador: "automático", fecha: new Date().toISOString(),
+        pagado: caso.pagado, total: caso.total, faltante: caso.restante,
+        carga_id: caso.cargaId, carga_monto: caso.cargaMonto
+      };
+      try{
+        await window.actualizarSolicitudPortal(String(caso.id), "PAGADA", {
+          etapa: "RETIRO_CIERRE_AUTO",
+          // Misma llave que el cierre a mano: definitivo, no lo pisa un pago posterior.
+          cierre_manual: { fecha: cierre.fecha, operador: "automático", motivo: caso.motivo, auto: true },
+          cierre_motivo: caso.motivo,
+          cierre_nota: nota,
+          retiro_parcial: Object.assign({}, rpPrevio, { cierre: cierre })
+        });
+        hechos++;
+        try{
+          await registrarEnHistorial({
+            usuario: String((caso.solicitud && (caso.solicitud.USUARIO || caso.solicitud.USUARIO_JUGADOR)) || ""),
+            tipo: "RETIRO", monto: 0, origen: "CIERRE", estado: "OK", solicitud_id: String(caso.id),
+            notas: "Cierre automático de retiro parcial · " + caso.etiqueta + " · " + nota
+          });
+        }catch(_e){}
+        // Que NO pase desapercibido: es una solicitud que se cerró sin que nadie la toque.
+        try{ toast("💸 Retiro #"+caso.id+" cerrado solo · "+caso.etiqueta+" · quedaron sin pagar "+money(caso.restante), "yellow"); }catch(_e){}
+      }catch(e){
+        try{ toast("No se pudo cerrar solo el retiro #"+caso.id+": "+(e.message||e), "red"); }catch(_e){}
+      }
+    }
+    // Se repinta con lo que ya está en memoria: recargar acá volvería a entrar por el mismo camino.
+    if(hechos){ try{ if(typeof cargarSolicitudesPortal==="function") await cargarSolicitudesPortal(true); }catch(_e){} }
+    return hechos;
+  }catch(_e){ return 0; }
+  finally{ window._cerrandoParcialesAuto = false; }
+};
 window.cerrarRetiroSaldado = async function(id){
   const s = (window._parcialesEnProceso||[]).find(function(x){ return String(x.ID||x.SOLICITUD_ID||0)===String(id); });
   const pp = (s && window._retiroParcialInfo) ? window._retiroParcialInfo(s) : null;
@@ -433,6 +535,9 @@ window.cerrarRetiroSaldado = async function(id){
       try{
         await window.actualizarSolicitudPortal(String(id), 'PAGADA', {
           etapa:'RETIRO_CIERRE_MANUAL',
+          // Llave propia: `etapa` la pisa cada pago parcial y el cierre se perdía. Esto no lo
+          // escribe ningún otro camino, así que el cierre a mano queda firme.
+          cierre_manual: { fecha: new Date().toISOString(), operador: opNombre, motivo: motivo },
           operador: opNombre,
           cierre_motivo: motivo,
           cierre_nota: nota,
@@ -444,7 +549,9 @@ window.cerrarRetiroSaldado = async function(id){
         try{
           await registrarEnHistorial({
             usuario: String((s && (s.USUARIO||s.USUARIO_JUGADOR)) || ''),
-            tipo:'RETIRO', monto: 0, origen:'MANUAL', estado:'OK', solicitud_id:String(id),
+            // origen CIERRE: no es un retiro, es una decisión administrativa. Así la lista de
+            // retiros de 24hs puede dejarlo afuera sin adivinar por el monto.
+            tipo:'RETIRO', monto: 0, origen:'CIERRE', estado:'OK', solicitud_id:String(id),
             notas:'Cierre de retiro parcial · '+etiqueta+' · '+nota
                   + (quedaPlata ? (' · quedó sin pagar '+money(faltante)) : '')
           });

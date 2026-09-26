@@ -905,9 +905,13 @@ async function consultarRetirosUsuarioRealtime(){
     // No filtramos por pc_codigo: queremos detectar si el usuario retiró desde OTRA oficina
     const { data } = await supabaseClient
       .from("historial_ops")
-      .select("created_at, monto, billetera_nombre, estado, origen, chunior_movimiento_id, pc_codigo")
+      .select("created_at, monto, billetera_nombre, estado, origen, chunior_movimiento_id, pc_codigo, notas")
       .ilike("usuario", _uPat)
       .eq("tipo", "RETIRO")
+      // Los CIERRES de un retiro parcial se anotan como RETIRO de $0. No son un retiro: son una
+      // decisión administrativa. Salían acá como "$ 0 · —" sin decir qué eran y, con el tope de 10
+      // filas, TAPABAN retiros de verdad — Maria6981x tenía 6 de 10 filas ocupadas por cierres.
+      .gt("monto", 0)
       .gte("created_at", desde)
       .order("created_at", { ascending: false })
       .limit(10);
@@ -939,7 +943,8 @@ async function consultarRetirosUsuarioRealtime(){
         PANEL:   { txt: 'NODO panel',  color: '#7aa2ff' },
         AUTO:    { txt: 'NODO auto',   color: '#7aa2ff' },
         MANUAL:  { txt: 'NODO manual', color: '#7aa2ff' },
-        CHAT:    { txt: 'NODO chat',   color: '#7aa2ff' }
+        CHAT:    { txt: 'NODO chat',   color: '#7aa2ff' },
+        CIERRE:  { txt: 'cierre',      color: '#c084fc' }
       };
       const m = map[o] || { txt: (o||'?'), color: '#9aa4b2' };
       return '<span style="font-size:9px;color:'+m.color+';border:1px solid '+m.color+'55;border-radius:4px;padding:1px 5px;margin-left:4px">'+escapeHtml(m.txt)+'</span>';
@@ -954,8 +959,13 @@ async function consultarRetirosUsuarioRealtime(){
       const pcBadge   = r.pc_codigo
         ? '<span class="badge '+(esExterna?'badge-danger':'badge-muted')+'" style="font-size:9px;padding:2px 6px;margin-left:4px">'+escapeHtml(r.pc_codigo)+'</span>'
         : '';
+      // Un tramo de un retiro grande NO es un retiro aparte: es el mismo criterio con el que la
+      // regla de 24hs los descarta (_blEsParcial). Sin decirlo, la lista parece cinco retiros.
+      const tagParcial = (typeof _blEsParcial === "function" && _blEsParcial(r))
+        ? ' <span style="font-size:9px;color:#c084fc;border:1px solid #c084fc55;border-radius:4px;padding:1px 5px;margin-left:4px">parte de un retiro</span>'
+        : '';
       filas += '<div style="display:flex;justify-content:space-between;gap:8px;padding:5px 0;border-top:1px solid rgba(255,255,255,.08);font-size:12px">'
-        +   '<span style="color:#c0cad8;white-space:nowrap">'+escapeHtml(fecha)+tagErr+pcBadge+origenLabel(r.origen)+'</span>'
+        +   '<span style="color:#c0cad8;white-space:nowrap">'+escapeHtml(fecha)+tagErr+pcBadge+origenLabel(r.origen)+tagParcial+'</span>'
         +   '<span style="text-align:right"><b>'+money(r.monto)+'</b> <span class="small">· '+escapeHtml(billetera)+'</span></span>'
         + '</div>';
     });
