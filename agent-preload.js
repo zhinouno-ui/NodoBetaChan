@@ -1163,6 +1163,11 @@ async function cambiarClave(password, options = {}) {
 }
 
 function irABusquedaUsuarios() {
+  // Navegaba sin mirar nada: en medio del login le descargaba la página al operador y el
+  // iniciarSesion en vuelo no contestaba nunca (D-101). El freno de _irAlLogin no cubría este
+  // camino. Ojo: NO se puede mirar _opsEnCurso acá  el ipc lo sube para TODOS los métodos,
+  // así que sería siempre > 0 y esto no navegaría nunca más.
+  if (_loginEnCurso) return { ok: true, url: USER_SEARCH_URL, sinNavegar: true };
   if (window.location.href !== USER_SEARCH_URL) window.location.assign(USER_SEARCH_URL);
   return { ok: true, url: USER_SEARCH_URL };
 }

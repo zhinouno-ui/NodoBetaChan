@@ -4,6 +4,16 @@ const { whenWindowReady, waitForWindowLoad } = require('./window-ready');
 function createAgentWindowService({ BrowserWindow, icon, partition, backends, headers, requests }) {
   let agentWindow = null;
   let navEsperadaDrex = false;
+  // D-101 · El operador está entrando a Agentes: NADA navega esta ventana. Navegar descarga la
+  // página, el iniciarSesion en vuelo no contesta nunca y el panel lo muestra como "se recargó
+  // durante la operación"; el operador reintenta y vuelve a pasar. Eso es el loop.
+  // El freno del preload NO alcanza: estas navegaciones salen de main, desde los 21
+  // navigateAgent() del panel, que ni pasan por la cola. Por eso el freno va acá, que es el
+  // único lugar por donde pasan todas — y así vale para los dos backends.
+  let loginDesde = 0;
+  const LOGIN_TOPE_MS = 90000;   // un login que nunca contesta no puede dejar la ventana clavada
+  function loginEnCurso() { return loginDesde > 0 && Date.now() - loginDesde < LOGIN_TOPE_MS; }
+  function marcarLogin(activo) { loginDesde = activo ? Date.now() : 0; }
   function createAgentWindow(url = backends.current.url) {
     agentWindow = new BrowserWindow({
       width:  1400,
@@ -105,6 +115,12 @@ function createAgentWindowService({ BrowserWindow, icon, partition, backends, he
   async function navigateAgentTo(url = backends.current.url, opts = {}) {
     const win = getAgentWindow();
     const forceReload = !!opts.forceReload;
+    // Ver loginEnCurso() arriba (D-101). No se navega: la operación que venía atrás va a ver
+    // "needsLogin" y el panel ya sabe qué hacer con eso. Matarle el login al operador, no.
+    if (loginEnCurso() && !opts.permitirDuranteLogin) {
+      console.warn('[main] NO se navega la ventana de Agentes: el operador está entrando (D-101).');
+      return;
+    }
     // BET300 es una SPA (Vue): la ruta interna cambia (/, /login, rutas del router) pero es LA MISMA
     // app. Comparar por ORIGIN → se reconoce como "misma página" y se REUSA sin recargar (agentesbet.io
     // es más lento que casinodrex; recargar en cada búsqueda hacía que buscarUsuario pasara el timeout).
@@ -146,7 +162,7 @@ function createAgentWindowService({ BrowserWindow, icon, partition, backends, he
 
   function close() { if (agentWindow && !agentWindow.isDestroyed()) agentWindow.destroy(); agentWindow = null; }
 
-  return { get: getAgentWindow, close, navigate: navigateAgentTo, ready: whenAgentReady };
+  return { get: getAgentWindow, close, navigate: navigateAgentTo, ready: whenAgentReady, marcarLogin, loginEnCurso };
 }
 
 module.exports = { createAgentWindowService };

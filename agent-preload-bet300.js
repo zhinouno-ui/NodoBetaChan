@@ -301,10 +301,14 @@ function pageIsBlocked() {
 // ── Recargas: nada se mueve de pantalla encima de una operación (H-7) ────────
 let _opsEnCurso = 0;          // llamadas de operación del panel corriendo en esta ventana
 let _ultimaNavegacion = 0;    // cuándo se recargó por última vez
+// H-7 / D-101 · el operador está entrando: NADA le recarga la página. _opsEnCurso no alcanza,
+// porque iniciarSesion no es un MÉTODO DE OPERACIÓN y por ese lado el contador queda en cero.
+let _loginEnCurso = false;
 // Antes cualquier flujo podía recargar en el medio de una carga: el panel lo veía como "la página
 // se recargó durante la operación", reintentaba, y volvía a pasar lo mismo.
 function _navegarA(url, motivo) {
   if (_opsEnCurso > 0) { console.warn('[bet300] NO se recarga (' + motivo + '): hay una operación en curso'); return false; }
+  if (_loginEnCurso) { console.warn('[bet300] NO se recarga (' + motivo + '): el operador está entrando'); return false; }
   if (now() - _ultimaNavegacion < 25000) { console.warn('[bet300] NO se recarga (' + motivo + '): ya se recargó hace menos de 25 s'); return false; }
   _ultimaNavegacion = now();
   console.warn('[bet300] recargando la ventana (' + motivo + ') → ' + url);
@@ -1182,6 +1186,11 @@ function _bet300ErrorLogin() {
 }
 
 async function iniciarSesion(usuario, clave) {
+  _loginEnCurso = true;
+  try { return await _iniciarSesionInterno(usuario, clave); }
+  finally { _loginEnCurso = false; }
+}
+async function _iniciarSesionInterno(usuario, clave) {
   if (!pageNeedsLogin()) return { ok: true, message: 'Sesión ya activa.' };
 
   let alias = null, pass = null, entrar = null;

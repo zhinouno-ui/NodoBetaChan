@@ -14,15 +14,21 @@ function createAutomationService({ agents, backends, requests, env = process.env
 
   function sendAutomation(method, ...args) {
     const win = agents.get();
+    // Mientras el login está en vuelo, la ventana no se navega (D-101, ver agent-window.js).
+    // Se marca acá porque es el único lugar por donde pasan todas las llamadas al preload, así
+    // sirve igual para casinodrex y para BET300.
+    const esLogin = method === 'iniciarSesion';
+    if (esLogin) agents.marcarLogin(true);
     // Algunos métodos requieren estar en una URL específica → navegamos primero
     let preNav;
     if      (method === 'buscarUsuario')       preNav = agents.navigate(backends.current.url);
     else if (method === 'crearUsuario')        preNav = agents.navigate(backends.current.newUserUrl, { forceReload: !backends.current.spa }); // BET300 crea por modal, sin recargar
     else if (method === 'obtenerSaldoAgente')  preNav = agents.navigate(backends.current.url);
     else                                       preNav = agents.ready(win);
-    return preNav.then(() => {
+    const corrida = preNav.then(() => {
       return requests.run(win.webContents, 'drex:automation:run', { method, args }, automationTimeoutFor(method), 'Timeout: la automatización tardó demasiado.');
     });
+    return esLogin ? corrida.finally(() => agents.marcarLogin(false)) : corrida;
   }
 
   return { send: sendAutomation, timeoutFor: automationTimeoutFor };
