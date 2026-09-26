@@ -2194,11 +2194,12 @@ test('Drex · el cierre de sesión no puede pisar una operación ni un login (el
   const armar = new Function('window', 'LOGOUT_URL', 'console',
     'let _opsEnCurso = 0, _loginEnCurso = false, _yaFuiAlLogin = false, _recargaLoginEn = 0;\n'
     + 'let _sesionMuertaDesde = 0, _vioLoginTrasMuerte = false;\n'
+    + 'let _intentosLogin = 0; const _MAX_INTENTOS_LOGIN = 3;\n'
     + fn('_irAlLogin') + '\n' + fn('_marcarSesionMuerta') + '\n'
     + 'return { ir:_irAlLogin, muerta:_marcarSesionMuerta,'
     + ' set:function(o){ if("ops" in o) _opsEnCurso=o.ops; if("login" in o) _loginEnCurso=o.login; if("t" in o) _recargaLoginEn=o.t; } };');
   const fue = [];
-  const api = armar({ location:{ assign:(u)=>fue.push(u) } }, 'https://bo.casinodrex.com/logout', { warn(){} });
+  const api = armar({ location:{ href:'https://bo.casinodrex.com/agents/user_search', assign:(u)=>fue.push(u) } }, 'https://bo.casinodrex.com/logout', { warn(){} });
 
   api.muerta();
   api.set({ ops: 1 });
@@ -2230,9 +2231,10 @@ test('Drex · la salida diferida no se mata a sí misma', () => {
   assert.ok(m, 'no encontré _irAlLogin');
   const armar = new Function('window', 'LOGOUT_URL', 'console', 'setTimeout',
     'let _opsEnCurso = 0, _loginEnCurso = false, _yaFuiAlLogin = false, _recargaLoginEn = 0;\n'
+    + 'let _intentosLogin = 0; const _MAX_INTENTOS_LOGIN = 3;\n'
     + m[0] + '\nreturn { ir:_irAlLogin, set:function(o){ if("ops" in o) _opsEnCurso=o.ops; if("login" in o) _loginEnCurso=o.login; } };');
   const fue = [], pendientes = [];
-  const api = armar({ location:{ assign:(u)=>fue.push(u) } }, 'https://bo.casinodrex.com/logout',
+  const api = armar({ location:{ href:'https://bo.casinodrex.com/agents/user_search', assign:(u)=>fue.push(u) } }, 'https://bo.casinodrex.com/logout',
     { warn(){} }, (fn)=>pendientes.push(fn));
 
   // Con el login en curso: la inmediata NO va, la diferida sí (pero recién después de contestar).
@@ -3004,4 +3006,197 @@ test('D-109 · si la base no contesta, NO se suelta (plata debida no se pierde d
   await sb.cargarSolicitudesPortal(true);
   assert.equal(sb.V154P.solicitudes.length, 1, 'ante la duda se sostiene');
   assert.equal(sb.V154P.solicitudes[0].__soloLocal, true);
+});
+
+// ── Sesión de Agentes cerrada: que se detecte sola y que se vea ───────────────
+// Estaba encerrado: al marcar la sesión caída, _drexMarcarSinSesion salía por el return de la
+// primera línea, y la cola cancelaba la lectura del watchdog sin tocar Agentes — así que tampoco
+// se volvía a detectar. Si el operador cerraba el modal, el panel quedaba con la sesión cerrada
+// mostrando "Sin lectura de Drex" en un widget chico y nada más (Juan, 26/9).
+
+function panelConDom() {
+  const porId = new Map();
+  const sb = arrancarPanel();
+  const crear = (tag) => {
+    const el = { tagName: tag, style: {}, innerHTML: '', textContent: '', dataset: {},
+      classList: { add(){}, remove(){}, contains: () => false, toggle(){} },
+      setAttribute(k, v){ if (k === 'id') { this.id = v; porId.set(v, this); } },
+      getAttribute: () => null, appendChild(){}, addEventListener(){},
+      querySelector: () => null, querySelectorAll: () => [],
+      remove(){ if (this.id) porId.delete(this.id); } };
+    return new Proxy(el, { set(o, k, v) { o[k] = v; if (k === 'id') porId.set(v, o); return true; } });
+  };
+  sb.document = Object.assign(Object.create(null), {
+    getElementById: (id) => porId.get(id) || null,
+    querySelector: () => null, querySelectorAll: () => [],
+    createElement: crear, addEventListener(){}, readyState: 'complete',
+    body: { appendChild(){}, innerHTML: '' }, head: { appendChild(){} }, documentElement: {}
+  });
+  sb.toast = () => {};
+  return { sb, porId };
+}
+
+test('sesión caída · el cartel queda fijo y se va sólo cuando se repone', () => {
+  const { sb, porId } = panelConDom();
+  sb.window._drexMarcarSinSesion('prueba');
+  const b = porId.get('drexSinSesionBanner');
+  assert.ok(b, 'tiene que quedar un cartel a la vista');
+  assert.match(b.innerHTML, /sesión de Agentes está cerrada/i);
+  assert.match(b.innerHTML, /Entrar a Agentes/, 'y con el botón para entrar');
+
+  sb.window._drexSesionRepuesta();
+  assert.equal(porId.get('drexSinSesionBanner'), undefined, 'al reponer la sesión el cartel se va');
+});
+
+test('sesión caída · marcarla de nuevo NO sale de entrada (antes se encerraba)', () => {
+  const { sb, porId } = panelConDom();
+  sb.window._drexMarcarSinSesion('primera');
+  porId.delete('drexSinSesionBanner');               // el operador cerró todo
+  // Segunda detección: antes esto no hacía absolutamente nada.
+  sb.window._drexMarcarSinSesion('segunda');
+  assert.ok(porId.get('drexSinSesionBanner'), 'el cartel tiene que volver');
+});
+
+test('sesión caída · el login se vuelve a ofrecer, pero con espacio entre pedidos', () => {
+  const { sb } = panelConDom();
+  let abiertos = 0;
+  sb._mostrarModalLoginDrex = () => { abiertos++; };
+  sb.window._drexSinSesion = true;
+  sb.window._drexLoginPedidoEn = 0;
+  const correrTimers = () => { const t = sb.__timers || []; sb.__timers = []; t.forEach(fn => fn()); };
+  sb.setTimeout = (fn) => { (sb.__timers = sb.__timers || []).push(fn); return 0; };
+
+  sb.window._drexPedirLogin(); correrTimers();
+  assert.equal(abiertos, 1, 'la primera vez se ofrece');
+  sb.window._drexPedirLogin(); correrTimers();
+  assert.equal(abiertos, 1, 'enseguida NO se vuelve a abrir: no se acosa al operador');
+
+  sb.window._drexLoginPedidoEn = Date.now() - 60000;   // pasó el rato
+  sb.window._drexPedirLogin(); correrTimers();
+  assert.equal(abiertos, 2, 'pasado el rato se vuelve a ofrecer');
+});
+
+test('sesión caída · el watchdog la reporta aunque la cola le cancele la lectura', async () => {
+  const { sb } = panelConDom();
+  sb.window._drexSinSesion = true;                    // el panel ya lo sabe
+  sb.ctrlElectron = { drexAutomation: async () => { throw new Error('no tendría que llegar acá'); },
+                      openAgentWindow: async () => ({ ok: true }) };
+  const r = await sb._watchdogLeer();
+  assert.equal(r.drexNeedsLogin, true,
+    'sin esto el poll cae en "Sin lectura de Drex" y nadie vuelve a pedir el login');
+  assert.equal(r.drexFichas, null);
+});
+
+// ── El loop del /logout ───────────────────────────────────────────────────────
+// La sesión se cae → el vigía manda la ventana a /logout. Pero el /logout de Drex a veces no llega
+// a dibujar el ingreso (no puede cargar su config: requireAuthentication, y el XHR a
+// wallet.casinoenvivo.club lo corta CORS) y deja el MISMO cartel "session is invalid". El vigía lo
+// leía como "no estoy en el ingreso" y la volvía a mandar ahí cada 25 s, para siempre. En la
+// consola se ve clavado: el error sale de logout:1 y el VM del preload sube en cada vuelta.
+
+function armarIrAlLogin() {
+  const src = fs.readFileSync(path.join(RAIZ, 'agent-preload.js'), 'utf8');
+  const m = src.match(/function _irAlLogin\([^)]*\) ?\{[\s\S]*?\n\}/);
+  assert.ok(m, 'no encontré _irAlLogin');
+  const armar = new Function('window', 'LOGOUT_URL', 'console',
+    'let _opsEnCurso = 0, _loginEnCurso = false, _yaFuiAlLogin = false, _recargaLoginEn = 0;\n'
+    + 'let _intentosLogin = 0; const _MAX_INTENTOS_LOGIN = 3;\n'
+    + m[0] + '\nreturn { ir:_irAlLogin, intentos:()=>_intentosLogin,'
+    + ' destrabar:function(){ _recargaLoginEn = 0; } };');
+  const fue = [];
+  const win = { location: { href: 'https://bo.casinodrex.com/agents/user_search', assign: (u) => fue.push(u) } };
+  const api = armar(win, 'https://bo.casinodrex.com/logout', { warn() {} });
+  return { api, fue, win };
+}
+
+test('Drex · estando YA en /logout no se vuelve a navegar ahí (el loop)', () => {
+  const { api, fue, win } = armarIrAlLogin();
+  // La ventana ya está parada en /logout, mostrando el cartel porque no cargó el ingreso.
+  win.location.href = 'https://bo.casinodrex.com/logout';
+  assert.equal(api.ir('sesión caída'), false, 'navegar a la misma url no cambia nada');
+  assert.deepEqual(fue, [], 'esto es exactamente lo que recargaba la ventana cada 25 s para siempre');
+
+  // Con querystring o ancla es la misma página igual.
+  win.location.href = 'https://bo.casinodrex.com/logout?x=1#y';
+  assert.equal(api.ir('sesión caída'), false);
+  assert.deepEqual(fue, []);
+
+  // Desde la app sí tiene que salir.
+  win.location.href = 'https://bo.casinodrex.com/agents/user_search';
+  assert.equal(api.ir('sesión caída'), true);
+  assert.equal(fue.length, 1);
+});
+
+test('Drex · después de unos intentos deja de recargar y no insiste más', () => {
+  const { api, fue } = armarIrAlLogin();
+  // Tres salidas, espaciadas: el caso bueno, cuando el ingreso podría llegar a aparecer.
+  for (let i = 1; i <= 3; i++) {
+    api.destrabar();
+    assert.equal(api.ir('intento ' + i), true, 'el intento ' + i + ' tiene que salir');
+  }
+  assert.equal(fue.length, 3);
+
+  // A partir de acá el problema no es nuestro y seguir recargando no lo arregla.
+  for (let i = 0; i < 5; i++) {
+    api.destrabar();
+    assert.equal(api.ir('de más'), false);
+  }
+  assert.equal(fue.length, 3, 'la ventana tiene que quedarse quieta, no recargando para siempre');
+});
+
+test('Drex · una caída NUEVA vuelve a habilitar los intentos', () => {
+  const src = fs.readFileSync(path.join(RAIZ, 'agent-preload.js'), 'utf8');
+  const fn = (n) => {
+    const m = src.match(new RegExp('function ' + n + '\\([^)]*\\) ?\\{[\\s\\S]*?\\n\\}'));
+    assert.ok(m, 'no encontré ' + n);
+    return m[0];
+  };
+  const armar = new Function('window', 'LOGOUT_URL', 'console',
+    'let _opsEnCurso = 0, _loginEnCurso = false, _yaFuiAlLogin = false, _recargaLoginEn = 0;\n'
+    + 'let _sesionMuertaDesde = 0, _vioLoginTrasMuerte = false;\n'
+    + 'let _intentosLogin = 0; const _MAX_INTENTOS_LOGIN = 3;\n'
+    + fn('_irAlLogin') + '\n' + fn('_marcarSesionMuerta') + '\n'
+    + 'return { ir:_irAlLogin, muerta:_marcarSesionMuerta, intentos:()=>_intentosLogin,'
+    + ' revivir:function(){ _sesionMuertaDesde = 0; }, destrabar:function(){ _recargaLoginEn = 0; } };');
+  const fue = [];
+  const api = armar({ location: { href: 'https://bo.casinodrex.com/agents/user_search', assign: (u) => fue.push(u) } },
+    'https://bo.casinodrex.com/logout', { warn() {} });
+
+  api.muerta();
+  for (let i = 0; i < 5; i++) { api.destrabar(); api.ir('gastando intentos'); }
+  assert.equal(fue.length, 3, 'se gastó el tope');
+
+  // Se repuso la sesión y más tarde se vuelve a caer: es una caída nueva, no la misma.
+  api.revivir();
+  api.muerta();
+  api.destrabar();
+  assert.equal(api.ir('caída nueva'), true, 'una caída nueva merece sus propios intentos');
+  assert.equal(fue.length, 4);
+});
+
+test('caja negra · la falla se lleva la consola de la ventana de Agentes', async () => {
+  const { sb } = panelConAgentes(() => Promise.reject(new Error('Timeout: la automatización tardó demasiado.')));
+  sb.ctrlElectron.leerConsolaAgentes = async () => ({
+    url: 'https://bo.casinodrex.com/logout',
+    consola: [
+      { t: '2026-09-26T18:00:00Z', nivel: 'error', msg: 'Failed to fetch global config: requireAuthentication', fuente: 'main-52f0199e.js:1' },
+      { t: '2026-09-26T18:00:01Z', nivel: 'error', msg: 'blocked by CORS policy', fuente: 'logout:1' },
+      { t: '2026-09-26T18:00:02Z', nivel: 'info',  msg: 'navegó a https://bo.casinodrex.com/logout', fuente: 'agent-window' }
+    ]
+  });
+
+  await assert.rejects(() => sb.callDrex('cargarSaldo', 'pepe', 1000));
+  await new Promise(r => setImmediate(r));          // la consola llega un tic después
+
+  const f = sb.cajaNegra.fallas()[0];
+  assert.ok(f.agentes, 'la falla tiene que llevarse lo que pasó del otro lado');
+  assert.equal(f.agentes.url, 'https://bo.casinodrex.com/logout',
+    'saber que quedó parada en /logout es lo que destrabó el diagnóstico');
+  assert.equal(f.agentes.consola.length, 3);
+
+  // Y que se pueda leer de un vistazo, sin abrir el devtools de la ventana de Agentes.
+  const texto = sb.cajaNegra.texto();
+  assert.match(texto, /consola de Agentes/);
+  assert.match(texto, /blocked by CORS policy/);
+  assert.match(texto, /logout:1/);
 });

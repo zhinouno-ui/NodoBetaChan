@@ -18,6 +18,8 @@ contextBridge.exposeInMainWorld('ctrlElectron', {
   openAgentWindow: () => ipcRenderer.invoke('drex:open-agent-window'),
   showAgentWindow: () => ipcRenderer.invoke('drex:show-agent-window'),
   navigateAgent:   (url) => ipcRenderer.invoke('drex:navigate', url),
+  // Consola de la ventana de Agentes: la usa la caja negra al anotar una falla.
+  leerConsolaAgentes: () => ipcRenderer.invoke('drex:consola'),
   drexAutomation: (method, ...args) => {
     if (!ALLOWED_AUTOMATION_METHODS.has(method)) {
       return Promise.reject(new Error(`Método no permitido: ${method}`));

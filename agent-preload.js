@@ -493,6 +493,8 @@ let _opsEnCurso = 0;          // operaciones del panel corriendo en esta página
 let _recargaLoginEn = 0;
 let _yaFuiAlLogin = false;    // una sola salida por caída: si no, navega encima del operador
 let _loginEnCurso = false;    // el operador está entrando: NADA puede recargarle la página
+let _intentosLogin = 0;       // salidas al ingreso desde esta caida (con tope: ver _irAlLogin)
+const _MAX_INTENTOS_LOGIN = 3;
 // Cierra la sesión y deja la pantalla de ingreso. Con la cookie muerta, recargar user_search sólo
 // volvía a mostrar el cartel: se quedaba dando vueltas ahí.
 // NUNCA navega si hay una operación corriendo o si se está iniciando sesión: la navegación descarga
@@ -502,9 +504,31 @@ let _loginEnCurso = false;    // el operador está entrando: NADA puede recargar
 // mismo (el loop de D-101), pero no navegar nunca dejaba la ventana encerrada, sin ingreso ni app.
 function _irAlLogin(motivo, diferido) {
   if (!diferido && (_opsEnCurso > 0 || _loginEnCurso)) return false;
+  // Ya estamos EN la pagina de salida: volver a navegar a la MISMA url no cambia nada, y es
+  // exactamente el loop. El /logout de Drex a veces no llega a dibujar el ingreso -- no puede
+  // cargar su config (requireAuthentication, y el XHR a wallet.casinoenvivo.club lo corta CORS) --
+  // y deja el mismo cartel "session is invalid". El vigia lo leia como "no estoy en el ingreso" y
+  // la volvia a mandar ahi cada 25 s, para siempre. En la consola se ve clavado: el error sale de
+  // logout:1 y el VM del preload sube en cada vuelta (Juan, 26/9).
+  try {
+    const _aqui = String(window.location.href || '').split('#')[0].split('?')[0];
+    if (_aqui === LOGOUT_URL) return false;
+  } catch (_) {}
   // Espaciada, no "una sola vez": si el primer intento no dejó la pantalla de ingreso, tiene que
   // haber un segundo. Lo que evita el loop es el espacio entre intentos, no prohibirlos (D-102).
   if (Date.now() - _recargaLoginEn < 25000) return false;
+  // Pero CON TOPE. Si despues de unas cuantas salidas el ingreso no aparece, el problema no es
+  // nuestro y seguir recargando no lo arregla: se deja la ventana quieta. La sesion queda marcada
+  // como caida, asi que el panel sigue pidiendo el login y el operador entra a mano.
+  if (_intentosLogin >= _MAX_INTENTOS_LOGIN) {
+    if (_intentosLogin === _MAX_INTENTOS_LOGIN) {
+      _intentosLogin++;   // avisar una sola vez
+      console.warn('[agent] el ingreso no aparecio despues de ' + _MAX_INTENTOS_LOGIN
+        + ' intentos: se deja de recargar la ventana. Hay que entrar a mano.');
+    }
+    return false;
+  }
+  _intentosLogin++;
   _recargaLoginEn = Date.now();
   _yaFuiAlLogin = true;
   console.warn('[agent] cerrando sesión de Agentes (' + (motivo || 'sesión caída') + ') → ' + LOGOUT_URL);
@@ -519,6 +543,7 @@ function _marcarSesionMuerta() {
   if (!_sesionMuertaDesde) {
     _sesionMuertaDesde = Date.now();
     _yaFuiAlLogin = false;      // caída NUEVA: se permite una salida
+    _intentosLogin = 0;         // y se reinicia el tope de salidas
     console.warn('[agent] sesión de Agentes caída: lo dijo un cartel "Invalid session"');
   }
   _vioLoginTrasMuerte = false;
@@ -586,7 +611,7 @@ function pageNeedsLogin() {
   if (_sesionMuertaDesde) {
     if (pideLogin) { _vioLoginTrasMuerte = true; return true; }
     // Pasó por el login y volvió la app: es una sesión nueva.
-    if (_vioLoginTrasMuerte) { _sesionMuertaDesde = 0; _vioLoginTrasMuerte = false; _yaFuiAlLogin = false; return false; }
+    if (_vioLoginTrasMuerte) { _sesionMuertaDesde = 0; _vioLoginTrasMuerte = false; _yaFuiAlLogin = false; _intentosLogin = 0; return false; }
     return true;   // se cerró el cartel pero la sesión sigue muerta
   }
   return pideLogin;

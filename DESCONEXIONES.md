@@ -3469,3 +3469,67 @@ nota contiene «parcial».
 **Estado** — RESUELTO. La consulta pide `monto > 0`; los cierres nuevos se anotan con
 `origen: CIERRE` para no depender del monto; y los tramos de un retiro grande quedan marcados
 «parte de un retiro», que es el mismo criterio con el que la regla de 24hs los descarta.
+---
+
+## D-111 · El loop de verdad: el preload mandaba la ventana a /logout una y otra vez
+
+**Evidencia** — Consola de la ventana de Agentes (Juan, 26/9). El error de CORS sale de **`logout:1`**:
+la página cargada ES `/logout`, justo a donde la manda `_irAlLogin`. Ahí se ve por qué no sirve:
+
+```
+Failed to fetch global config: {type: "requireAuthentication", result: "error"}
+Access to XMLHttpRequest at "https://wallet.casinoenvivo.club/api/admin/loadActiveStyles"
+  from origin "https://bo.casinodrex.com" has been blocked by CORS policy
+```
+
+El `/logout` de Drex no puede cargar su config, así que **nunca dibuja el formulario de ingreso**:
+deja el mismo cartel «session is invalid». Y como `_pantallaPideLogin()` mira URL (`/login`, que no
+matchea «logout»), un h4 «login agente», un botón ENTRAR o un input password — y el cartel sólo
+tiene un botón «Aceptar» — devuelve **false**. El vigía lo leía como «todavía no llegué al ingreso»
+y la volvía a mandar a `/logout` cada 25 s, para siempre. El VM del preload sube en cada vuelta:
+VM178 → VM514 → VM794 → VM1411.
+
+**Estado** — RESUELTO. `_irAlLogin` no navega si la ventana YA está en `LOGOUT_URL` (navegar a la
+misma url no cambia nada y es el loop), y tiene tope de 3 salidas por caída: si el ingreso no
+aparece, se deja la ventana quieta. La sesión queda marcada como caída, así que el panel sigue
+pidiendo el login — ahora con el cartel fijo de D-112 — y el operador entra a mano. Una caída nueva
+reinicia el tope. Tres pruebas que ejecutan `_irAlLogin` contra una ventana falsa.
+
+**Por qué tardó una semana** — la prueba estaba en la consola de la ventana de Agentes y no sale de
+la PC. La reproducción en dev confirmó un loop DISTINTO: el `/logout` falso servía el formulario,
+porque se construyó según lo que el código espera. Se reprodujo lo que se entendía, no lo que
+pasaba. De ahí sale D-112.
+
+---
+
+## D-112 · La consola de la ventana de Agentes no salía nunca de la PC
+
+**Evidencia** — Para diagnosticar D-111 hubo que pedirle al operador que abriera el devtools de esa
+ventana y mandara una foto. Nada de eso quedaba registrado en ningún lado.
+
+**Estado** — RESUELTO. `main/agent-window.js` captura `console-message` (avisos y errores; lo
+verboso se descarta), `did-fail-load` y cada `did-navigate` — el loop se reconoce por la misma url
+repitiéndose. Se captura desde main a propósito: el preload corre aislado y no ve la consola de la
+página. Llega al panel por `drex:consola`, y la caja negra la engancha a cada falla, así que se lee
+con `verCajaNegra()` sin abrir el devtools de nadie.
+
+Falta el último tramo: que viaje al servidor. Es `servidor/nodo-fallas.sql`, **sin aplicar**,
+esperando el OK (ver D-103).
+
+---
+
+## D-113 · La sesión caída quedaba encerrada: nadie volvía a pedir el login
+
+**Evidencia** — `window._drexSinSesion` era un latch. Una vez en `true`:
+`_drexMarcarSinSesion` salía por el `return` de su primera línea; la cola cancelaba la lectura del
+watchdog sin tocar Agentes, así que `drexNeedsLogin` quedaba en `false` y el poll caía en
+«⏸ Sin lectura de Drex» en vez de en la rama que abre el login; y la sonda también salía por la
+misma bandera. Si el operador cerraba el modal una vez, no se lo volvían a pedir nunca más.
+
+**Estado** — RESUELTO. Cartel FIJO arriba («La sesión de Agentes está cerrada», con botón para
+entrar) que no se va hasta entrar de verdad; `_drexMarcarSinSesion` vuelve a ofrecer el login con
+45 s entre pedidos; y `_watchdogLeer` arranca sabiendo lo que el panel ya sabe, así una lectura
+cancelada no lo manda a «Sin lectura de Drex». Cuatro pruebas ejecutan los cuatro caminos.
+
+También se sacaron los avisos que mandaban a editar el `.env`: la config se gestiona desde NODO
+ADMIN (Juan, 26/9).

@@ -403,3 +403,39 @@ test('main composition boots with Electron fakes and registers the complete prel
   assert.equal(ipcMain.listenerCount('drex:automation:result'), 1);
   assert.equal(ipcMain.listenerCount('drex:verify:result'), 1);
 });
+
+// La consola de la ventana de Agentes no salía nunca de la PC, y ahí estaba la prueba del loop del
+// /logout: el error salía de logout:1 y la misma url se repetía en cada vuelta. Para verlo había
+// que pedirle al operador una foto del devtools. Se captura desde main a propósito: el preload
+// corre aislado y no ve la consola de la página.
+test('the agent window console is captured so a failure can carry what actually happened', async () => {
+  const { Window, windows } = windowFakes();
+  const requests = createRequestRegistry(timersFake());
+  const backends = { current: { url: 'https://agents.test/search', appSel: 'input', spa: false,
+                                preload: 'agent.js', label: 'drex' } };
+  const agents = createAgentWindowService({ BrowserWindow: Window, icon: 'icon',
+    partition: 'persist:nodo-agentes', backends, headers: { configure() {} }, requests });
+  const win = agents.get();
+  const wc = win.webContents;
+
+  wc.emit('console-message', {}, 0, 'ruido de depuración', 12, 'verbose.js');
+  wc.emit('console-message', {}, 1, 'un info cualquiera', 13, 'info.js');
+  wc.emit('console-message', {}, 2, '[agent] sesión de Agentes caída', 523, 'VM179');
+  wc.emit('console-message', {}, 3, 'blocked by CORS policy', 1, 'logout:1');
+  wc.emit('did-fail-load', {}, -10, 'ERR_FAILED', 'https://wallet.casinoenvivo.club/api/admin/loadActiveStyles');
+
+  const d = agents.consola();
+  const msgs = d.consola.map(c => c.msg);
+  assert.ok(!msgs.some(m => /ruido de depuración|un info cualquiera/.test(m)),
+    'lo verboso se descarta: si no, la consola útil queda enterrada · ' + JSON.stringify(msgs));
+  assert.ok(msgs.some(m => /CORS policy/.test(m)), 'el error que destrabó el diagnóstico tiene que estar');
+  assert.ok(d.consola.some(c => /logout:1/.test(c.fuente)), 'con su fuente: de ahí salió que la página era /logout');
+  assert.ok(msgs.some(m => /no cargó \(-10 ERR_FAILED\)/.test(m)), 'una carga fallida también se anota');
+
+  // El loop se reconoce por la MISMA url repitiéndose, así que cada navegación queda anotada.
+  wc.emit('did-navigate', {}, 'https://bo.casinodrex.com/logout');
+  wc.emit('did-navigate', {}, 'https://bo.casinodrex.com/logout');
+  const nav = agents.consola().consola.filter(c => /navegó a/.test(c.msg));
+  assert.equal(nav.length, 2, 'dos vueltas a la misma url es exactamente la firma del loop');
+  assert.equal(windows.length, 1);
+});

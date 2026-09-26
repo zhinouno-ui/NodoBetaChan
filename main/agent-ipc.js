@@ -1,6 +1,12 @@
 'use strict';
 
 function registerAgentIpc({ ipcMain, agents, automation, verification, backends, automationRequests, verificationRequests }) {
+  // La consola de la ventana de Agentes, para que la falla viaje con lo que pasó de verdad.
+  ipcMain.handle('drex:consola', () => {
+    try { return agents.consola ? agents.consola() : { url:'', consola:[] }; }
+    catch (_e) { return { url:'', consola:[] }; }
+  });
+
   ipcMain.handle('drex:navigate', async (_event, url) => {
     await agents.navigate(url || backends.current.url);
     return { ok: true };

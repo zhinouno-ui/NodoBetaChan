@@ -69,6 +69,21 @@
       caja.contexto(contextoDelPanel());
       const falla = caja.anotarFalla({ paso: paso, mensaje: mensaje, capa: d.capa, pantalla: d.pantalla });
       guardar();
+      // La consola de la ventana de Agentes, con lo que pasó del otro lado. Es justo lo que no se
+      // podía ver: vive en esa ventana y no salía nunca de la PC — ahí estaba la prueba del loop
+      // del /logout. Se pide aparte porque cruza al proceso principal, y se engancha a la falla
+      // cuando llega.
+      try{
+        if(falla && window.ctrlElectron && window.ctrlElectron.leerConsolaAgentes){
+          window.ctrlElectron.leerConsolaAgentes().then(function(c){
+            try{
+              if(!c) return;
+              falla.agentes = { url: String(c.url||''), consola: (c.consola||[]).slice(-25) };
+              guardar();
+            }catch(_e){}
+          }).catch(function(){});
+        }
+      }catch(_e){}
       // Al toque en la consola de la PC: si el operador abre el devtools, lo primero que ve es
       // hasta dónde llegó, no un stack.
       try{ console.warn('%c[caja negra] ' + caja.resumen(falla), 'color:#f97316'); }catch(_e){}
@@ -88,10 +103,16 @@
       const cab = 'CAJA NEGRA · pc ' + (ctx.pc || '?') + ' · operador ' + (ctx.operador || '?')
                 + ' · backend ' + (ctx.backend || '?') + ' · versión ' + (ctx.version || '?');
       const fallas = e.fallas.slice().reverse().map(function(f){
+        const ag = (f.agentes && f.agentes.consola && f.agentes.consola.length)
+          ? '\n   consola de Agentes' + (f.agentes.url ? ' (' + f.agentes.url + ')' : '') + ':\n'
+            + f.agentes.consola.map(function(c){
+                return '     [' + c.nivel + '] ' + c.msg + (c.fuente ? '  · ' + c.fuente : '');
+              }).join('\n')
+          : '';
         return '\n[' + new Date(f.t).toLocaleString() + '] ' + caja.resumen(f)
              + '\n   camino: ' + f.rastro.map(function(p){
                  return p.paso + '(' + p.estado + (p.ms ? ' ' + p.ms + 'ms' : '') + ')';
-               }).join(' → ');
+               }).join(' → ') + ag;
       }).join('\n');
       return cab + '\n' + (fallas || '\n(sin fallas registradas)');
     },

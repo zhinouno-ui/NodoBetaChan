@@ -8546,7 +8546,10 @@ function _wdParseMontoAR(s){
 // Las billeteras MP son cash, no fichas — no entran acá.
 async function _watchdogLeer(){
   let drexFichas = null, chuniorFichas = null;
-  let drexNeedsLogin = false;
+  // Si el panel YA sabe que no hay sesión, la cola cancela la lectura de abajo sin tocar Agentes y
+  // r queda vacío: el poll caía en «Sin lectura de Drex» en vez de en la rama que abre el login, y
+  // como nada más lo detectaba, quedaba encerrado ahí para siempre. Se arranca sabiéndolo.
+  let drexNeedsLogin = !!window._drexSinSesion;
   let chuniorReachable = false;
   try {
     // La lectura de fichas es PERIÓDICA: si la cola está ocupada, SALTEA esta vuelta en vez de
@@ -8644,13 +8647,10 @@ async function _watchdogPoll(){
 
   // ── Recovery Drex: sesión cerrada → modal de login ──────────────────────
   if(ahora.drexNeedsLogin){
-    if(!_watchdog.drexLoginInProgress){
-      _watchdog.drexLoginInProgress = true;
-      toast("⚠️ Sesión de backoffice (agentes) cerrada · Reingresá credenciales", "red");
-      Promise.resolve(ensureDrexSession()).finally(function(){
-        _watchdog.drexLoginInProgress = false;
-      });
-    }
+    // Todo por el mismo camino: deja el cartel fijo y vuelve a ofrecer el login con espacio entre
+    // pedidos. Antes esto abría el modal por su cuenta y, si el operador lo cerraba,
+    // drexLoginInProgress quedaba en true y no se lo pedía nunca más.
+    try{ if(window._drexMarcarSinSesion) window._drexMarcarSinSesion('watchdog'); }catch(_e){}
     _wdActualizarUI('alerta', '🔐 Login de agentes requerido');
     return;
   }
@@ -9724,6 +9724,21 @@ window._altaCrearDesdeCotejo = function(usuario, telefono){
       caja.contexto(contextoDelPanel());
       const falla = caja.anotarFalla({ paso: paso, mensaje: mensaje, capa: d.capa, pantalla: d.pantalla });
       guardar();
+      // La consola de la ventana de Agentes, con lo que pasó del otro lado. Es justo lo que no se
+      // podía ver: vive en esa ventana y no salía nunca de la PC — ahí estaba la prueba del loop
+      // del /logout. Se pide aparte porque cruza al proceso principal, y se engancha a la falla
+      // cuando llega.
+      try{
+        if(falla && window.ctrlElectron && window.ctrlElectron.leerConsolaAgentes){
+          window.ctrlElectron.leerConsolaAgentes().then(function(c){
+            try{
+              if(!c) return;
+              falla.agentes = { url: String(c.url||''), consola: (c.consola||[]).slice(-25) };
+              guardar();
+            }catch(_e){}
+          }).catch(function(){});
+        }
+      }catch(_e){}
       // Al toque en la consola de la PC: si el operador abre el devtools, lo primero que ve es
       // hasta dónde llegó, no un stack.
       try{ console.warn('%c[caja negra] ' + caja.resumen(falla), 'color:#f97316'); }catch(_e){}
@@ -9743,10 +9758,16 @@ window._altaCrearDesdeCotejo = function(usuario, telefono){
       const cab = 'CAJA NEGRA · pc ' + (ctx.pc || '?') + ' · operador ' + (ctx.operador || '?')
                 + ' · backend ' + (ctx.backend || '?') + ' · versión ' + (ctx.version || '?');
       const fallas = e.fallas.slice().reverse().map(function(f){
+        const ag = (f.agentes && f.agentes.consola && f.agentes.consola.length)
+          ? '\n   consola de Agentes' + (f.agentes.url ? ' (' + f.agentes.url + ')' : '') + ':\n'
+            + f.agentes.consola.map(function(c){
+                return '     [' + c.nivel + '] ' + c.msg + (c.fuente ? '  · ' + c.fuente : '');
+              }).join('\n')
+          : '';
         return '\n[' + new Date(f.t).toLocaleString() + '] ' + caja.resumen(f)
              + '\n   camino: ' + f.rastro.map(function(p){
                  return p.paso + '(' + p.estado + (p.ms ? ' ' + p.ms + 'ms' : '') + ')';
-               }).join(' → ');
+               }).join(' → ') + ag;
       }).join('\n');
       return cab + '\n' + (fallas || '\n(sin fallas registradas)');
     },
@@ -9829,20 +9850,54 @@ const _DREX_NOMBRE = { buscarUsuario:'buscar usuario', cargarSaldo:'carga', reti
 window._drexSinSesion = false;
 window._drexCanceladas = [];      // qué quedó sin ejecutar, para poder decirlo al reponer
 window._drexMarcarSinSesion = function(motivo){
-  if(window._drexSinSesion) return;
+  // NO se sale de entrada si ya estaba marcado. Antes sí, y eso dejaba al panel encerrado: si el
+  // operador cerraba el modal, la bandera quedaba en true, nadie se lo volvía a pedir, y encima la
+  // cola cancelaba la lectura del watchdog sin tocar Agentes — asi que tampoco se volvía a
+  // detectar. El panel se quedaba con la sesión cerrada mostrando «Sin lectura de Drex» en un
+  // widget chico y nada más (Juan, 26/9).
+  const _yaEstaba = window._drexSinSesion;
   window._drexSinSesion = true;
-  const q = (window._drexCola && window._drexCola.pendientes) || 0;
-  window._drexCanceladas = [];
-  try{ toast('🔒 Sesión de Agentes caída'+(q>1?(' · se cancelan '+(q-1)+' en cola'):'')+' — abriendo el login…','red'); }catch(_e){}
-  console.warn('[cola] sesión caída → se cancela lo encolado ('+q+')');
-  // ACTUAR, no sólo avisar. Detectar que la sesión se cayó y dejar al operador con un cartel rojo
-  // que dice "logueate" es hacerle a él el trabajo que la app ya sabe hacer: el modal de login
-  // existe (_mostrarModalLoginDrex) y es el mismo que usa ensureDrexSession. Se abre solo.
-  // Va con delay para no pisar el toast ni abrirse dos veces si caen varias tareas juntas.
+  if(!_yaEstaba){
+    const q = (window._drexCola && window._drexCola.pendientes) || 0;
+    window._drexCanceladas = [];
+    try{ toast('🔒 Sesión de Agentes caída'+(q>1?(' · se cancelan '+(q-1)+' en cola'):'')+' — abriendo el login…','red'); }catch(_e){}
+    console.warn('[cola] sesión caída → se cancela lo encolado ('+q+')');
+  }
+  window._drexAvisarSinSesion();
+  window._drexPedirLogin();
+};
+
+// Cartel FIJO mientras la sesión esté caída. El modal se puede cerrar; esto no se va hasta que se
+// entra de verdad. Es el «cartel de sesión cerrada como mínimo» que faltaba.
+window._drexAvisarSinSesion = function(){
+  try{
+    let b = document.getElementById('drexSinSesionBanner');
+    if(!window._drexSinSesion){ if(b) b.remove(); return; }
+    if(!b){
+      b = document.createElement('div');
+      b.id = 'drexSinSesionBanner';
+      b.style.cssText = 'position:fixed;left:0;right:0;top:0;z-index:99999;background:#7f1d1d;'
+        + 'color:#fff;padding:10px 14px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;'
+        + 'font-size:14px;box-shadow:0 2px 10px rgba(0,0,0,.45)';
+      document.body.appendChild(b);
+    }
+    b.innerHTML = '<span style="font-size:18px">🔒</span>'
+      + '<b>La sesión de Agentes está cerrada</b>'
+      + '<span style="font-weight:400;opacity:.9">No se puede cargar ni retirar hasta entrar.</span>'
+      + '<button onclick="_mostrarModalLoginDrex()" style="margin-left:auto;background:#fff;'
+      + 'color:#7f1d1d;border:0;border-radius:8px;padding:6px 14px;font-weight:700;cursor:pointer">'
+      + 'Entrar a Agentes</button>';
+  }catch(_e){}
+};
+
+// Vuelve a ofrecer el login, con espacio entre pedidos: se insiste, pero no se acosa.
+window._drexPedirLogin = function(){
   setTimeout(function(){
     try{
-      if(!window._drexSinSesion) return;                       // ya se repuso en el interín
-      if(document.getElementById('drexLUser')) return;          // el modal ya está abierto
+      if(!window._drexSinSesion) return;                              // se repuso en el interín
+      if(document.getElementById('drexLUser')) return;                 // ya está abierto
+      if(Date.now() - (window._drexLoginPedidoEn||0) < 45000) return;  // recién se lo pedimos
+      window._drexLoginPedidoEn = Date.now();
       if(typeof _mostrarModalLoginDrex==='function') _mostrarModalLoginDrex();
     }catch(_e){}
   }, 600);
@@ -9850,6 +9905,8 @@ window._drexMarcarSinSesion = function(motivo){
 window._drexSesionRepuesta = function(){
   if(!window._drexSinSesion) return;
   window._drexSinSesion = false;
+  window._drexLoginPedidoEn = 0;
+  try{ window._drexAvisarSinSesion(); }catch(_e){}      // saca el cartel
   // Al reponer, se dice QUÉ quedó sin hacer. "Ya podés reintentar" a secas obliga al operador a
   // acordarse de memoria qué estaba haciendo cuando se cayó.
   const c = (window._drexCanceladas||[]).slice(0,4);
@@ -10030,7 +10087,7 @@ function _mostrarModalLoginDrex() {
     // Diagnóstico visible: por qué no entró solo (credenciales en admi vs. login fallido vs. falta secret).
     const _autoMsg = _autoReason==='no-creds' ? '⚠️ Auto-login: no hay credenciales de agente cargadas en el admi para esta oficina (cargalas en Oficinas → Guardar agente).'
       : _autoReason==='login-fail' ? '⚠️ Auto-login: las credenciales del admi no pudieron loguear (revisá usuario/clave en el admi).'
-      : _autoReason==='missing-secret' ? '⚠️ Auto-login: falta PANEL_DATA_SECRET en el .env.'
+      : _autoReason==='missing-secret' ? '⚠️ Auto-login: esta PC no tiene la clave de la oficina (se configura desde NODO ADMIN).'
       : _autoReason==='config' ? '⚠️ Auto-login: config incompleta (oficina/URL).'
       : (_autoReason && _autoReason!=='sin-puente' && _autoReason!=='desconocido') ? ('⚠️ Auto-login no disponible ('+_autoReason+').') : '';
     abrirModal(
@@ -11402,7 +11459,7 @@ async function _chuniorConfirmarPuesto(value, text){
       if(window.ctrlElectron && ctrlElectron.proxyApply){
         Promise.resolve(ctrlElectron.proxyApply(pcCodigoNuevo)).then(function(r){
           if(r && r.ok && r.enabled) toast("🌐 Proxy de oficina aplicado (Agentes saldrá por proxy)","green");
-          else if(r && r.reason==="missing-secret") toast("⚠️ Falta PANEL_DATA_SECRET en el .env → proxy NO aplicado. Agentes puede fallar.","red");
+          else if(r && r.reason==="missing-secret") toast("⚠️ Esta PC no tiene la clave de la oficina → proxy NO aplicado. Agentes puede fallar.","red");
           else if(r && r.enabled===false) toast("🌐 Esta oficina no tiene proxy en el admi → salida directa.","blue");
         }).catch(function(){});
       }

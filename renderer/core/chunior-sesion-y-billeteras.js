@@ -219,7 +219,7 @@ async function _chuniorConfirmarPuesto(value, text){
       if(window.ctrlElectron && ctrlElectron.proxyApply){
         Promise.resolve(ctrlElectron.proxyApply(pcCodigoNuevo)).then(function(r){
           if(r && r.ok && r.enabled) toast("🌐 Proxy de oficina aplicado (Agentes saldrá por proxy)","green");
-          else if(r && r.reason==="missing-secret") toast("⚠️ Falta PANEL_DATA_SECRET en el .env → proxy NO aplicado. Agentes puede fallar.","red");
+          else if(r && r.reason==="missing-secret") toast("⚠️ Esta PC no tiene la clave de la oficina → proxy NO aplicado. Agentes puede fallar.","red");
           else if(r && r.enabled===false) toast("🌐 Esta oficina no tiene proxy en el admi → salida directa.","blue");
         }).catch(function(){});
       }

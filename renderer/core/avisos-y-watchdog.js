@@ -189,7 +189,10 @@ function _wdParseMontoAR(s){
 // Las billeteras MP son cash, no fichas — no entran acá.
 async function _watchdogLeer(){
   let drexFichas = null, chuniorFichas = null;
-  let drexNeedsLogin = false;
+  // Si el panel YA sabe que no hay sesión, la cola cancela la lectura de abajo sin tocar Agentes y
+  // r queda vacío: el poll caía en «Sin lectura de Drex» en vez de en la rama que abre el login, y
+  // como nada más lo detectaba, quedaba encerrado ahí para siempre. Se arranca sabiéndolo.
+  let drexNeedsLogin = !!window._drexSinSesion;
   let chuniorReachable = false;
   try {
     // La lectura de fichas es PERIÓDICA: si la cola está ocupada, SALTEA esta vuelta en vez de
@@ -287,13 +290,10 @@ async function _watchdogPoll(){
 
   // ── Recovery Drex: sesión cerrada → modal de login ──────────────────────
   if(ahora.drexNeedsLogin){
-    if(!_watchdog.drexLoginInProgress){
-      _watchdog.drexLoginInProgress = true;
-      toast("⚠️ Sesión de backoffice (agentes) cerrada · Reingresá credenciales", "red");
-      Promise.resolve(ensureDrexSession()).finally(function(){
-        _watchdog.drexLoginInProgress = false;
-      });
-    }
+    // Todo por el mismo camino: deja el cartel fijo y vuelve a ofrecer el login con espacio entre
+    // pedidos. Antes esto abría el modal por su cuenta y, si el operador lo cerraba,
+    // drexLoginInProgress quedaba en true y no se lo pedía nunca más.
+    try{ if(window._drexMarcarSinSesion) window._drexMarcarSinSesion('watchdog'); }catch(_e){}
     _wdActualizarUI('alerta', '🔐 Login de agentes requerido');
     return;
   }

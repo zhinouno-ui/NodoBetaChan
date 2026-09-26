@@ -1213,7 +1213,7 @@ window.crmBuscarDebounce=function(){
       const box = document.getElementById("crmResultados");
       const msg = String((e && e.message) || e);
       if(box) box.innerHTML = '<div class="alert-box">No se pudo buscar: ' + escapeHtml(msg)
-        + (/NO_AUTORIZADO/.test(msg) ? '<br><span class="small">Falta PANEL_DATA_SECRET en el .env de esta PC.</span>' : '')
+        + (/NO_AUTORIZADO/.test(msg) ? '<br><span class="small">Esta PC no tiene la clave de la oficina (se configura desde NODO ADMIN).</span>' : '')
         + '</div>';
       return;
     }

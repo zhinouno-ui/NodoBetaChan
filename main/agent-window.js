@@ -10,6 +10,27 @@ function createAgentWindowService({ BrowserWindow, icon, partition, backends, he
   // El freno del preload NO alcanza: estas navegaciones salen de main, desde los 21
   // navigateAgent() del panel, que ni pasan por la cola. Por eso el freno va acá, que es el
   // único lugar por donde pasan todas — y así vale para los dos backends.
+  // ── Consola de la ventana de Agentes ───────────────────────────────────────────────────────
+  // Lo que pasa en ESA consola no salía nunca de la PC, y ahí estaba la prueba del loop del
+  // /logout: el error salía de logout:1 y el VM del preload subía en cada vuelta. Para verlo había
+  // que pedirle al operador que abriera el devtools y mandara una foto (Juan, 26/9).
+  // Se captura desde main a propósito: el preload corre aislado y no ve la consola de la página.
+  const consola = [];
+  const CONSOLA_TOPE = 150;
+  const NIVELES = ['debug', 'info', 'warn', 'error'];
+  function anotarConsola(nivel, mensaje, fuente) {
+    try {
+      const texto = String(mensaje == null ? '' : mensaje).replace(/s+/g, ' ').trim().slice(0, 300);
+      if (!texto) return;
+      consola.push({ t: new Date().toISOString(), nivel: nivel, msg: texto, fuente: String(fuente || '').slice(0, 120) });
+      if (consola.length > CONSOLA_TOPE) consola.splice(0, consola.length - CONSOLA_TOPE);
+    } catch (_) {}
+  }
+  function leerConsola() {
+    let url = '';
+    try { const w = agentWindow; if (w && !w.isDestroyed()) url = w.webContents.getURL(); } catch (_) {}
+    return { url: url, backend: backends.current.label || '', consola: consola.slice(-80) };
+  }
   let loginDesde = 0;
   const LOGIN_TOPE_MS = 90000;   // un login que nunca contesta no puede dejar la ventana clavada
   function loginEnCurso() { return loginDesde > 0 && Date.now() - loginDesde < LOGIN_TOPE_MS; }
@@ -37,7 +58,17 @@ function createAgentWindowService({ BrowserWindow, icon, partition, backends, he
 
     // PATCH 01 · si Agentes se recarga/redirecta solo mientras hay una operación pendiente,
     // abortamos esa espera para que el panel no quede colgado.
+    // Sólo lo que sirve para diagnosticar: avisos y errores. Lo verboso se descarta.
+    agentWindow.webContents.on('console-message', (_e, nivel, mensaje, linea, fuente) => {
+      if (Number(nivel) < 2) return;
+      anotarConsola(NIVELES[Number(nivel)] || 'info', mensaje, (fuente || '') + (linea ? ':' + linea : ''));
+    });
+    agentWindow.webContents.on('did-fail-load', (_e, code, desc, urlFallida) => {
+      anotarConsola('error', 'no cargó (' + code + ' ' + desc + ')', urlFallida);
+    });
     agentWindow.webContents.on('did-navigate', (_e, navUrl) => {
+      // Cada navegación queda anotada: el loop se reconoce por la MISMA url repitiéndose.
+      anotarConsola('info', 'navegó a ' + navUrl, 'agent-window');
       if (navEsperadaDrex) return;
       if (requests.pending.size) {
         console.warn('[main] navegación inesperada en Agentes durante operación:', navUrl);
@@ -162,7 +193,8 @@ function createAgentWindowService({ BrowserWindow, icon, partition, backends, he
 
   function close() { if (agentWindow && !agentWindow.isDestroyed()) agentWindow.destroy(); agentWindow = null; }
 
-  return { get: getAgentWindow, close, navigate: navigateAgentTo, ready: whenAgentReady, marcarLogin, loginEnCurso };
+  return { get: getAgentWindow, close, navigate: navigateAgentTo, ready: whenAgentReady,
+           marcarLogin, loginEnCurso, consola: leerConsola };
 }
 
 module.exports = { createAgentWindowService };
