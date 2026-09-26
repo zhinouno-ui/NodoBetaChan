@@ -1,6 +1,7 @@
 'use strict';
 const { whenWindowReady, waitForWindowLoad } = require('./window-ready');
 const { taparCarteles } = require('./carteles');
+const { vigilarPreload } = require('./preload-listo');
 
 function createAgentWindowService({ BrowserWindow, icon, partition, backends, headers, requests }) {
   let agentWindow = null;
@@ -32,6 +33,7 @@ function createAgentWindowService({ BrowserWindow, icon, partition, backends, he
     try { const w = agentWindow; if (w && !w.isDestroyed()) url = w.webContents.getURL(); } catch (_) {}
     return { url: url, backend: backends.current.label || '', consola: consola.slice(-80) };
   }
+  let preload = null;   // el saludo del preload · ver main/preload-listo.js
   let loginDesde = 0;
   const LOGIN_TOPE_MS = 90000;   // un login que nunca contesta no puede dejar la ventana clavada
   function loginEnCurso() { return loginDesde > 0 && Date.now() - loginDesde < LOGIN_TOPE_MS; }
@@ -61,6 +63,9 @@ function createAgentWindowService({ BrowserWindow, icon, partition, backends, he
     // abortamos esa espera para que el panel no quede colgado.
     // Los carteles de promo tapan la pantalla y se comen los clicks: ver main/carteles.js.
     taparCarteles(agentWindow);
+
+    // Nada se manda antes de que el preload avise que escucha: ver main/preload-listo.js.
+    preload = vigilarPreload(agentWindow);
 
     // Sólo lo que sirve para diagnosticar: avisos y errores. Lo verboso se descarta.
     agentWindow.webContents.on('console-message', (_e, nivel, mensaje, linea, fuente) => {
@@ -198,7 +203,8 @@ function createAgentWindowService({ BrowserWindow, icon, partition, backends, he
   function close() { if (agentWindow && !agentWindow.isDestroyed()) agentWindow.destroy(); agentWindow = null; }
 
   return { get: getAgentWindow, close, navigate: navigateAgentTo, ready: whenAgentReady,
-           marcarLogin, loginEnCurso, consola: leerConsola };
+           marcarLogin, loginEnCurso, consola: leerConsola,
+           preloadReady: (ms) => (preload ? preload.esperar(ms) : Promise.resolve(false)) };
 }
 
 module.exports = { createAgentWindowService };

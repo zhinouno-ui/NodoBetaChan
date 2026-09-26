@@ -25,7 +25,11 @@ function createAutomationService({ agents, backends, requests, env = process.env
     else if (method === 'crearUsuario')        preNav = agents.navigate(backends.current.newUserUrl, { forceReload: !backends.current.spa }); // BET300 crea por modal, sin recargar
     else if (method === 'obtenerSaldoAgente')  preNav = agents.navigate(backends.current.url);
     else                                       preNav = agents.ready(win);
-    const corrida = preNav.then(() => {
+    // Antes de mandar nada, esperar a que el preload de esa ventana avise que ya escucha: si no,
+    // la orden se manda al vacio y muere en el timeout. No rechaza nunca — si el saludo no llega,
+    // se sigue igual que antes.
+    const corrida = preNav.then(async () => {
+      if (agents.preloadReady) await agents.preloadReady();
       return requests.run(win.webContents, 'drex:automation:run', { method, args }, automationTimeoutFor(method), 'Timeout: la automatización tardó demasiado.');
     });
     return esLogin ? corrida.finally(() => agents.marcarLogin(false)) : corrida;

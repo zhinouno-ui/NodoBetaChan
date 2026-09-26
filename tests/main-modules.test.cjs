@@ -493,3 +493,100 @@ test('both windows that open the backoffice share one popup rule', () => {
   }
   assert.match(CSS_SIN_CARTELES, /tournament-popup/);
 });
+
+// loadURL() es asíncrono: justo después de crear la ventana isLoading() puede dar false, main daba
+// la ventana por lista y mandaba la orden cuando el preload todavía no había registrado ningún
+// listener. El mensaje se perdía y la llamada moría en el timeout. Pasaba al pedir una búsqueda o
+// una carga mientras la ventana recién se levantaba (Juan, 26/9).
+function agentesConPreload() {
+  const { Window, windows } = windowFakes();
+  const requests = createRequestRegistry();
+  const backends = { current: { url: 'https://agents.test/search', appSel: 'input', spa: true, preload: 'agent.js' } };
+  const agents = createAgentWindowService({ BrowserWindow: Window, icon: 'icon',
+    partition: 'persist:nodo-agentes', backends, headers: { configure() {} }, requests });
+  const automation = createAutomationService({ agents, backends, requests, env: {} });
+  const win = agents.get();
+  // Contestar lo que salga, para no dejar la llamada esperando su timeout de 40 s.
+  const contestar = () => {
+    for (const m of win.webContents.sent) {
+      if (m.channel === 'drex:automation:run') requests.settle({ requestId: m.payload.requestId, ok: true, result: {} });
+    }
+  };
+  const pedir = (metodo) => automation.send(metodo).catch(() => {});
+  return { agents, automation, requests, windows, win, contestar, pedir };
+}
+const tic = () => new Promise(r => setImmediate(r));
+
+test('no automation is sent until the preload says it is listening', async () => {
+  const { win, windows, contestar, pedir } = agentesConPreload();
+  const llamada = pedir('estadoPagina');
+  await tic(); await tic();
+  assert.equal(win.webContents.sent.length, 0,
+    'mandarla acá es tirarla al vacío: del otro lado todavía no hay listener');
+
+  win.webContents.emit('ipc-message', {}, 'drex:preload-listo');
+  await tic(); await tic();
+  assert.equal(win.webContents.sent.length, 1, 'con el saludo, recién ahí sale');
+  assert.equal(win.webContents.sent[0].channel, 'drex:automation:run');
+  assert.equal(windows.length, 1);
+  contestar(); await llamada;
+});
+
+test('a new document means a new preload, so the handshake is awaited again', async () => {
+  const { win, contestar, pedir } = agentesConPreload();
+  win.webContents.emit('ipc-message', {}, 'drex:preload-listo');
+  await tic();
+
+  // Navegación de documento: el preload se destruye y viene otro.
+  win.webContents.emit('did-start-navigation', {}, 'https://agents.test/otra', false, false);
+  const llamada = pedir('estadoPagina');
+  await tic(); await tic();
+  assert.equal(win.webContents.sent.length, 0, 'hay que esperar al preload nuevo');
+
+  win.webContents.emit('ipc-message', {}, 'drex:preload-listo');
+  await tic(); await tic();
+  assert.equal(win.webContents.sent.length, 1);
+  contestar(); await llamada;
+});
+
+test('an in-page route change keeps the same preload: no extra wait', async () => {
+  const { win, contestar, pedir } = agentesConPreload();
+  win.webContents.emit('ipc-message', {}, 'drex:preload-listo');
+  await tic();
+
+  // El backoffice es una SPA: cambia de ruta sin recargar y el preload sigue siendo el mismo.
+  win.webContents.emit('did-start-navigation', {}, 'https://agents.test/otra', true, true);
+  const llamada = pedir('estadoPagina');
+  await tic(); await tic();
+  assert.equal(win.webContents.sent.length, 1, 'no tiene por qué esperar de nuevo');
+  contestar(); await llamada;
+});
+
+test('if the handshake never arrives it gives up waiting instead of hanging', async () => {
+  const { agents } = agentesConPreload();
+  // Nunca rechaza: si el saludo no llega, se sigue como antes en vez de romper la operación.
+  assert.equal(await agents.preloadReady(10), false);
+});
+
+test('if the window dies while waiting, the wait ends at once and says there is no preload', async () => {
+  const { vigilarPreload } = require('../main/preload-listo.js');
+  const { Window } = windowFakes();
+  const win = new Window({});
+  const preload = vigilarPreload(win);
+
+  const espera = preload.esperar(60000);        // un timeout largo: si no cortara, quedaría colgado
+  win.destroy();
+  assert.equal(await espera, false, 'no hubo saludo: decir true sería mentir');
+  assert.equal(await preload.esperar(60000), false, 'y sigue diciendo que no, sin esperar de nuevo');
+});
+
+test('the handshake resolves true only when the preload actually greets', async () => {
+  const { vigilarPreload } = require('../main/preload-listo.js');
+  const { Window } = windowFakes();
+  const win = new Window({});
+  const preload = vigilarPreload(win);
+  const espera = preload.esperar(60000);
+  win.webContents.emit('ipc-message', {}, 'drex:preload-listo');
+  assert.equal(await espera, true);
+  assert.equal(preload.listo, true);
+});

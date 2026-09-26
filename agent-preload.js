@@ -1423,3 +1423,10 @@ ipcRenderer.on('drex:verify:run', async (event, request = {}) => {
     ipcRenderer.send('drex:verify:result', { requestId, ok: false, error: error.message || String(error) });
   }
 });
+
+// Saludo a main: "ya estoy escuchando". Sin esto habia una carrera real  loadURL() es asincrono,
+// asi que justo despues de crear la ventana isLoading() puede dar false, main daba la ventana por
+// lista y mandaba la orden cuando de este lado todavia no habia ningun listener: el mensaje se
+// perdia y la llamada moria en el timeout. Pasaba al pedir una busqueda o una carga mientras la
+// ventana recien se levantaba (Juan, 26/9).
+try { ipcRenderer.send('drex:preload-listo'); } catch (_) {}
