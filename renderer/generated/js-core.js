@@ -559,9 +559,8 @@ async function cargarJugadores(){
 
   // Stats
   setBox("jugTotalCount",lista.length);
-  setBox("jugVipCount",  lista.filter(u=>["VIP","Preferencial"].includes(u.lealtad.nivel)).length);
-  setBox("jugConfiableCount",lista.filter(u=>u.lealtad.nivel==="Confiable").length);
-  setBox("jugNuevoCount",lista.filter(u=>["Nuevo","Regular"].includes(u.lealtad.nivel)).length);
+  // Los contadores por nivel (VIP / Confiable / Nuevo) se fueron: eran etiquetas de marketing y
+  // encima sus cajas no existen en la pantalla desde hace rato, así que no contaban para nadie.
 
   renderTablaJugadores(lista);
 }
@@ -575,7 +574,7 @@ function filtrarJugadores(){
   const lealtadCsv = document.getElementById("jugFiltroLealtadCsv")?.value||"";
   let lista=todosLosJugadores;
   if(texto)      lista=lista.filter(u=>`${u.usuario} ${u.alias||""} ${u.nombre||""} ${u.telefono||""}`.toLowerCase().includes(texto));
-  if(nivel)      lista=lista.filter(u=>u.lealtad.nivel===nivel);
+  // El filtro por nivel se fue con los niveles.
   if(pc)         lista=lista.filter(u=>u.pc_codigo===pc);
   if(turno)      lista=lista.filter(u=>u.turnos.dominante===turno);
   if(estado)     lista=lista.filter(u=>(u.estado_actual||"").toUpperCase()===estado.toUpperCase());
@@ -647,8 +646,7 @@ function renderTablaJugadores(lista){
       <td><span class="badge badge-muted">${u.pc_codigo||"-"}</span></td>
       <td>${u.estado_actual?`<span style="padding:2px 8px;border-radius:999px;font-size:11px;font-weight:700;background:${ec.bg};color:${ec.fg}">${u.estado_actual}</span>`:"-"}</td>
       <td>
-        <span style="padding:2px 8px;border-radius:999px;font-size:11px;font-weight:800;background:${bgc};color:${c}">${l.nivel}</span>
-        <b style="margin-left:4px">${l.score}</b> ${lealtadCsvBadge(u.lealtad_csv)}<br>
+        <b style="color:${c}">${l.score}</b> ${lealtadCsvBadge(u.lealtad_csv)}<br>
         <span class="small" style="color:${l.tasa>=80?"var(--green)":l.tasa>=50?"var(--yellow)":"var(--red)"}">${l.tasa}% éxito · ${l.aprobadas}✓${l.rechazadas?` ${l.rechazadas}✗`:""}</span>
       </td>
       <td>
@@ -858,7 +856,7 @@ function scoreBadge(usuarioNombre){
   const bg={muted:"#2a2f3b",blue:"#16235f",green:"#11371f",purple:"#2e1a5e",yellow:"#3d2d00"};
   const color=colores[l.color]||colores.muted;
   const bgc=bg[l.color]||bg.muted;
-  return `<span title="${l.aprobadas} aprobadas · ${l.rechazadas} rechazadas · ${l.tasa}% éxito" style="display:inline-block;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:700;background:${bgc};color:${color};cursor:help">${l.nivel} ${l.score}</span>`;
+  return `<span title="${l.aprobadas} aprobadas · ${l.rechazadas} rechazadas · ${l.tasa}% éxito" style="display:inline-block;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:700;background:${bgc};color:${color};cursor:help">${l.score}</span>`;
 }
 function esRealizada(s){const e=normalizar(s.ESTADO);return ["APROBADA_MANUAL","APROBADA_MANUAL_OK","ACREDITADA","PAGADA","APROBADA"].includes(e)}
 function estadoBadge(e){const x=normalizar(e);if(esRealizada({ESTADO:e}))return`<span class="badge badge-ok">${e}</span>`;if(["RECHAZADA","ERROR"].includes(x))return`<span class="badge badge-danger">${e}</span>`;return`<span class="badge badge-pending">${e||"-"}</span>`}
@@ -4099,14 +4097,14 @@ window.abrirPerfilJugador = function(usuario){
   });
   if(!tl) tl = '<div class="small" style="color:#8b949e;padding:14px">Sin operaciones registradas para este usuario.</div>';
 
-  const segChip = crm.segmento ? '<span class="pj-chip" style="background:'+(crm.segmento==='VIP'?'#3b2a09;color:#ffd98f':crm.segmento==='NUEVO'?'#16235f;color:#cbd5ff':'#11371f;color:#b9f7cb')+'">'+esc(crm.segmento)+'</span>' : '';
+  // El chip VIP / TIBIO / FRIO se fue: era una etiqueta de marketing, no un dato para operar.
   const html =
       '<div class="pj-panel" onclick="event.stopPropagation()">'
     +   '<div class="pj-head">'
     +     '<div class="pj-avatar">'+esc(u.substring(0,2).toUpperCase())+'</div>'
     +     '<div style="min-width:0;flex:1"><div style="font-size:17px;font-weight:900">'+esc(u)
-    +       ' <span title="Push" style="opacity:'+(fl.push?1:.25)+'">🔔</span><span title="App" style="opacity:'+(fl.app?1:.25)+'">📱</span>'+segChip+'</div>'
-    +       '<div class="small" style="color:#8b949e">'+ops.length+' operación/es · '+esc(crm.accion||'')+'</div></div>'
+    +       ' <span title="Push" style="opacity:'+(fl.push?1:.25)+'">🔔</span><span title="App" style="opacity:'+(fl.app?1:.25)+'">📱</span>'+'</div>'
+    +       '<div class="small" style="color:#8b949e">'+ops.length+' operación/es'+'</div></div>'
     +     '<button class="mini-btn yellow" title="Usuario, clave y teléfono para que pueda entrar a la plataforma" onclick="pjDatosIngreso(\''+uEsc+'\')">🔑 Ingreso</button>'
     +     '<button class="mini-btn green" title="Escribirle por el chat del portal, aunque nunca haya escrito" onclick="nodoChatNuevo(\''+uEsc+'\')">💬 Mensaje</button>'
     +     '<button class="mini-btn blue" onclick="crmCopiarPromo(\''+uEsc+'\')">📋 Promo</button>'

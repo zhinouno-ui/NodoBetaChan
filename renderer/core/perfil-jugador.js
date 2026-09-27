@@ -345,14 +345,14 @@ window.abrirPerfilJugador = function(usuario){
   });
   if(!tl) tl = '<div class="small" style="color:#8b949e;padding:14px">Sin operaciones registradas para este usuario.</div>';
 
-  const segChip = crm.segmento ? '<span class="pj-chip" style="background:'+(crm.segmento==='VIP'?'#3b2a09;color:#ffd98f':crm.segmento==='NUEVO'?'#16235f;color:#cbd5ff':'#11371f;color:#b9f7cb')+'">'+esc(crm.segmento)+'</span>' : '';
+  // El chip VIP / TIBIO / FRIO se fue: era una etiqueta de marketing, no un dato para operar.
   const html =
       '<div class="pj-panel" onclick="event.stopPropagation()">'
     +   '<div class="pj-head">'
     +     '<div class="pj-avatar">'+esc(u.substring(0,2).toUpperCase())+'</div>'
     +     '<div style="min-width:0;flex:1"><div style="font-size:17px;font-weight:900">'+esc(u)
-    +       ' <span title="Push" style="opacity:'+(fl.push?1:.25)+'">🔔</span><span title="App" style="opacity:'+(fl.app?1:.25)+'">📱</span>'+segChip+'</div>'
-    +       '<div class="small" style="color:#8b949e">'+ops.length+' operación/es · '+esc(crm.accion||'')+'</div></div>'
+    +       ' <span title="Push" style="opacity:'+(fl.push?1:.25)+'">🔔</span><span title="App" style="opacity:'+(fl.app?1:.25)+'">📱</span>'+'</div>'
+    +       '<div class="small" style="color:#8b949e">'+ops.length+' operación/es'+'</div></div>'
     +     '<button class="mini-btn yellow" title="Usuario, clave y teléfono para que pueda entrar a la plataforma" onclick="pjDatosIngreso(\''+uEsc+'\')">🔑 Ingreso</button>'
     +     '<button class="mini-btn green" title="Escribirle por el chat del portal, aunque nunca haya escrito" onclick="nodoChatNuevo(\''+uEsc+'\')">💬 Mensaje</button>'
     +     '<button class="mini-btn blue" onclick="crmCopiarPromo(\''+uEsc+'\')">📋 Promo</button>'

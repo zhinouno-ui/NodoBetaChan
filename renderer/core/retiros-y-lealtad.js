@@ -176,7 +176,7 @@ function scoreBadge(usuarioNombre){
   const bg={muted:"#2a2f3b",blue:"#16235f",green:"#11371f",purple:"#2e1a5e",yellow:"#3d2d00"};
   const color=colores[l.color]||colores.muted;
   const bgc=bg[l.color]||bg.muted;
-  return `<span title="${l.aprobadas} aprobadas · ${l.rechazadas} rechazadas · ${l.tasa}% éxito" style="display:inline-block;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:700;background:${bgc};color:${color};cursor:help">${l.nivel} ${l.score}</span>`;
+  return `<span title="${l.aprobadas} aprobadas · ${l.rechazadas} rechazadas · ${l.tasa}% éxito" style="display:inline-block;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:700;background:${bgc};color:${color};cursor:help">${l.score}</span>`;
 }
 function esRealizada(s){const e=normalizar(s.ESTADO);return ["APROBADA_MANUAL","APROBADA_MANUAL_OK","ACREDITADA","PAGADA","APROBADA"].includes(e)}
 function estadoBadge(e){const x=normalizar(e);if(esRealizada({ESTADO:e}))return`<span class="badge badge-ok">${e}</span>`;if(["RECHAZADA","ERROR"].includes(x))return`<span class="badge badge-danger">${e}</span>`;return`<span class="badge badge-pending">${e||"-"}</span>`}

@@ -344,9 +344,8 @@ async function cargarJugadores(){
 
   // Stats
   setBox("jugTotalCount",lista.length);
-  setBox("jugVipCount",  lista.filter(u=>["VIP","Preferencial"].includes(u.lealtad.nivel)).length);
-  setBox("jugConfiableCount",lista.filter(u=>u.lealtad.nivel==="Confiable").length);
-  setBox("jugNuevoCount",lista.filter(u=>["Nuevo","Regular"].includes(u.lealtad.nivel)).length);
+  // Los contadores por nivel (VIP / Confiable / Nuevo) se fueron: eran etiquetas de marketing y
+  // encima sus cajas no existen en la pantalla desde hace rato, así que no contaban para nadie.
 
   renderTablaJugadores(lista);
 }
@@ -360,7 +359,7 @@ function filtrarJugadores(){
   const lealtadCsv = document.getElementById("jugFiltroLealtadCsv")?.value||"";
   let lista=todosLosJugadores;
   if(texto)      lista=lista.filter(u=>`${u.usuario} ${u.alias||""} ${u.nombre||""} ${u.telefono||""}`.toLowerCase().includes(texto));
-  if(nivel)      lista=lista.filter(u=>u.lealtad.nivel===nivel);
+  // El filtro por nivel se fue con los niveles.
   if(pc)         lista=lista.filter(u=>u.pc_codigo===pc);
   if(turno)      lista=lista.filter(u=>u.turnos.dominante===turno);
   if(estado)     lista=lista.filter(u=>(u.estado_actual||"").toUpperCase()===estado.toUpperCase());
@@ -432,8 +431,7 @@ function renderTablaJugadores(lista){
       <td><span class="badge badge-muted">${u.pc_codigo||"-"}</span></td>
       <td>${u.estado_actual?`<span style="padding:2px 8px;border-radius:999px;font-size:11px;font-weight:700;background:${ec.bg};color:${ec.fg}">${u.estado_actual}</span>`:"-"}</td>
       <td>
-        <span style="padding:2px 8px;border-radius:999px;font-size:11px;font-weight:800;background:${bgc};color:${c}">${l.nivel}</span>
-        <b style="margin-left:4px">${l.score}</b> ${lealtadCsvBadge(u.lealtad_csv)}<br>
+        <b style="color:${c}">${l.score}</b> ${lealtadCsvBadge(u.lealtad_csv)}<br>
         <span class="small" style="color:${l.tasa>=80?"var(--green)":l.tasa>=50?"var(--yellow)":"var(--red)"}">${l.tasa}% éxito · ${l.aprobadas}✓${l.rechazadas?` ${l.rechazadas}✗`:""}</span>
       </td>
       <td>
