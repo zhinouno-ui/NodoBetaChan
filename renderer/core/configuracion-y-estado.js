@@ -1,3 +1,10 @@
+// Los teléfonos se dibujan por acá y por ningún otro lado. Son TODOS argentinos: 549 + 10
+// dígitos (Juan, 27/9). Antes cada pantalla los pintaba como venían y el mismo jugador se veía
+// "1123456789" en una, "+54 11 2345-6789" en otra y "5491123456789" en la tercera.
+window._tel = function(v){
+  try{ return (window.NodoDomain && window.NodoDomain.telefono) ? window.NodoDomain.telefono.mostrar(v) : String(v==null?"":v); }
+  catch(_e){ return String(v==null?"":v); }
+};
 
 const API_URL ="https://script.google.com/macros/s/AKfycbwvZGRAOxBLNIQ52mlED6ZlsOkpAd2PicOvmlZFBTKptXR5lnC_n87w-awDvowmktI8/exec";
 

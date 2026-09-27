@@ -2579,7 +2579,7 @@ const api = {};
       const color = est==='VINCULADO'?'#22c55e':est==='BLOQUEADO'?'#ef4444':'#fbbf24';
       const icon  = est==='VINCULADO'?'🟢':est==='BLOQUEADO'?'🔴':'🟡';
       let html = '<span style="color:#64748b">Vínculo:</span> <b style="color:'+color+'">'+icon+' '+deps.esc(est)+'</b>';
-      if(v.telefono_canon) html += ' <span style="color:#64748b">· tel '+deps.esc(v.telefono_canon)+'</span>';
+      if(v.telefono_canon) html += ' <span style="color:#64748b">· tel '+deps.esc(deps.window._tel ? deps.window._tel(v.telefono_canon) : v.telefono_canon)+'</span>';
       if(v.fuente) html += ' <span style="color:#64748b">· '+deps.esc(v.fuente)+'</span>';
       if(est==='PENDIENTE') html += ' <button class="mini-btn green" style="font-size:11px;margin-left:8px" onclick="portalConfirmarVinculo()">✓ Confirmar vínculo</button>';
       el.innerHTML = html;
@@ -3275,7 +3275,7 @@ ${stepperHtml}
             <div class="sol-cotejo-row">
               <span class="sol-cotejo-lbl">Teléfono registrado:</span>
               <div class="sol-cotejo-val">
-                <span>${esc(telefono)}</span>
+                <span>${esc(deps.window._tel ? deps.window._tel(telefono) : telefono)}</span>
                 ${waLink ? `<a href="${waLink}" target="_blank" style="color:#22c55e;font-size:11px;text-decoration:none;font-weight:700">📱 WhatsApp</a>` : ''}
               </div>
             </div>` : ''}

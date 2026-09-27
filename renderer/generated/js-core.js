@@ -1,3 +1,10 @@
+// Los teléfonos se dibujan por acá y por ningún otro lado. Son TODOS argentinos: 549 + 10
+// dígitos (Juan, 27/9). Antes cada pantalla los pintaba como venían y el mismo jugador se veía
+// "1123456789" en una, "+54 11 2345-6789" en otra y "5491123456789" en la tercera.
+window._tel = function(v){
+  try{ return (window.NodoDomain && window.NodoDomain.telefono) ? window.NodoDomain.telefono.mostrar(v) : String(v==null?"":v); }
+  catch(_e){ return String(v==null?"":v); }
+};
 
 const API_URL ="https://script.google.com/macros/s/AKfycbwvZGRAOxBLNIQ52mlED6ZlsOkpAd2PicOvmlZFBTKptXR5lnC_n87w-awDvowmktI8/exec";
 
@@ -4028,9 +4035,9 @@ window.abrirPerfilJugador = function(usuario){
             ? '<div class="pj-field"><span class="k">Titular</span><span class="v">'+esc(crmTit)+' <span title="Del registro/whaticket" style="color:#8b949e;font-weight:600;font-size:10px">·reg</span></span></div>'
             : '<div class="pj-field"><span class="k">Titular</span><span class="v" style="color:#5a6474">sin datos</span></div>'))
     + (tels.length
-        ? tels.map(function(t){ const v=(local.telefonos[t]||{}); return '<div class="pj-field"><span class="k">Teléfono</span><span class="v pj-mono">'+esc(t)+(v.verificado?' <span title="Verificado al vincular" style="color:#22c55e">✓</span>':'')+'</span></div>'; }).join('')
+        ? tels.map(function(t){ const v=(local.telefonos[t]||{}); return '<div class="pj-field"><span class="k">Teléfono</span><span class="v pj-mono">'+esc(_tel(t))+(v.verificado?' <span title="Verificado al vincular" style="color:#22c55e">✓</span>':'')+'</span></div>'; }).join('')
         : (crmTel
-            ? '<div class="pj-field"><span class="k">Teléfono</span><span class="v pj-mono">'+esc(crmTel)+' <span title="Del registro/whaticket (aún no operó en el panel)" style="color:#8b949e;font-weight:600;font-size:10px">·reg</span></span></div>'
+            ? '<div class="pj-field"><span class="k">Teléfono</span><span class="v pj-mono">'+esc(_tel(crmTel))+' <span title="Del registro/whaticket (aún no operó en el panel)" style="color:#8b949e;font-weight:600;font-size:10px">·reg</span></span></div>'
             : '<div class="pj-field"><span class="k">Teléfono</span><span class="v" style="color:#5a6474">—</span></div>'))
     + (crmEst ? '<div class="pj-field"><span class="k">Vínculo</span><span class="v" style="color:'+(crmEst==='VINCULADO'?'#22c55e':crmEst==='BLOQUEADO'?'#ef4444':'#f5c518')+';font-weight:700">'+esc(crmEst)+'</span></div>' : '')
     + '</div>';
@@ -9561,7 +9568,7 @@ function _altaModalResultado(usuario, telefono){
   abrirModal('✅ Usuario validado y agendado',
     '<div style="background:#0d1320;border:1px solid rgba(34,197,94,.35);border-radius:11px;padding:11px 13px">'
     + '<div style="display:flex;justify-content:space-between;gap:10px;align-items:baseline"><span class="small" style="color:#8b949e;font-weight:800;text-transform:uppercase">Usuario</span><b style="font-size:17px;color:#f0f6fc">'+esc(usuario)+'</b></div>'
-    + '<div style="display:flex;justify-content:space-between;gap:10px;align-items:baseline;margin-top:4px"><span class="small" style="color:#8b949e;font-weight:800;text-transform:uppercase">Teléfono</span><b style="font-family:ui-monospace,monospace;color:#e6edf3">'+esc(telefono)+'</b></div>'
+    + '<div style="display:flex;justify-content:space-between;gap:10px;align-items:baseline;margin-top:4px"><span class="small" style="color:#8b949e;font-weight:800;text-transform:uppercase">Teléfono</span><b style="font-family:ui-monospace,monospace;color:#e6edf3">'+esc(_tel(telefono))+'</b></div>'
     + '</div>'
     + '<div class="small" style="color:#8b949e;margin-top:8px">📇 Quedó agendado en la base de jugadores y se envía a Nexo (ficha con alias + teléfono). Si escribió por el portal, <b>ya se le avisó por el chat</b> con el botón para ingresar.</div>'
     // El enlace es para los que llegan por publicidad y están en WhatsApp: esos NO tienen chat en

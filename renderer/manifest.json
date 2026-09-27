@@ -26,6 +26,7 @@
         "domain/caja-negra.js",
         "domain/parciales.js",
         "domain/presencia.js",
+        "domain/telefono.js",
         "runtime/refresh-coordinator.js",
         "runtime/realtime.js",
         "chat/metrics.js"

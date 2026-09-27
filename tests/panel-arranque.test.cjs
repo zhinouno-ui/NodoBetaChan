@@ -3244,3 +3244,15 @@ test('discord · sin el puente de Electron no se cae ni molesta', () => {
   delete sb.ctrlElectron;
   assert.doesNotThrow(() => sb.actualizarPresenciaDiscord(), 'en el navegador esto no existe');
 });
+
+test('teléfonos · el panel los dibuja todos igual, vengan como vengan', () => {
+  const sb = arrancarPanel();
+  // Las formas que llegan de verdad: tipeado por el operador, de WhatsApp, del portal, del CSV.
+  const mismo = ['1123456789', '541123456789', '5491123456789', '+54 9 11 2345-6789', '011 15 2345-6789'];
+  const salidas = new Set(mismo.map(v => sb._tel(v)));
+  assert.equal(salidas.size, 1, 'el mismo número no puede verse de cinco formas: ' + [...salidas].join(' | '));
+  assert.equal([...salidas][0], '+54 9 11 2345-6789');
+  // Lo que no es un teléfono se deja como está: no se inventa nada.
+  assert.equal(sb._tel(''), '');
+  assert.equal(sb._tel('no tiene'), 'no tiene');
+});

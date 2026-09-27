@@ -640,7 +640,7 @@ function _altaModalResultado(usuario, telefono){
   abrirModal('✅ Usuario validado y agendado',
     '<div style="background:#0d1320;border:1px solid rgba(34,197,94,.35);border-radius:11px;padding:11px 13px">'
     + '<div style="display:flex;justify-content:space-between;gap:10px;align-items:baseline"><span class="small" style="color:#8b949e;font-weight:800;text-transform:uppercase">Usuario</span><b style="font-size:17px;color:#f0f6fc">'+esc(usuario)+'</b></div>'
-    + '<div style="display:flex;justify-content:space-between;gap:10px;align-items:baseline;margin-top:4px"><span class="small" style="color:#8b949e;font-weight:800;text-transform:uppercase">Teléfono</span><b style="font-family:ui-monospace,monospace;color:#e6edf3">'+esc(telefono)+'</b></div>'
+    + '<div style="display:flex;justify-content:space-between;gap:10px;align-items:baseline;margin-top:4px"><span class="small" style="color:#8b949e;font-weight:800;text-transform:uppercase">Teléfono</span><b style="font-family:ui-monospace,monospace;color:#e6edf3">'+esc(_tel(telefono))+'</b></div>'
     + '</div>'
     + '<div class="small" style="color:#8b949e;margin-top:8px">📇 Quedó agendado en la base de jugadores y se envía a Nexo (ficha con alias + teléfono). Si escribió por el portal, <b>ya se le avisó por el chat</b> con el botón para ingresar.</div>'
     // El enlace es para los que llegan por publicidad y están en WhatsApp: esos NO tienen chat en

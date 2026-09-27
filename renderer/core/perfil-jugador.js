@@ -281,9 +281,9 @@ window.abrirPerfilJugador = function(usuario){
             ? '<div class="pj-field"><span class="k">Titular</span><span class="v">'+esc(crmTit)+' <span title="Del registro/whaticket" style="color:#8b949e;font-weight:600;font-size:10px">·reg</span></span></div>'
             : '<div class="pj-field"><span class="k">Titular</span><span class="v" style="color:#5a6474">sin datos</span></div>'))
     + (tels.length
-        ? tels.map(function(t){ const v=(local.telefonos[t]||{}); return '<div class="pj-field"><span class="k">Teléfono</span><span class="v pj-mono">'+esc(t)+(v.verificado?' <span title="Verificado al vincular" style="color:#22c55e">✓</span>':'')+'</span></div>'; }).join('')
+        ? tels.map(function(t){ const v=(local.telefonos[t]||{}); return '<div class="pj-field"><span class="k">Teléfono</span><span class="v pj-mono">'+esc(_tel(t))+(v.verificado?' <span title="Verificado al vincular" style="color:#22c55e">✓</span>':'')+'</span></div>'; }).join('')
         : (crmTel
-            ? '<div class="pj-field"><span class="k">Teléfono</span><span class="v pj-mono">'+esc(crmTel)+' <span title="Del registro/whaticket (aún no operó en el panel)" style="color:#8b949e;font-weight:600;font-size:10px">·reg</span></span></div>'
+            ? '<div class="pj-field"><span class="k">Teléfono</span><span class="v pj-mono">'+esc(_tel(crmTel))+' <span title="Del registro/whaticket (aún no operó en el panel)" style="color:#8b949e;font-weight:600;font-size:10px">·reg</span></span></div>'
             : '<div class="pj-field"><span class="k">Teléfono</span><span class="v" style="color:#5a6474">—</span></div>'))
     + (crmEst ? '<div class="pj-field"><span class="k">Vínculo</span><span class="v" style="color:'+(crmEst==='VINCULADO'?'#22c55e':crmEst==='BLOQUEADO'?'#ef4444':'#f5c518')+';font-weight:700">'+esc(crmEst)+'</span></div>' : '')
     + '</div>';
