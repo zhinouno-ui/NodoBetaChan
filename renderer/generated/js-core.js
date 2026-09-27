@@ -2866,13 +2866,16 @@ function abrirModalCrearUsuario(prefUsuario, prefTelefono, desdeChat){
     // El veredicto va ARRIBA del botón, no abajo: es lo que decide si hay que crear la cuenta o no.
     '<div id="nuevoJugCotejo" style="margin-top:8px"></div>' +
     '<div id="nuevoJugRes" style="min-height:16px;margin-top:4px"></div>',
-    null,
+    // El handler va ACÁ y no en el setTimeout de abajo: abrirModal deja el botón sin acción
+    // (btn.onclick = saveFn || null) y se la asignábamos 30 ms después. En esa ventana el botón
+    // estaba a la vista y no hacía nada. abrirModal ya limpia el onclick en cada apertura, así
+    // que pasarlo directo no contamina nada.
+    _ejecutarCrearUsuario,
     'Crear y copiar'
   );
   // Asignar handlers DESPUÉS de que abrirModal renderizó el overlay (evita contaminación de flujos anteriores)
   setTimeout(function(){
-    const btn = document.getElementById('modalSaveBtn');
-    if(btn){ btn.onclick = _ejecutarCrearUsuario; }
+    // (el handler ya quedó puesto al abrir el modal)
     const cancelBtn = document.querySelector('#modalOverlay .btn-gray');
     if(cancelBtn){ cancelBtn.onclick = function(){ cerrarModal(); }; }
     // Con los datos ya puestos, el foco va a lo que falta (la clave) y el cotejo corre solo: el
@@ -9267,14 +9270,14 @@ function _altaCotejoHtml(uDecl, tDecl, r, onPick, titulo){
           return t===tN || (t.length>=8 && tN.length>=8 && t.slice(-8)===tN.slice(-8));
         });
       });
-      const _aliasCorto = uDeclN.length <= 4;
-      const _mostrar = _conTel.length ? _conTel.slice(0,3)
-                     : (_aliasCorto ? [] : r.usuario.similares.slice(0,2));
+      // SÓLO se sugiere con evidencia dura: que la cuenta tenga el MISMO teléfono que declaró.
+      // Un alias parecido no prueba nada — «martin2024» y «martin2025» pueden ser dos personas
+      // distintas. Sugerirlas mandaba al operador a revisar cuentas ajenas y a preguntarle cosas
+      // al cliente por una corazonada (Juan, 27/9).
+      const _mostrar = _conTel.length ? _conTel.slice(0,3) : [];
       const _nota = _conTel.length
         ? 'Tiene el teléfono que declaró — es casi seguro su cuenta.'
-        : _aliasCorto
-          ? '«'+esc(uDecl)+'» es muy corto: cualquier cuenta que empiece igual aparecería acá, así que no sugiero ninguna.'
-          : 'Sólo se parece el alias: ninguna tiene el teléfono que declaró. Preguntale el usuario completo antes de elegir.';
+        : 'Ninguna cuenta tiene el teléfono que declaró. Si dice tener cuenta, pedile el usuario completo.';
       filas+=fila('Usuario', esc(uDecl), '⚠ no figura así', '#e3b341',
         sub(_nota)
         + (_mostrar.length ? '<div>'+_mostrar.map(function(c){ const tl=telsDe(c);

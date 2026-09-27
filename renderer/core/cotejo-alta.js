@@ -341,14 +341,14 @@ function _altaCotejoHtml(uDecl, tDecl, r, onPick, titulo){
           return t===tN || (t.length>=8 && tN.length>=8 && t.slice(-8)===tN.slice(-8));
         });
       });
-      const _aliasCorto = uDeclN.length <= 4;
-      const _mostrar = _conTel.length ? _conTel.slice(0,3)
-                     : (_aliasCorto ? [] : r.usuario.similares.slice(0,2));
+      // SÓLO se sugiere con evidencia dura: que la cuenta tenga el MISMO teléfono que declaró.
+      // Un alias parecido no prueba nada — «martin2024» y «martin2025» pueden ser dos personas
+      // distintas. Sugerirlas mandaba al operador a revisar cuentas ajenas y a preguntarle cosas
+      // al cliente por una corazonada (Juan, 27/9).
+      const _mostrar = _conTel.length ? _conTel.slice(0,3) : [];
       const _nota = _conTel.length
         ? 'Tiene el teléfono que declaró — es casi seguro su cuenta.'
-        : _aliasCorto
-          ? '«'+esc(uDecl)+'» es muy corto: cualquier cuenta que empiece igual aparecería acá, así que no sugiero ninguna.'
-          : 'Sólo se parece el alias: ninguna tiene el teléfono que declaró. Preguntale el usuario completo antes de elegir.';
+        : 'Ninguna cuenta tiene el teléfono que declaró. Si dice tener cuenta, pedile el usuario completo.';
       filas+=fila('Usuario', esc(uDecl), '⚠ no figura así', '#e3b341',
         sub(_nota)
         + (_mostrar.length ? '<div>'+_mostrar.map(function(c){ const tl=telsDe(c);

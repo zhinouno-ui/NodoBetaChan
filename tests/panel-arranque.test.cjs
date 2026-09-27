@@ -2650,7 +2650,7 @@ test('cotejo · un alias corto no dispara cuatro sugerencias al azar', () => {
 
   assert.ok(!html.includes('lauraaaok4564') && !html.includes('lauttaros'),
     'ninguna de esas cuentas tiene el telefono declarado: sugerirlas es tirar una moneda');
-  assert.ok(html.includes('muy corto'), 'y hay que decir por que no se sugiere nada');
+  assert.ok(html.includes('Ninguna cuenta tiene el teléfono'), 'y hay que decir por qué no se sugiere nada');
   assert.ok(html.includes('_altaCrearDesdeCotejo'),
     'si no existe ni el usuario ni el telefono, la cuenta se tiene que poder crear desde aca');
 });
@@ -2663,7 +2663,10 @@ test('cotejo · si la cuenta parecida tiene el telefono declarado, esa sí se su
   assert.ok(html.includes('teléfono que declaró'), 'y se dice por que se sugiere');
 });
 
-test('cotejo · con alias largo y sin telefono en comun, dos sugerencias como mucho', () => {
+test('cotejo · sin teléfono en común no se sugiere NINGUNA, por parecido que sea el alias', () => {
+  // Un alias parecido no prueba nada: «martin2024» y «martin2025» pueden ser dos personas
+  // distintas. Sugerirlas mandaba al operador a revisar cuentas ajenas y a preguntarle cosas al
+  // cliente por una corazonada (Juan, 27/9).
   const sb = arrancarPanel();
   const r = _cotejoSimilares([
     { usuario: 'martin2024a', telefonos: ['1111111111'] },
@@ -2672,9 +2675,12 @@ test('cotejo · con alias largo y sin telefono en comun, dos sugerencias como mu
     { usuario: 'martin2024d', telefonos: ['4444444444'] }
   ]);
   const html = sb._altaCotejoHtml('martin2024', '9999999999', r, '_altaAbrirVincular', '').html;
-  const chips = html.split('_altaAbrirVincular').length - 1;
-  assert.ok(chips <= 2, 'cuatro opciones sin con que elegir confunden; salieron ' + chips);
-  assert.ok(html.includes('Sólo se parece el alias'), 'el operador tiene que saber que son corazonadas');
+  for (const u of ['martin2024a', 'martin2024b', 'martin2024c', 'martin2024d']) {
+    assert.ok(!html.includes(u), 'no tiene el teléfono declarado: no se sugiere · ' + u);
+  }
+  assert.ok(!html.includes('_altaAbrirVincular'), 'sin sugerencias no hay a quién vincular');
+  assert.match(html, /Ninguna cuenta tiene el teléfono/, 'se dice por qué no hay sugerencias');
+  assert.ok(html.includes('_altaCrearDesdeCotejo'), 'y se puede crear la cuenta desde acá');
 });
 
 // ── Caja negra ────────────────────────────────────────────────────────────────
@@ -3255,4 +3261,14 @@ test('teléfonos · el panel los dibuja todos igual, vengan como vengan', () => 
   // Lo que no es un teléfono se deja como está: no se inventa nada.
   assert.equal(sb._tel(''), '');
   assert.equal(sb._tel('no tiene'), 'no tiene');
+});
+
+test('alta · el botón de crear usuario tiene que existir y ser alcanzable', () => {
+  const sb = arrancarPanel();
+  for (const fn of ['abrirModalCrearUsuario', '_altaCrearDesdeCotejo', '_altaCotejoHtml', 'abrirModal']) {
+    assert.equal(typeof sb[fn], 'function', fn + ' tiene que estar definida y ser global');
+  }
+  // El onclick del botón se resuelve contra window: si no está ahí, el botón queda muerto.
+  assert.equal(typeof sb.window.abrirModalCrearUsuario, 'function', 'window.abrirModalCrearUsuario');
+  assert.equal(typeof sb.window._altaCrearDesdeCotejo, 'function', 'window._altaCrearDesdeCotejo');
 });
