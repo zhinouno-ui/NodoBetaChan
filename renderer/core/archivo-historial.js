@@ -77,14 +77,19 @@ window._retiroPagadoDelHistorial = function(solicitudId){
     filas = (_lex && _lex.length) ? _lex : (_win || _lex || []);
   }catch(_e){ return null; }
   if(!filas.length) return null;                       // historial no cargado → no afirmamos nada
-  let suma = 0, n = 0;
+  let suma = 0, n = 0, desde = Infinity;
   filas.forEach(function(h){
+    // Hasta dónde llega ATRÁS lo que hay cargado. El historial en pantalla es de un período: si
+    // el retiro empezó antes, faltan pagos y la suma NO se puede comparar con nada.
+    const t = new Date((h && h.created_at) || 0).getTime();
+    if(Number.isFinite(t) && t > 0 && t < desde) desde = t;
     if(!h || String(h.solicitud_id||'')!==sid) return;
     if(normalizar(h.tipo)!=='RETIRO') return;
     if(normalizar(h.estado)!=='OK') return;            // sólo las efectivas
     suma += Math.abs(Number(h.monto||0)) || 0; n++;
   });
-  return n ? { pagado:suma, filas:n } : null;          // sin filas → todavía no se pagó nada
+  // `desde` viaja siempre: sin él no se sabe si la suma está completa.
+  return n ? { pagado:suma, filas:n, desde:desde } : null;   // sin filas → todavía no se pagó nada
 };
 
 window._retiroParcialInfo = function(s){
@@ -94,10 +99,12 @@ window._retiroParcialInfo = function(s){
   // Manda el total que usó el motor de pagos; el de la solicitud queda de respaldo (D-66).
   let total = 0;
   let pagado = 0, pagadoAlt = 0;
+  let _pagosRp = [];   // los pagos del contador, para saber desde cuándo corre este retiro
   try{
     let m = (s&&(s.METADATA!==undefined?s.METADATA:s.metadata))||{};
     if(typeof m==='string'){ try{ m=JSON.parse(m); }catch(_e){ m={}; } }
     const rp = (m&&(m.retiro_parcial||m.retiro_progreso||m.progreso))||{};
+    _pagosRp = Array.isArray(rp.pagos) ? rp.pagos : [];
     pagado = Math.abs(Number((rp.pagado!=null?rp.pagado:(rp.acumulado!=null?rp.acumulado:(m.pagado_parcial!=null?m.pagado_parcial:0))))||0);
     // El progreso vive en DOS lugares: retiro_parcial (lo escribe la RPC) y monto_pagado suelto (lo
     // escribe el panel). Si un pago quedó registrado en uno solo, los números no coinciden y el
@@ -115,11 +122,30 @@ window._retiroParcialInfo = function(s){
   // TERCERA fuente, y la única que NO es un contador: la suma de las transferencias que realmente
   // salieron (historial_ops). Si un pago no llegó a anotarse en el progreso —le pasó al último pago
   // de un retiro, D-100— el libro igual lo tiene y el retiro deja de figurar colgado para siempre.
-  let _hist = 0;
+  let _hist = 0, _histCompleto = false;
   try{
     const _h = window._retiroPagadoDelHistorial
       ? window._retiroPagadoDelHistorial(s && (s.ID || s.SOLICITUD_ID || s.solicitud_id || s.id)) : null;
     if(_h && _h.pagado > 0) _hist = (total>0 && _h.pagado>total) ? total : _h.pagado;
+    // ¿La suma del historial se puede COMPARAR? Sólo si lo cargado llega más atrás que el primer
+    // pago: el historial en pantalla es de un período, y si el retiro empezó antes faltan pagos.
+    // Sin esto, el panel gritaba «el progreso no coincide» con los dos registros perfectamente
+    // iguales — le pasó al #275413 (normaacdc), donde el pago más viejo quedaba fuera del período
+    // cargado y la resta daba justo ese pago (Juan, 28/9). Mandar a revisar algo que está bien
+    // cuesta el tiempo del operador y le saca valor al aviso cuando el descuadre es de verdad.
+    if(_h && Number.isFinite(_h.desde)){
+      let _primerPago = Infinity;
+      const _pagos = _pagosRp;
+      _pagos.forEach(function(pg){
+        const t = new Date((pg && pg.fecha) || 0).getTime();
+        if(Number.isFinite(t) && t > 0 && t < _primerPago) _primerPago = t;
+      });
+      if(!Number.isFinite(_primerPago)){
+        const t = new Date((s && (s.FECHA_CREACION || s.created_at || s.FECHA)) || 0).getTime();
+        if(Number.isFinite(t) && t > 0) _primerPago = t;
+      }
+      _histCompleto = Number.isFinite(_primerPago) && _h.desde <= _primerPago;
+    }
   }catch(_e){}
   // "Esto es un retiro EN PARTES" lo dice SÓLO la máquina de parciales (retiro_parcial). El
   // historial dice CUÁNTO se pagó, que es otra cosa: todo retiro pagado tiene su fila ahí, así que
@@ -134,7 +160,8 @@ window._retiroParcialInfo = function(s){
     hasProg:hayParcial,
     // Las otras fuentes + si discrepan: NO se decide por una, se avisa al operador para que resuelva.
     pagadoRpc:pagado, pagadoAlt:_alt, pagadoHistorial:_hist,
-    discrepa: (Math.abs(_alt - pagado) > 1) || (_hist > 0.5 && Math.abs(_hist - pagado) > 1),
+    discrepa: (Math.abs(_alt - pagado) > 1) || (_histCompleto && _hist > 0.5 && Math.abs(_hist - pagado) > 1),
+    histCompleto: _histCompleto,
     saldadoPorAlguna: (total>0 && _cobrado >= total-0.5)
   };
 };
@@ -267,7 +294,7 @@ window.verRetirosParciales = function(){
           ? ('<div style="margin-top:8px;padding:6px 9px;border-radius:8px;background:rgba(245,197,24,.10);border:1px solid rgba(245,197,24,.35);font-size:11.5px;color:#fde68a">'
              + '⚠ El progreso no coincide: <b>'+money(pp.pagadoRpc)+'</b> según el contador de parciales'
              + (pp.pagadoAlt>0.5 && Math.abs(pp.pagadoAlt-pp.pagadoRpc)>1 ? ', <b>'+money(pp.pagadoAlt)+'</b> según el retiro normal' : '')
-             + (pp.pagadoHistorial>0.5 && Math.abs(pp.pagadoHistorial-pp.pagadoRpc)>1 ? ', <b>'+money(pp.pagadoHistorial)+'</b> sumando el historial' : '')
+             + (pp.histCompleto && pp.pagadoHistorial>0.5 && Math.abs(pp.pagadoHistorial-pp.pagadoRpc)>1 ? ', <b>'+money(pp.pagadoHistorial)+'</b> sumando el historial' : '')
              + '. '
              + 'Fijate en el historial cuánto cobró y elegí.</div>')
           : '')

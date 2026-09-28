@@ -2802,7 +2802,12 @@ test('parciales · el aviso de descuadre nombra cada fuente y no repite el mismo
   const sb = arrancarPanel();
   // El caso real: el contador de parciales dice 1.700.000 y el historial suma otra cosa, porque un
   // pago salió por el flujo de retiro normal y no tocó el contador.
-  const s = solicitudRetiro({ retiro_parcial: { total: 1738907, pagado: 1700000 }, monto_pagado: 1700000 });
+  // Los pagos van con fecha a propósito: sin saber cuándo empezó el retiro no se puede afirmar que
+  // el historial esté completo, y sin eso NO se canta descuadre (ver el test de más abajo).
+  const s = solicitudRetiro({
+    retiro_parcial: { total: 1738907, pagado: 1700000,
+      pagos: [{ fecha: '2026-09-26T02:37:00Z', monto: 1700000 }] },
+    monto_pagado: 1700000 });
   sb.window._historialData = [
     { solicitud_id: '266250', tipo: 'RETIRO', estado: 'OK', monto: 1700000, created_at: '2026-09-26T11:48:00Z' },
     { solicitud_id: '266250', tipo: 'RETIRO', estado: 'OK', monto: 38907,   created_at: '2026-09-26T02:37:00Z' }
@@ -3271,4 +3276,43 @@ test('alta · el botón de crear usuario tiene que existir y ser alcanzable', ()
   // El onclick del botón se resuelve contra window: si no está ahí, el botón queda muerto.
   assert.equal(typeof sb.window.abrirModalCrearUsuario, 'function', 'window.abrirModalCrearUsuario');
   assert.equal(typeof sb.window._altaCrearDesdeCotejo, 'function', 'window._altaCrearDesdeCotejo');
+});
+
+test('parciales · un historial a medias NO se canta como descuadre', () => {
+  // Caso real (#275413, normaacdc, 28/9): los dos registros tenían los MISMOS cuatro pagos y
+  // sumaban 1.500.000. Pero el historial en pantalla es de un período y no llegaba al primer pago,
+  // así que sumaba 1.000.000 y el panel gritaba "el progreso no coincide". Mandar a revisar algo
+  // que está bien cuesta tiempo y le saca valor al aviso cuando el descuadre es de verdad.
+  const sb = arrancarPanel();
+  const pagos = [
+    { fecha: '2026-09-27T18:35:08Z', monto: 500000 },
+    { fecha: '2026-09-28T05:05:52Z', monto: 400000 },
+    { fecha: '2026-09-28T05:09:16Z', monto: 100000 },
+    { fecha: '2026-09-28T11:05:29Z', monto: 500000 }
+  ];
+  const meta = { retiro_parcial: { total: 2600000, pagado: 1500000, pagos: pagos } };
+  const s = { ID: 275413, TIPO: 'RETIRO', ESTADO: 'EN_PROCESO', USUARIO: 'normaacdc',
+              FECHA_CREACION: '2026-09-27T18:00:00Z', MONTO: 2600000, MONTO_REAL: 2600000,
+              metadata: meta, METADATA: meta };
+  const fila = (t, m) => ({ solicitud_id: '275413', tipo: 'RETIRO', estado: 'OK', monto: m, created_at: t });
+
+  // El historial cargado arranca DESPUÉS del primer pago: le falta ese medio millón.
+  sb.window._historialData = pagos.slice(1).map(p => fila(p.fecha, p.monto));
+  const cortado = sb._retiroParcialInfo(s);
+  assert.equal(cortado.pagadoHistorial, 1000000, 'suma lo que ve, que es menos');
+  assert.equal(cortado.histCompleto, false, 'y sabe que no llega hasta el primer pago');
+  assert.equal(cortado.discrepa, false, 'así que NO puede cantar descuadre');
+
+  // Con el historial completo, los dos coinciden: tampoco hay descuadre.
+  sb.window._historialData = pagos.map(p => fila(p.fecha, p.monto));
+  const entero = sb._retiroParcialInfo(s);
+  assert.equal(entero.pagadoHistorial, 1500000);
+  assert.equal(entero.histCompleto, true);
+  assert.equal(entero.discrepa, false, 'coinciden: no hay nada que avisar');
+
+  // Y con el historial completo y un pago de MENOS de verdad, sí se avisa.
+  sb.window._historialData = pagos.slice(0, 3).map(p => fila(p.fecha, p.monto));
+  const faltaUno = sb._retiroParcialInfo(s);
+  assert.equal(faltaUno.histCompleto, true, 'llega hasta el primer pago: es comparable');
+  assert.equal(faltaUno.discrepa, true, 'falta un pago de verdad: eso SÍ hay que decirlo');
 });
