@@ -3533,3 +3533,49 @@ cancelada no lo manda a «Sin lectura de Drex». Cuatro pruebas ejecutan los cua
 
 También se sacaron los avisos que mandaban a editar el `.env`: la config se gestiona desde NODO
 ADMIN (Juan, 26/9).
+---
+
+## D-114 · El portal nuevo deja cancelar al jugador, y cualquier panel la revivia
+
+**Evidencia** — El portal nuevo trae `landing_cancelar_solicitud`, que el que esta en uso no
+tiene. La RPC esta bien cerrada: se niega si la solicitud ya no esta PENDIENTE y se niega si un
+operador la tomo. El agujero esta del otro lado. La bandeja se refresca cada varios segundos, asi
+que entre que el jugador cancela y que la lista se actualiza el operador la sigue viendo y puede
+tocar «Tomar» — y las DOS RPC con las que el panel escribe el estado
+(`panel_v15_5_actualizar_solicitud_portal` y la hermana vieja `panel_v154_plus_...`) hacen un
+UPDATE ciego que no mira como estaba la fila. La revivian sin decir nada: el jugador ve
+«cancelada» en el telefono y el operador le carga igual.
+
+Hoy hay 4 filas canceladas por jugador en la base (de prueba) y ninguna revivida, porque el portal
+nuevo todavia no salio. Con volumen real pasa.
+
+**Estado** — Escrito y probado, **sin aplicar**: `servidor/nodo-freno-cancelada-jugador.sql`,
+esperando el OK igual que D-103.
+
+El freno va en la base y no en el panel a proposito. Al 29/9 las 15 PCs activas no estan iguales:
+2.1.3 en P1 P2 P3 P4 P5 P7 P8, 2.1.2 en P6 P9 P9B P10 P10B P10C ALVOFI, y **P11 sigue en 1.2.0**.
+Las tres versiones llaman a las mismas dos funciones, asi que puesto en la base quedan tapadas las
+quince sin esperar que P11 actualice.
+
+Se frena SOLO antes de mover plata (PENDIENTE, TOMADA, EN_REVISION, EN_PROCESO, PROCESANDO,
+APROBADA). ACREDITADA y PAGADA pasan igual y quedan marcadas en el metadata: si la plata ya salio,
+el registro tiene que existir — una operacion sin registro es peor que una mal estampada.
+
+---
+
+## D-115 · El portal nuevo habia perdido el minimo por oficina
+
+**Evidencia** — Los dos portales se separaron. El que esta en uso
+(`admimaster26-collab/portal-bet300`, ultimo cambio 15/9) tiene `landing_minimos_v1`, que lee
+`landing_rutas_publicas.min_carga/min_retiro`. El nuestro (ultimo cambio 14/9) quedo con 1000 y
+5000 fijos. **P8 tiene min_carga = 2000**: al salir el portal nuevo le volvian a entrar cargas de
+$1.000 para rechazar a mano, una por una. Las otras 13 rutas activas estan en null y no cambiaban.
+
+**Estado** — RESUELTO. Se repuso `cargarMinimos()` y los textos y validaciones pasaron a
+`_minCarga()` / `_minRetiro()`. Siete pruebas en `tests/portal-minimos.test.cjs` sacan el codigo
+del `Portal` y lo EJECUTAN, incluido el caso real de P8; corridas contra el Portal anterior las
+siete fallan, asi que detectan la regresion de verdad.
+
+De paso, la IP publica se pedia recien al tocar «Enviar», con 2,5 s de espera encima del boton que
+mas importa. Ahora se pide al arrancar; si todavia esta en viaje devuelve vacio en el acto y la
+solicitud sale igual.

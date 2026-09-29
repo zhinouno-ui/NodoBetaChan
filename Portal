@@ -385,6 +385,7 @@ const state={
   shownTexts:new Set(),
   solicitudStartedAt:Number(localStorage.getItem("bet300_solicitud_started_at")||0),
   promoActiva:false,
+  minCarga:null, minRetiro:null,
   screen:"home", unread:0, chatGreeted:false
 };
 
@@ -1842,6 +1843,24 @@ function billeteraPayloadPlano(){
 
 const MONTOS_RAPIDOS=[2000,5000,10000,20000,50000];
 const MONTO_MIN_CARGA=1000, MONTO_MIN_RETIRO=5000, RETIRO_COOLDOWN_MS=24*60*60*1000;
+// Cada oficina puede tener su propio minimo (landing_rutas_publicas.min_carga/min_retiro).
+// P8 tiene la carga minima en $2.000: con el numero fijo de arriba le entraban cargas de $1.000
+// y el operador las tenia que rechazar a mano, una por una.
+function _minCarga(){ return Number(state.minCarga)>0 ? Number(state.minCarga) : MONTO_MIN_CARGA; }
+function _minRetiro(){ return Number(state.minRetiro)>0 ? Number(state.minRetiro) : MONTO_MIN_RETIRO; }
+// Si la consulta falla o la oficina no tiene nada puesto, quedan los numeros de arriba: el
+// portal nunca se queda sin minimo.
+async function cargarMinimos(){
+  try{
+    if(!state.publicCode) return;
+    const r=await rpc("landing_minimos_v1",{p_public_code:state.publicCode});
+    const d=(r&&!r.error) ? (typeof r.data==="string"?JSON.parse(r.data):r.data) : null;
+    if(d && d.ok){
+      if(Number(d.min_carga)>0)  state.minCarga  = Number(d.min_carga);
+      if(Number(d.min_retiro)>0) state.minRetiro = Number(d.min_retiro);
+    }
+  }catch(_e){}
+}
 const _money=v=>"$"+Number(v).toLocaleString("es-AR");
 function _fmtRestante(ms){const h=Math.floor(ms/3600000),m=Math.round((ms%3600000)/60000);return h>0?(h+"h"+(m>0?" "+m+"m":"")):((m>0?m:1)+"m");}
 function _retiroKey(){return "bet300_ultimo_retiro_at_"+String(state.usuario||"").toLowerCase();}
@@ -1980,7 +1999,7 @@ function renderCarga(){
       </div>
     </div>
     <div class="form-card">
-      <label>Monto transferido (mínimo ${_money(MONTO_MIN_CARGA)})</label>
+      <label>Monto transferido (mínimo ${_money(_minCarga())})</label>
       <input id="cargaMonto" type="text" inputmode="numeric" autocomplete="off" placeholder="Ej: 5000" oninput="_soloNumero(this);syncChips()">
       <div class="chips">${MONTOS_RAPIDOS.map(v=>`<button type="button" class="chip" data-v="${v}" onclick="setMonto(${v})">$${v.toLocaleString("es-AR")}</button>`).join("")}</div>
       <label>¿A nombre de quién está la cuenta que usaste para transferir?</label>
@@ -2071,7 +2090,7 @@ async function enviarSolicitudCargaDirecta(){
   const monto=($("cargaMonto")?.value||"").trim();
   const titular=($("cargaTitular")?.value||"").trim();
   if(marcarFaltantes(["cargaMonto","cargaTitular"])) return toast("Falta completar el campo marcado");
-  if(Number(monto)<MONTO_MIN_CARGA)return toast("La carga mínima es "+_money(MONTO_MIN_CARGA)+".");
+  if(Number(monto)<_minCarga())return toast("La carga mínima es "+_money(_minCarga())+".");
   const _malT=validarTitular(titular);
   if(_malT){
     const el=$("cargaTitular");
@@ -2139,7 +2158,7 @@ function limpiarSolicitudAnteriorAntesDeNueva(){
 async function enviarSolicitudCarga(usuario,monto,titular){
   if(!await _puedeOperarConServidor())return;
   if(!(Number(monto)>0))return toast("Ingresá un monto válido.");
-  if(Number(monto)<MONTO_MIN_CARGA)return toast("La carga mínima es "+_money(MONTO_MIN_CARGA)+".");
+  if(Number(monto)<_minCarga())return toast("La carga mínima es "+_money(_minCarga())+".");
   if(String(titular||"").trim().length<3)return toast("Indicá el titular que transfiere (mínimo 3 letras).");
   limpiarSolicitudAnteriorAntesDeNueva();
   const bp=billeteraPayloadPlano();
@@ -2187,7 +2206,7 @@ function renderRetiro(){
     <div class="user-chip">👤 ${esc(state.usuario)}</div>
     <div id="rechazoPrevioRetiro"></div>
     <div class="form-card">
-      <label>Monto (mínimo ${_money(MONTO_MIN_RETIRO)})</label>
+      <label>Monto (mínimo ${_money(_minRetiro())})</label>
       <input id="retiroMonto" type="text" inputmode="numeric" autocomplete="off" placeholder="Ej: 10000" oninput="_soloNumero(this)">
       <div id="retiroDatosPrevios"></div>
       <label>Alias / CBU destino</label>
@@ -2237,7 +2256,7 @@ async function enviarSolicitudRetiro(){
   if(marcarFaltantes(["retiroMonto","retiroDestino","retiroTitular"])) return toast("Falta completar el campo marcado");
   const monto=Math.abs(Number(montoRaw));
   if(!monto||monto<=0)return toast("Ingresá un monto válido mayor a cero");
-  if(monto<MONTO_MIN_RETIRO)return toast("El retiro mínimo es "+_money(MONTO_MIN_RETIRO)+".");
+  if(monto<_minRetiro())return toast("El retiro mínimo es "+_money(_minRetiro())+".");
   if(String(destino).trim().length<6)return toast("El alias/CBU de destino es muy corto.");
   const _malTR=validarTitular(titular);
   if(_malTR){
@@ -2520,6 +2539,8 @@ window.addEventListener("load",async()=>{
   try{ const _af=$("appFrame"); if(_af && (!_af.getAttribute("src") || _af.getAttribute("src")==="about:blank")) _af.src=PLATFORM_URL; }catch(_e){}
   restoreLauncherMini();
   await initRoute();
+  try{ await cargarMinimos(); }catch(_e){}
+  try{ _ipPublica(); }catch(_e){}
   const acceso = await canjearEnlaceAcceso();
   await cargarPromoActiva();
   setTimeout(marcarAppInstalada, 2500);
