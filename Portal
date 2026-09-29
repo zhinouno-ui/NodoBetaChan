@@ -1472,7 +1472,9 @@ async function iniciarValidacionUsuarioBackground(usuario){
 }
 
 const RUTAS_PRUEBA = { p1:"rt-a8f31", p2:"rt-k6d92", p3:"rt-m4q77", p4:"rt-z9p42",
-                       p5:"rt-x2v61", p6:"rt-r5023", p7:"rt-m2z3r" };
+                       p5:"rt-x2v61", p6:"rt-r5023", p7:"rt-m2z3r", p8:"rt-xvv80",
+                       p9:"rt-4cm1i", p9b:"rt-85917", p10:"rt-qvodz", p10b:"rt-der2",
+                       p10c:"rt-der3", p11:"rt-p11" };
 const MODO_PRUEBA = (function(){
   try{
     const v = (new URLSearchParams(location.search).get("prueba")||"").trim().toLowerCase();

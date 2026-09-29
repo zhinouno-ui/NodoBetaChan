@@ -3535,34 +3535,32 @@ También se sacaron los avisos que mandaban a editar el `.env`: la config se ges
 ADMIN (Juan, 26/9).
 ---
 
-## D-114 · El portal nuevo deja cancelar al jugador, y cualquier panel la revivia
+## D-114 · El jugador puede cancelar y el panel la revive: se decidio dejarlo asi
 
-**Evidencia** — El portal nuevo trae `landing_cancelar_solicitud`, que el que esta en uso no
+**Evidencia** — El portal nuevo trae `landing_cancelar_solicitud`, que el que estaba en uso no
 tiene. La RPC esta bien cerrada: se niega si la solicitud ya no esta PENDIENTE y se niega si un
-operador la tomo. El agujero esta del otro lado. La bandeja se refresca cada varios segundos, asi
-que entre que el jugador cancela y que la lista se actualiza el operador la sigue viendo y puede
-tocar «Tomar» — y las DOS RPC con las que el panel escribe el estado
+operador la tomo. Lo que queda abierto es del otro lado: la bandeja se refresca cada varios
+segundos, asi que entre que el jugador cancela y que la lista se actualiza el operador la sigue
+viendo y puede tocar «Tomar» — y las DOS RPC con las que el panel escribe el estado
 (`panel_v15_5_actualizar_solicitud_portal` y la hermana vieja `panel_v154_plus_...`) hacen un
-UPDATE ciego que no mira como estaba la fila. La revivian sin decir nada: el jugador ve
-«cancelada» en el telefono y el operador le carga igual.
+UPDATE ciego que no mira como estaba la fila. La reviven sin avisar.
 
-Hoy hay 4 filas canceladas por jugador en la base (de prueba) y ninguna revivida, porque el portal
-nuevo todavia no salio. Con volumen real pasa.
+**Estado** — NO SE ARREGLA, por decision de Juan (29/9), y la razon es buena:
 
-**Estado** — Escrito y probado, **sin aplicar**: `servidor/nodo-freno-cancelada-jugador.sql`,
-esperando el OK igual que D-103.
+- Si el jugador cancela y **no transfirio**, no se le carga nada: el operador no encuentra la
+  transferencia y la rechaza. El estado de la fila no cambia el resultado.
+- Si cancelo y **despues transfirio**, que el operador pueda cargar la anterior es lo CORRECTO.
+  La siguiente que mande se le rechaza por duplicada.
 
-El freno va en la base y no en el panel a proposito. Al 29/9 las 15 PCs activas no estan iguales:
-2.1.3 en P1 P2 P3 P4 P5 P7 P8, 2.1.2 en P6 P9 P9B P10 P10B P10C ALVOFI, y **P11 sigue en 1.2.0**.
-Las tres versiones llaman a las mismas dos funciones, asi que puesto en la base quedan tapadas las
-quince sin esperar que P11 actualice.
+Esto tumba el freno que habia escrito: bloqueaba en «Tomar», que es justo el paso que el operador
+necesita dar para el segundo caso. El freno resolvia un problema de contabilidad inventando uno
+de operacion. Se borro `servidor/nodo-freno-cancelada-jugador.sql` y las dos funciones auxiliares
+que habia creado en la base para probarlo (las dos RPC del panel nunca se tocaron).
 
-Se frena SOLO antes de mover plata (PENDIENTE, TOMADA, EN_REVISION, EN_PROCESO, PROCESANDO,
-APROBADA). ACREDITADA y PAGADA pasan igual y quedan marcadas en el metadata: si la plata ya salio,
-el registro tiene que existir — una operacion sin registro es peor que una mal estampada.
+Queda anotado porque el razonamiento importa: el estado de la solicitud no es la verdad, la
+transferencia si. No inventar frenos que peleen contra eso.
 
 ---
-
 ## D-115 · El portal nuevo habia perdido el minimo por oficina
 
 **Evidencia** — Los dos portales se separaron. El que esta en uso
