@@ -503,15 +503,17 @@ api._v154pAvisoDesfasaje = function(motivo){
   }
   const desde = (deps.window.V154P && (deps.V154P.solicitudesOkAt || deps.V154P.solicitudesLastRenderAt)) || 0;
   const min = desde ? Math.round((Date.now()-desde)/60000) : null;
-  // Decir la causa y que se reintenta solo. Antes el cartel no decía ninguna de las dos cosas, así
-  // que el operador apretaba Reintentar una y otra vez creyendo que era la única forma de destrabarlo.
+  // Escrito para el que está atendiendo, no para nosotros. Decía "no la tomes como la foto de
+  // ahora" y "el servidor rechazó la consulta": nadie en una oficina sabe qué hacer con eso.
+  // Lo que el operador necesita saber son tres cosas, en este orden:
+  //   qué le falta (puede haber solicitudes que no ve) · desde cuándo · que no tiene que hacer nada.
+  // Sin lo último apretaba el botón una y otra vez creyendo que era la única forma de destrabarlo.
   const esRed = !!(deps.window.V154P && deps.V154P.solicitudesEsRed);
-  av.innerHTML = "⚠ <b>Esta lista está desactualizada</b>"
-    + (min!=null ? " — última actualización hace "+(min<1?"menos de un minuto":(min+" min")) : "")
-    + ". No la tomes como la foto de ahora."
-    + (esRed ? " <b>Se cortó la conexión</b>, se sigue intentando solo."
-             : " El servidor rechazó la consulta; se sigue intentando solo.")
-    + ' <button class="mini-btn gray" style="margin-left:6px" onclick="cargarSolicitudesPortal(false)">Reintentar ahora</button>';
+  av.innerHTML = (esRed ? "⚠ <b>Se cortó la conexión</b>" : "⚠ <b>El sistema no responde</b>")
+    + " — puede haber solicitudes que todavía no ves."
+    + (min!=null ? " Lo último que llegó es de hace "+(min<1?"menos de un minuto":(min+" min"))+"." : "")
+    + " Se está reintentando solo."
+    + ' <button class="mini-btn gray" style="margin-left:6px" onclick="cargarSolicitudesPortal(false)">Actualizar ahora</button>';
 };
 
     return { globals: api, renderSolicitudesPortalEnInicio, renderSolicitudesPortalCompleto };
