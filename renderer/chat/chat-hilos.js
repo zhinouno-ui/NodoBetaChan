@@ -21,10 +21,20 @@
     const d=new Date(v||0);
     return isNaN(d.getTime()) ? new Date(0) : d;
   }
+  // Un mensaje de ayer se veía igual que uno de hace veinte minutos: sólo la hora, nunca la fecha.
+  // El 29/9 una consulta de P4 mostraba "11:13 a. m." y era del día anterior — 24 horas, y no había
+  // forma de darse cuenta mirando la pantalla. Si no es de hoy, la fecha va adelante.
   function hora(v){
     const d=toDate(v);
     if(!d.getTime())return "";
-    return d.toLocaleTimeString("es-AR",{hour:"2-digit",minute:"2-digit"});
+    const hh=d.toLocaleTimeString("es-AR",{hour:"2-digit",minute:"2-digit"});
+    const hoy=new Date();
+    if(d.getDate()===hoy.getDate() && d.getMonth()===hoy.getMonth() && d.getFullYear()===hoy.getFullYear())
+      return hh;
+    const ayer=new Date(hoy.getTime()-86400000);
+    if(d.getDate()===ayer.getDate() && d.getMonth()===ayer.getMonth() && d.getFullYear()===ayer.getFullYear())
+      return "ayer "+hh;
+    return d.toLocaleDateString("es-AR",{day:"2-digit",month:"2-digit"})+" "+hh;
   }
   function iniciales(u){
     const p=S(u||"Usuario").trim().split(/\s+/).filter(Boolean);

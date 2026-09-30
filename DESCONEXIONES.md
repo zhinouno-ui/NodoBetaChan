@@ -3577,3 +3577,65 @@ siete fallan, asi que detectan la regresion de verdad.
 De paso, la IP publica se pedia recien al tocar «Enviar», con 2,5 s de espera encima del boton que
 mas importa. Ahora se pide al arrancar; si todavia esta en viaje devuelve vacio en el acto y la
 solicitud sale igual.
+
+---
+
+## D-116 · Un mensaje de ayer se ve igual que uno de recien
+
+**Evidencia** — Consulta 278484 (noronorma, P4). En el panel se leia:
+
+```
+12345a                 11:13 a. m.
+Cual seria mi usuario  11:15 a. m.
+noronorma              11:33 a. m.   (respuesta del operador)
+```
+
+Parecian veinte minutos. En la base:
+
+```
+12345a                 2026-09-28T14:13:07Z
+Cual seria mi usuario  2026-09-28T14:15:31Z
+noronorma              2026-09-29T14:33:22Z
+```
+
+**El jugador escribio el 28 y se le contesto el 29: 24 horas y 18 minutos.** `hora()` devuelve
+solo hora y minuto, nunca la fecha — en `chat-hilos.js` y otra vez en `chat-local.js`, las dos
+listas que dibujan lo mismo (D-71, D-74). Ni el operador ni yo teniamos forma de notarlo.
+
+**Estado** — RESUELTO. Si no es de hoy va la fecha adelante: «ayer 11:13», «28/09 11:13».
+
+---
+
+## D-117 · Nadie medía cuanto tarda un mensaje, asi que nadie sabia si andaba bien
+
+**Evidencia** — D-116 salio porque Juan miro una pantalla y sospecho. Antes de eso yo venia
+estimando latencias leyendo `setInterval` y diciendo «5 segundos». Las velocidades no son siempre
+las mismas y con el codigo a la vista no se puede decir si dos minutos son normales o son una
+falla. Y el unico camino que el panel tenia para enterarse en vivo es una suscripcion a la tabla
+`solicitudes`, **que esta muerta desde el 30 de mayo** (D-25): el portal escribe en
+`landing_solicitudes`. Lo que queda es el reloj de 60 s de la bandeja, y la lista de chats no
+tiene reloj propio.
+
+**Estado** — MEDIDO. Tres tramos, siempre en la consola de cada PC, invisible para el operador:
+
+```
+  toque --preparacion--> envio --subida--> base --espera--> panel
+```
+
+- **preparacion** la mide el telefono contra su propio reloj: exacta aunque este en hora mala.
+- **subida** mezcla red y desfasaje del reloj, y NO se pueden separar: se dice asi. Si da negativa
+  o mas de 5 minutos, es un reloj y el total queda en null en vez de ensuciar el promedio.
+- **espera** no pasa por el telefono: es el tramo que delata al panel. Es el que habria gritado
+  «1 d» en el caso de arriba.
+
+`verLatencia()` en la consola de cualquier PC da la suma; ademas se escupe sola cada 10 min y cada
+mensaje que tarda mas de 3 min sale como warning. `renderer/domain/latencia.js` (puro, 14 pruebas)
+y `renderer/core/latencia-panel.js`. En el metadata de cada solicitud viajan `t_toque` y `t_envio`.
+
+**Se intento** mandar la hora del toque ya corregida contra el reloj del servidor, leyendo la
+cabecera `Date`. **No se puede**: el navegador no la expone para otro dominio (CORS). Verificado
+ejecutandolo, no leyendolo. Por eso viajan las dos horas crudas y la cuenta se arma del otro lado.
+
+**Queda abierto** — la suscripcion en vivo sigue apuntando a `solicitudes` en
+`renderer/runtime/realtime.js:47`, y la lista de chats sigue sin reloj propio. Con la medicion
+puesta, ahora se puede decidir eso con numeros en vez de a ojo.

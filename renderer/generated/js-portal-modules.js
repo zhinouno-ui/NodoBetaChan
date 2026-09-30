@@ -503,10 +503,15 @@ api._v154pAvisoDesfasaje = function(motivo){
   }
   const desde = (deps.window.V154P && (deps.V154P.solicitudesOkAt || deps.V154P.solicitudesLastRenderAt)) || 0;
   const min = desde ? Math.round((Date.now()-desde)/60000) : null;
+  // Decir la causa y que se reintenta solo. Antes el cartel no decía ninguna de las dos cosas, así
+  // que el operador apretaba Reintentar una y otra vez creyendo que era la única forma de destrabarlo.
+  const esRed = !!(deps.window.V154P && deps.V154P.solicitudesEsRed);
   av.innerHTML = "⚠ <b>Esta lista está desactualizada</b>"
     + (min!=null ? " — última actualización hace "+(min<1?"menos de un minuto":(min+" min")) : "")
-    + ". No la tomes como la foto de ahora. "
-    + '<button class="mini-btn gray" style="margin-left:6px" onclick="cargarSolicitudesPortal(false)">Reintentar</button>';
+    + ". No la tomes como la foto de ahora."
+    + (esRed ? " <b>Se cortó la conexión</b>, se sigue intentando solo."
+             : " El servidor rechazó la consulta; se sigue intentando solo.")
+    + ' <button class="mini-btn gray" style="margin-left:6px" onclick="cargarSolicitudesPortal(false)">Reintentar ahora</button>';
 };
 
     return { globals: api, renderSolicitudesPortalEnInicio, renderSolicitudesPortalCompleto };
@@ -523,6 +528,37 @@ api._v154pAvisoDesfasaje = function(motivo){
   const dependencies = Object.freeze(["V154P","_portalAutoRechazar","_v154pAvisoDesfasaje","alert","cargarAlertasRetiro","document","esc","getCanal","mapSolicitudPortal","money","normArr","operador","renderInicio","renderSolicitudesPortalCompleto","renderSolicitudesPortalEnInicio","rpc","setTimeout","solicitudes","toast","verificarSolicitudes","window"]);
   function create(deps){
 const api = {};
+// Leer la bandeja no reintentaba NADA, mientras que escribir (actualizarSolicitudPortal) ya
+// reintenta 3 veces ante fallos de red, por "la mirror con proxy que pestañea". En una oficina con
+// la red inestable eso deja la bandeja congelada: el operador ve "Esta lista está desactualizada",
+// no le entra ninguna carga, y tiene que apretar Reintentar a mano hasta que una pega — y ahí le
+// entran todas juntas. Reportado por OFI-SAN el 29/9 a las 21:10, y el cartel no mentía.
+//
+// Ahora la lectura reintenta igual que la escritura, y si aun así falla se vuelve a intentar sola
+// con esperas cada vez más largas. Sin esto, entre intento e intento pasaban los 60 s del reloj de
+// la bandeja, que es una eternidad con gente esperando que le carguen.
+function _esErrorDeRed(e){
+  const m = String((e && (e.message || e)) || '').toLowerCase();
+  return /fetch failed|failed to fetch|network|timeout|econn|socket|load failed|networkerror/.test(m);
+}
+let _reintentoTimer = null, _reintentoNro = 0;
+function _cancelarReintento(){
+  if(_reintentoTimer){
+    try{ deps.window.clearTimeout(_reintentoTimer); }catch(_e){}
+    _reintentoTimer = null;
+  }
+  _reintentoNro = 0;
+}
+function _programarReintento(){
+  if(_reintentoTimer) return;                                  // ya hay uno en camino
+  _reintentoNro = Math.min(_reintentoNro + 1, 4);
+  const espera = Math.min(8000 * Math.pow(2, _reintentoNro - 1), 60000);  // 8s · 16s · 32s · 60s
+  _reintentoTimer = deps.setTimeout(function(){
+    _reintentoTimer = null;
+    try{ cargarSolicitudesPortal(true); }catch(_e){}
+  }, espera);
+}
+
 async function cargarSolicitudesPortal(silencioso=false){
     // SAFE: anti-solapamiento. Si hay una carga en curso, dejamos una sola cola.
     if(deps.V154P.solicitudesLoading){
@@ -532,7 +568,14 @@ async function cargarSolicitudesPortal(silencioso=false){
     deps.V154P.solicitudesLoading = true;
     try{
       const canal = await deps.getCanal();
-      const r = await deps.rpc("panel_v15_5_listar_solicitudes_portal", {p_pc_codigo: canal});
+      // Sólo se insiste ante fallos de RED. Si el servidor contesta y rechaza, insistir no arregla
+      // nada y sólo demora el aviso.
+      let r = null;
+      for(let intento = 1; intento <= 3; intento++){
+        r = await deps.rpc("panel_v15_5_listar_solicitudes_portal", {p_pc_codigo: canal});
+        if(!r?.error || !_esErrorDeRed(r.error)) break;
+        if(intento < 3) await new Promise(res => deps.setTimeout(res, 500 * intento));
+      }
 
       if(r?.error){
         const msg = r.error.message || JSON.stringify(r.error);
@@ -544,15 +587,24 @@ async function cargarSolicitudesPortal(silencioso=false){
         // pero AVISANDO que está vieja. Sin esto los datos viejos se ven igual que los
         // frescos, y se puede aprobar dos veces algo que ya se resolvió.
         deps.V154P.solicitudesErrorAt = Date.now();
+        deps.V154P.solicitudesEsRed = _esErrorDeRed(r.error);
         try{ deps._v154pAvisoDesfasaje(msg); }catch(_e){}
         if(!silencioso) console.error("[V15.4 PLUS] solicitudes portal", r.error);
+        _programarReintento();
         return r;
       }
+      _cancelarReintento();
       deps.V154P.solicitudesOkAt = Date.now();
       deps.V154P.solicitudesErrorAt = null;
+      deps.V154P.solicitudesEsRed = false;
       try{ deps._v154pAvisoDesfasaje(null); }catch(_e){}
 
       const _nuevas = deps.normArr(r.data).map(deps.mapSolicitudPortal);
+
+      // Medir ACÁ y no al dibujar: lo que se quiere saber es cuánto tardó el sistema en traer el
+      // mensaje, no cuánto tardó el operador en abrir la conversación. Va a la consola de la PC,
+      // el operador no ve nada. Ver renderer/core/latencia-panel.js.
+      try{ if(deps.window.nodoLatencia) deps.window.nodoLatencia.medirTanda(_nuevas); }catch(_e){}
       // Un retiro a medio pagar NO puede desaparecer de la lista. La RPC filtra por estado, así que
       // al pasar el parcial a EN_PROCESO deja de devolverlo y el retiro se esfumaba del panel con
       // plata todavía debida — no había forma de terminar de pagarlo. Los que tienen progreso

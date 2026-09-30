@@ -465,6 +465,7 @@ window.addEventListener("online",()=>{
 const SCREENS=["home","carga","retiro","clave","estado","chat"];
 function showScreen(name){
   state.screen=name;
+  if(name!=="carga"){ try{ stopBilleteraRefresco(); }catch(_e){} }
   SCREENS.forEach(s=>{const el=$("screen"+cap(s));if(el)el.classList.toggle("hidden",s!==name);});
   $("composeBox").classList.toggle("hidden",name!=="chat");
   if(name!=="chat")$("imgPreviewBar").classList.add("hidden");
@@ -622,6 +623,31 @@ function renderChat(){
 async function rpc(fn,params){if(!sb)return{data:null,error:{message:"Supabase no configurado"}};const{data,error}=await sb.rpc(fn,params||{});return{data,error}}
 function normalize(data){if(!data)return null;if(Array.isArray(data))return data[0]||null;if(data.data)return Array.isArray(data.data)?data.data[0]:data.data;return data}
 
+// ── La hora del dedo ────────────────────────────────────────────────────────────────────────
+// Para saber cuánto tarda de verdad un mensaje hay que anotar CUÁNDO el jugador apretó el botón
+// y compararlo con cuándo quedó escrito en la base. Mirando el código no se puede saber: las
+// velocidades cambian y nadie puede decir si dos minutos son normales o son una falla (Juan, 29/9).
+//
+// El reloj del teléfono miente seguido, así que NO se manda una hora corregida: se mandan las dos
+// horas crudas del teléfono y del otro lado se arma la cuenta. Probé corregirlas midiendo el
+// desfasaje contra el servidor y no se puede: el navegador no deja leer la cabecera Date de una
+// respuesta de otro dominio (CORS), así que esa medición siempre daba vacío (verificado, 29/9).
+//
+// Con estas dos horas alcanza, porque el tramo que importa no depende del teléfono:
+//   t_toque → t_envio    lo mide el propio teléfono contra sí mismo: exacto aunque esté en hora.
+//   t_envio → fecha      red + lo que el reloj esté desfasado. No se pueden separar, y se dice.
+//   fecha → panel        las dos horas son de servidor/PC: es el tramo que delata al panel.
+let _toqueMs=null;
+function _marcarToque(){ _toqueMs=Date.now(); }
+// Lo que se agrega a cada solicitud para poder medirla después. El toque se anota al APRETAR, no
+// acá: entre una cosa y la otra hay validaciones y consultas, que es parte de lo que se mide.
+function _marcaDeTiempo(){
+  const toque = Number.isFinite(_toqueMs) ? _toqueMs : Date.now();
+  _toqueMs=null;
+  return { t_toque:new Date(toque).toISOString(),
+           t_envio:new Date().toISOString() };
+}
+
 let _ipCache=null, _ipPedida=false;
 async function _ipPublica(){
   if(_ipCache!==null) return _ipCache;
@@ -658,7 +684,9 @@ function _infoNavegador(){
   }catch(_e){ return (navigator.userAgent||"").slice(0,120); }
 }
 
-function startChatPoll(){stopChatPoll();if(!state.chatId)return;chatPollTimer=setInterval(pollOperatorMessages,5000);}
+// La primera lectura salia recien a los 5 s: el operador contestaba al toque y el jugador se
+// quedaba mirando la nada. Las otras dos colas ya arrancaban con una lectura adelantada; esta no.
+function startChatPoll(){stopChatPoll();if(!state.chatId)return;chatPollTimer=setInterval(pollOperatorMessages,5000);setTimeout(pollOperatorMessages,700);}
 function stopChatPoll(){if(chatPollTimer){clearInterval(chatPollTimer);chatPollTimer=null;}}
 async function pollOperatorMessages(){
   if(!state.chatId||!$("widget")?.classList.contains("open"))return;
@@ -1477,12 +1505,16 @@ const RUTAS_PRUEBA = { p1:"rt-a8f31", p2:"rt-k6d92", p3:"rt-m4q77", p4:"rt-z9p42
                        p10c:"rt-der3", p11:"rt-p11" };
 const MODO_PRUEBA = (function(){
   try{
-    const v = (new URLSearchParams(location.search).get("prueba")||"").trim().toLowerCase();
-    if(v && RUTAS_PRUEBA[v]) return { oficina:v.toUpperCase(), ruta:RUTAS_PRUEBA[v] };
+    // El host manda, y se pregunta PRIMERO. Antes el ?prueba= se leia antes que nada, asi que
+    // andaba en cualquier lado: en el dominio de una agencia, ...?prueba=p8 le cambiaba la oficina
+    // al jugador -- le mostraba la billetera de OTRA -- y le pintaba el cartel naranja encima.
+    // En produccion esto ahora devuelve null y no queda nada del modo prueba corriendo (29/9).
     const h = String(location.hostname||"").toLowerCase();
     const esCopiaDePrueba = h.endsWith(".github.io") || h==="localhost" || h==="127.0.0.1" || h==="";
-    if(esCopiaDePrueba) return { oficina:"P1", ruta:RUTAS_PRUEBA.p1 };
-    return null;
+    if(!esCopiaDePrueba) return null;
+    const v = (new URLSearchParams(location.search).get("prueba")||"").trim().toLowerCase();
+    if(v && RUTAS_PRUEBA[v]) return { oficina:v.toUpperCase(), ruta:RUTAS_PRUEBA[v] };
+    return { oficina:"P1", ruta:RUTAS_PRUEBA.p1 };
   }catch(_e){ return null; }
 })();
 if(MODO_PRUEBA){
@@ -2019,6 +2051,7 @@ function renderCarga(){
       </div>
     </div>`;
   cargarBilleteraEnSlot();
+  startBilleteraRefresco();
   pintarRechazoPrevio("rechazoPrevio","CARGA");
   const _prev=_titularPrevio(), _elT=$("cargaTitular");
   if(_prev && _elT){
@@ -2042,7 +2075,11 @@ async function cargarBilleteraEnSlot(){
   const b=await obtenerBilletera();
   if(!b){slot.innerHTML=`<div class="muted-line">Sin billetera disponible por ahora. Consultá por soporte.</div>`;state.lastBilleteraSignature="";return;}
   const sig=billeteraSignature(b);
-  if(sig && sig===state.lastBilleteraSignature && slot.querySelector(".transfer-card")) return; // misma billetera y ya está pintada → no re-render (antiparpadeo)
+  const yaPintada=!!slot.querySelector(".transfer-card");
+  if(sig && sig===state.lastBilleteraSignature && yaPintada) return; // misma billetera y ya está pintada → no re-render (antiparpadeo)
+  // Cambiar los numeros por abajo sin decir nada es peor que no cambiarlos: los puede haber
+  // copiado hace dos segundos. Si ya habia una cuenta pintada y ahora es otra, se avisa.
+  const huboCambio = yaPintada && !!state.lastBilleteraSignature && sig !== state.lastBilleteraSignature;
   state.lastBilleteraSignature=sig;
   const alias=b?.alias||"",cbu=b?.cbu||b?.cvu||"",titular=b?.titular||"",tipo=inferirTipoBilletera(b);
   const canShare=!!navigator.share;
@@ -2056,6 +2093,31 @@ async function cargarBilleteraEnSlot(){
     ${cbu?`<div class="transfer-field"><div class="tf-main"><div class="transfer-label">CBU / CVU</div><div class="transfer-value">${esc(cbu)}</div></div><button class="copy-btn" data-lbl="Copiar" onclick="copyText('${esc(cbu)}',this)">Copiar</button></div>`:""}
     ${pie?`<div class="transfer-owner">${pie}</div>`:""}
   </div>`;
+  if(huboCambio) avisarBilleteraCambio();
+}
+
+// La billetera se pedia UNA sola vez, al dibujar Cargar. El jugador abre Cargar, se va a la app
+// del banco, vuelve a los tres minutos y copia el CBU que quedo en pantalla -- si la oficina
+// cambio de cuenta mientras tanto, transfiere a la vieja y esa plata hay que salir a buscarla.
+// Se vuelve a preguntar cada 45 s con la pantalla abierta y cada vez que el jugador vuelve.
+let billeteraRefrescoTimer=null;
+function stopBilleteraRefresco(){ if(billeteraRefrescoTimer){ clearInterval(billeteraRefrescoTimer); billeteraRefrescoTimer=null; } }
+function startBilleteraRefresco(){
+  stopBilleteraRefresco();
+  billeteraRefrescoTimer=setInterval(function(){
+    try{ if(document.hidden) return; }catch(_e){}
+    if(state.screen!=="carga") return;
+    try{ cargarBilleteraEnSlot(); }catch(_e){}
+  }, 45000);
+}
+function avisarBilleteraCambio(){
+  const slot=$("billeteraSlot"); if(!slot) return;
+  const prev=document.getElementById("billeteraCambio"); if(prev) prev.remove();
+  const d=document.createElement("div");
+  d.id="billeteraCambio"; d.className="titular-aviso";
+  d.textContent="⚠ Cambió la cuenta para transferir. Los datos de arriba son los nuevos.";
+  slot.appendChild(d);
+  try{ toast("Cambió la cuenta para transferir — fijate los datos de nuevo."); }catch(_e){}
 }
 function _billeteraTexto(){
   const b=state.billetera||{};
@@ -2089,6 +2151,7 @@ function marcarFaltantes(ids){
 }
 
 async function enviarSolicitudCargaDirecta(){
+  _marcarToque();
   const monto=($("cargaMonto")?.value||"").trim();
   const titular=($("cargaTitular")?.value||"").trim();
   if(marcarFaltantes(["cargaMonto","cargaTitular"])) return toast("Falta completar el campo marcado");
@@ -2165,7 +2228,7 @@ async function enviarSolicitudCarga(usuario,monto,titular){
   limpiarSolicitudAnteriorAntesDeNueva();
   const bp=billeteraPayloadPlano();
   const _ip=await _ipPublica();   // si no llega en 2,5 s va sin ella: nunca frena el envío
-  const payload={usuario,monto:Number(monto),titular,telefono:state.telefono||"",pc_codigo:state.pcCodigo,public_code:state.publicCode,host:location.host,navegador:_infoNavegador(),ip:_ip||"",tipo:"CARGA",...bp};
+  const payload={usuario,monto:Number(monto),titular,telefono:state.telefono||"",pc_codigo:state.pcCodigo,public_code:state.publicCode,host:location.host,navegador:_infoNavegador(),ip:_ip||"",tipo:"CARGA",...bp,..._marcaDeTiempo()};
   const destino=bp.billetera_nombre?`${bp.billetera_nombre}${bp.billetera_alias?" · "+bp.billetera_alias:""}`:null;
   let res=await rpc("landing_portal_v16_crear_solicitud",{p_public_code:state.publicCode,p_usuario:usuario,p_tipo:"CARGA",p_monto:Number(monto),p_titular:titular,p_destino:destino,p_mensaje:"Solicitud de CARGA: $"+monto+" · Titular: "+titular,p_metadata:payload});
   if(res.error && /VINCULO_NO_VALIDO|NO_AUTORIZADO|NO_REGISTRADO|CONFLICTO|BLOQUEADO/i.test(res.error.message||"")){
@@ -2250,7 +2313,7 @@ async function _rellenarDatosRetiro(){
 }
 
 async function enviarSolicitudRetiro(){
-
+  _marcarToque();
   if(!await _puedeOperarConServidor())return;
   const restRet=retiroCooldownRestanteMs();
   if(restRet>0)return toast("Ya solicitaste un retiro hoy. Podés pedir otro en "+_fmtRestante(restRet)+".");
@@ -2273,7 +2336,7 @@ async function enviarSolicitudRetiro(){
   limpiarSolicitudAnteriorAntesDeNueva();
   const msg="Solicitud de RETIRO: $"+monto+" · Destino: "+destino+" · Titular: "+titular;
   const _ipR=await _ipPublica();
-  const payload={usuario,monto,destino,titular,telefono:state.telefono||"",pc_codigo:state.pcCodigo,public_code:state.publicCode,host:location.host,navegador:_infoNavegador(),ip:_ipR||"",tipo:"RETIRO"};
+  const payload={usuario,monto,destino,titular,telefono:state.telefono||"",pc_codigo:state.pcCodigo,public_code:state.publicCode,host:location.host,navegador:_infoNavegador(),ip:_ipR||"",tipo:"RETIRO",..._marcaDeTiempo()};
   let res=await rpc("landing_portal_v16_crear_solicitud",{
     p_public_code:state.publicCode,p_usuario:usuario,p_tipo:"RETIRO",
     p_monto:monto,p_titular:titular,p_destino:destino,p_mensaje:msg,p_metadata:payload
@@ -2372,7 +2435,7 @@ async function enviarMensajeSoporte(txt,imagenUrl=null){
 
   if(!res||res.error){
     const bp=billeteraPayloadPlano();
-    const payload={usuario:state.usuario,telefono:state.telefono||"",pc_codigo:state.pcCodigo,public_code:state.publicCode,host:location.host,tipo:"SOPORTE",...bp,...(imagenUrl?{imagen_url:imagenUrl}:{})};
+    const payload={usuario:state.usuario,telefono:state.telefono||"",pc_codigo:state.pcCodigo,public_code:state.publicCode,host:location.host,tipo:"SOPORTE",...bp,...(imagenUrl?{imagen_url:imagenUrl}:{}),..._marcaDeTiempo()};
     res=await rpc("landing_portal_v16_crear_solicitud",{
       p_public_code:state.publicCode,p_usuario:state.usuario,
       p_tipo:"SOPORTE",p_monto:0,p_titular:"",p_destino:null,
@@ -2391,6 +2454,7 @@ async function enviarMensajeSoporte(txt,imagenUrl=null){
 }
 
 async function sendFreeMessage(){
+  _marcarToque();
   const input=$("freeInput"),txt=input.value.trim();
   const hasImg=!!state.composerImage;
   if(!txt&&!hasImg)return;
@@ -2512,6 +2576,9 @@ function mostrarActualizarPWA(reg){
   };
 }
 function _reanudarPollsVisibles(){
+  // Volver a la pestaña es JUSTO el momento en que el jugador va a copiar el CBU: recien vuelve
+  // del banco. Es cuando mas hay que estar seguro de que la cuenta sigue siendo esa.
+  if(state.screen==="carga"){ try{ cargarBilleteraEnSlot(); }catch(_e){} }
   const abierto = $("widget")?.classList.contains("open");
   if(abierto){
     if(state.chatId) startChatPoll();

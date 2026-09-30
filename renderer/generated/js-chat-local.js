@@ -15,12 +15,19 @@
       return S(v).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
     }
   }
+  // Misma corrección que en chat-hilos.js: sin la fecha, un mensaje de ayer se lee como si fuera
+  // de recién. Las dos listas dibujan lo mismo y las dos lo escondían (D-71, D-74).
   function hora(v){
     try{
       if(!v) return "";
       const d = new Date(v);
       if(isNaN(d.getTime())) return "";
-      return d.toLocaleTimeString("es-AR",{hour:"2-digit",minute:"2-digit"});
+      const hh = d.toLocaleTimeString("es-AR",{hour:"2-digit",minute:"2-digit"});
+      const hoy = new Date();
+      const mismoDia = (a,b) => a.getDate()===b.getDate() && a.getMonth()===b.getMonth() && a.getFullYear()===b.getFullYear();
+      if(mismoDia(d,hoy)) return hh;
+      if(mismoDia(d,new Date(hoy.getTime()-86400000))) return "ayer "+hh;
+      return d.toLocaleDateString("es-AR",{day:"2-digit",month:"2-digit"})+" "+hh;
     }catch(_e){ return ""; }
   }
   function avatarColor(u){
