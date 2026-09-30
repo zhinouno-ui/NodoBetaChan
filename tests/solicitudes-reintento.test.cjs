@@ -37,6 +37,28 @@ function relojFalso(){
   };
 }
 
+// Igual que armar(), pero con un retiro parcial SOSTENIDO del ciclo anterior y con control sobre
+// lo que contesta landing_retiro_progreso. Ese bloque entro en 2.1.3 (ebfeaf3) y es el que clavaba
+// la bandeja: preguntaba a la base por cada sostenido, con await, DENTRO del cargado.
+function armarConSostenido(progreso){
+  const c = armar([{ data: [] }]);
+  const sostenido = { ID: '266250', TIPO: 'RETIRO', metadata: { retiro_parcial: { total: 100000, pagado: 60000 } } };
+  c.V154P.solicitudes = [sostenido];
+  c.deps.window._retiroParcialInfo = () => ({ hasProg: true, restante: 40000 });
+  const rpcBandeja = c.deps.rpc;
+  c.deps.rpc = async (nombre, args) => {
+    if(nombre === 'landing_retiro_progreso'){ c.llamadas.push({ nombre, args }); return progreso(); }
+    return rpcBandeja(nombre, args);
+  };
+  return Object.assign(c, { sostenido });
+}
+function conLimite(promesa, ms){
+  return Promise.race([
+    promesa.then(() => 'termino'),
+    new Promise(res => setTimeout(() => res('SE CLAVO'), ms))
+  ]);
+}
+
 function armar(respuestas){
   const reloj = relojFalso();
   const llamadas = [];
@@ -139,4 +161,50 @@ test('no se acumulan reintentos si la bandeja se pide muchas veces', async () =>
   await c.api.cargarSolicitudesPortal(true);
   await c.api.cargarSolicitudesPortal(true);
   assert.equal(c.reloj.pendientes(), 1, 'uno solo, no tres');
+});
+
+// ── Lo que clavaba la bandeja en 2.1.3 ──────────────────────────────────────────────────────────
+
+test('un retiro sostenido que no contesta NO clava la bandeja', async () => {
+  // Este es el caso de OFI-SAN. Antes, landing_retiro_progreso se esperaba DENTRO del cargado: si
+  // no contestaba, la bandeja quedaba tomada y todo lo demas salia por "skipped" -- incluido el
+  // boton del operador. De ahi "le tengo que dar reintentar 500 veces y me llega todo junto".
+  const c = armarConSostenido(() => new Promise(() => {}));   // no contesta nunca
+  const r = await conLimite(c.api.cargarSolicitudesPortal(true), 1500);
+  assert.equal(r, 'termino', 'el cargado tiene que terminar aunque el sostenido no conteste');
+});
+
+test('mientras el sostenido no contesta, la bandeja se puede volver a pedir', async () => {
+  const c = armarConSostenido(() => new Promise(() => {}));
+  await conLimite(c.api.cargarSolicitudesPortal(true), 1500);
+  const antes = c.llamadas.filter(x => x.nombre === 'panel_v15_5_listar_solicitudes_portal').length;
+  const r = await conLimite(c.api.cargarSolicitudesPortal(false), 1500);   // el operador aprieta
+  assert.equal(r, 'termino');
+  const despues = c.llamadas.filter(x => x.nombre === 'panel_v15_5_listar_solicitudes_portal').length;
+  assert.ok(despues > antes, 'el pedido del operador tiene que llegar, no salir por skipped');
+});
+
+test('el retiro sostenido aparece en la lista en el acto, sin esperar a la base', async () => {
+  // El motivo por el que existe el bloque: un retiro con plata debida no puede desaparecer.
+  const c = armarConSostenido(() => new Promise(() => {}));
+  await conLimite(c.api.cargarSolicitudesPortal(true), 1500);
+  const ids = c.V154P.solicitudes.map(x => String(x.ID));
+  assert.deepEqual(ids, ['266250'], 'tiene que estar aunque la base no haya contestado');
+  assert.equal(c.V154P.solicitudes[0].__soloLocal, true, 'marcado como copia local');
+});
+
+test('cuando la base dice que ya esta saldado, se suelta', async () => {
+  const c = armarConSostenido(async () => ({ data: [{ ok: true, total: 100000, pagado: 100000, restante: 0 }] }));
+  await c.api.cargarSolicitudesPortal(true);
+  await new Promise(r => setImmediate(r));
+  await new Promise(r => setImmediate(r));
+  assert.equal(c.V154P.solicitudes.length, 0, 'saldado en la base -> sale de la caja');
+});
+
+test('si la base no contesta, el sostenido NO se suelta', async () => {
+  // Sin respuesta no se puede saber si se pago: soltarlo seria perder de vista plata debida.
+  const c = armarConSostenido(async () => ({ error: { message: 'fetch failed' } }));
+  await c.api.cargarSolicitudesPortal(true);
+  await new Promise(r => setImmediate(r));
+  assert.equal(c.V154P.solicitudes.length, 1, 'se queda hasta poder preguntar');
 });

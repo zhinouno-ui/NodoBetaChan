@@ -81,7 +81,14 @@ const api = {};
 
     let html = "";
     if(!visibles.length){
-      html = '<div class="alert-box">No hay solicitudes Portal pendientes.</div>';
+      // "No hay" y "no pude preguntar" NO son lo mismo. Si el último refresco falló, la lista está
+      // vacía porque no se pudo traer nada — y afirmarle al operador que no hay solicitudes lo deja
+      // tranquilo mientras se le acumulan. El aviso de arriba avisaba, pero esta línea lo tapaba
+      // igual, que es justo lo que no puede hacer un motor de verificación (Juan, 30/9).
+      const noSePudo = !!(deps.window.V154P && deps.V154P.solicitudesErrorAt);
+      html = noSePudo
+        ? '<div class="alert-box">No se pudo consultar. <b>Puede haber solicitudes esperando</b> — no es que no haya.</div>'
+        : '<div class="alert-box">No hay solicitudes Portal pendientes.</div>';
     }else{
       html = `<div class="small" style="margin:0 0 8px;color:#98a2b3">Mostrando ${pendientes.length} solicitud/es pendiente/s del portal.</div>` + visibles.map(s => {
         const id = Number(s.ID || s.SOLICITUD_ID || 0);

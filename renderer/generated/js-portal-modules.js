@@ -342,7 +342,14 @@ const api = {};
 
     let html = "";
     if(!visibles.length){
-      html = '<div class="alert-box">No hay solicitudes Portal pendientes.</div>';
+      // "No hay" y "no pude preguntar" NO son lo mismo. Si el último refresco falló, la lista está
+      // vacía porque no se pudo traer nada — y afirmarle al operador que no hay solicitudes lo deja
+      // tranquilo mientras se le acumulan. El aviso de arriba avisaba, pero esta línea lo tapaba
+      // igual, que es justo lo que no puede hacer un motor de verificación (Juan, 30/9).
+      const noSePudo = !!(deps.window.V154P && deps.V154P.solicitudesErrorAt);
+      html = noSePudo
+        ? '<div class="alert-box">No se pudo consultar. <b>Puede haber solicitudes esperando</b> — no es que no haya.</div>'
+        : '<div class="alert-box">No hay solicitudes Portal pendientes.</div>';
     }else{
       html = `<div class="small" style="margin:0 0 8px;color:#98a2b3">Mostrando ${pendientes.length} solicitud/es pendiente/s del portal.</div>` + visibles.map(s => {
         const id = Number(s.ID || s.SOLICITUD_ID || 0);
@@ -561,6 +568,62 @@ function _programarReintento(){
   }, espera);
 }
 
+// Refresco de los retiros sostenidos: corre DESPUÉS de pintar y fuera del cierre anti-solapamiento,
+// así no puede clavar la bandeja. Con tope de cuántos y con límite de espera por cada uno — sin el
+// límite, una sola llamada colgada volvía a dejar todo esperando, que es lo que se vino a arreglar.
+const TOPE_SOSTENIDOS = 8;
+const ESPERA_SOSTENIDO_MS = 6000;
+let _sostenidosCorriendo = false;
+async function refrescarSostenidos(lista){
+  if(_sostenidosCorriendo || !lista || !lista.length) return;
+  _sostenidosCorriendo = true;
+  let cambio = false;
+  try{
+    for(const c of lista.slice(0, TOPE_SOSTENIDOS)){
+      let fresco = null;
+      try{
+        const rp = await Promise.race([
+          deps.rpc('landing_retiro_progreso', { p_solicitud_id: Number(c.id) }),
+          new Promise(res => deps.setTimeout(function(){ res({ error:{ message:'timeout' } }); }, ESPERA_SOSTENIDO_MS))
+        ]);
+        const row = Array.isArray(rp && rp.data) ? rp.data[0] : (rp && rp.data);
+        if(!(rp && rp.error) && row && row.ok !== false) fresco = row;
+      }catch(_e){}
+      // Sin respuesta de la base NO se suelta: un retiro con plata debida no puede perderse de
+      // vista por un error de red. Se queda como está y se vuelve a preguntar en el próximo ciclo.
+      if(!fresco) continue;
+      try{
+        let m = (c.v.METADATA !== undefined ? c.v.METADATA : c.v.metadata) || {};
+        if(typeof m === 'string'){ try{ m = JSON.parse(m); }catch(_e){ m = {}; } }
+        const rpPrev = (m && m.retiro_parcial) || {};
+        const rpNuevo = Object.assign({}, rpPrev, {
+          total: Number(fresco.total) || rpPrev.total,
+          pagado: Number(fresco.pagado) || 0
+        });
+        if(fresco.pagos) rpNuevo.pagos = fresco.pagos;
+        if(fresco.cierre) rpNuevo.cierre = fresco.cierre;
+        const mNuevo = Object.assign({}, m, { retiro_parcial: rpNuevo });
+        c.v.metadata = mNuevo; c.v.METADATA = mNuevo;
+        if(fresco.estado) c.v.ESTADO = String(fresco.estado);
+        cambio = true;
+      }catch(_e){}
+      // Saldado o cerrado en la base → se suelta. Es lo que antes no podía pasar nunca.
+      const restante = Number(fresco.restante);
+      if(fresco.cierre || (Number.isFinite(restante) && restante <= 0.5)){
+        console.warn('[portal] retiro #'+c.id+' ya está saldado o cerrado en la base — se suelta');
+        deps.V154P.solicitudes = (deps.V154P.solicitudes||[])
+          .filter(function(x){ return String(x.ID||x.SOLICITUD_ID||'') !== String(c.id); });
+        cambio = true;
+      }
+    }
+  }finally{ _sostenidosCorriendo = false; }
+  if(cambio){
+    deps.window.solicitudes = (deps.V154P.solicitudes||[]).slice();
+    try{ deps.renderSolicitudesPortalEnInicio(); }catch(_e){}
+    try{ deps.renderSolicitudesPortalCompleto(); }catch(_e){}
+  }
+}
+
 async function cargarSolicitudesPortal(silencioso=false){
     // SAFE: anti-solapamiento. Si hay una carga en curso, dejamos una sola cola.
     if(deps.V154P.solicitudesLoading){
@@ -623,51 +686,29 @@ async function cargarSolicitudesPortal(silencioso=false){
       // empujar en cada ciclo diciendo «falta $X» — no había forma de sacarla. Le pasó a #266250
       // (Maria6981x): pagado entero el 26/9 10:41 y seguía en la caja pidiendo $38.907 (D-109).
       // Ahora, antes de sostenerla, se le pregunta a la base cómo está.
+      // Antes esto le preguntaba a la base POR CADA retiro sostenido, con `await`, DENTRO del
+      // cargado de la bandeja. Cada sostenido sumaba un viaje a CADA refresco — y mientras corrían,
+      // el cierre anti-solapamiento hacía que cualquier otro pedido saliera por "skipped",
+      // incluido el botón del operador. Con la red lenta la bandeja queda clavada: se aprieta y no
+      // pasa nada, hasta que termina el último viaje y entra todo junto. Es exactamente lo que
+      // reportó OFI-SAN, y es de 2.1.3: en 2.1.2 este bloque no existía (ebfeaf3, 26/9).
+      //
+      // Ahora el sostenido entra a la lista EN EL ACTO — que era el punto, un retiro con plata
+      // debida no puede desaparecer — y a la base se le pregunta DESPUÉS de pintar, sin bloquear.
+      const _sostenidos = [];
       try{
         const _ids = new Set(_nuevas.map(function(x){ return String(x.ID||x.SOLICITUD_ID||''); }));
-        const _candidatos = [];
         (deps.V154P.solicitudes||[]).forEach(function(v){
           const id = String(v.ID||v.SOLICITUD_ID||'');
           if(!id || _ids.has(id)) return;
           const pp = deps.window._retiroParcialInfo ? deps.window._retiroParcialInfo(v) : null;
-          if(pp && pp.hasProg && pp.restante > 0.5) _candidatos.push({ id: id, v: v, pp: pp });
+          if(pp && pp.hasProg && pp.restante > 0.5) _sostenidos.push({ id: id, v: v, pp: pp });
         });
-        for(const c of _candidatos){
-          let fresco = null;
-          try{
-            const rp = await deps.rpc('landing_retiro_progreso', { p_solicitud_id: Number(c.id) });
-            const row = Array.isArray(rp && rp.data) ? rp.data[0] : (rp && rp.data);
-            if(!(rp && rp.error) && row && row.ok !== false) fresco = row;
-          }catch(_e){}
-          if(fresco){
-            // Lo que dice la base pisa a la copia vieja.
-            try{
-              let m = (c.v.METADATA !== undefined ? c.v.METADATA : c.v.metadata) || {};
-              if(typeof m === 'string'){ try{ m = JSON.parse(m); }catch(_e){ m = {}; } }
-              const rpPrev = (m && m.retiro_parcial) || {};
-              const rpNuevo = Object.assign({}, rpPrev, {
-                total: Number(fresco.total) || rpPrev.total,
-                pagado: Number(fresco.pagado) || 0
-              });
-              if(fresco.pagos) rpNuevo.pagos = fresco.pagos;
-              if(fresco.cierre) rpNuevo.cierre = fresco.cierre;
-              const mNuevo = Object.assign({}, m, { retiro_parcial: rpNuevo });
-              c.v.metadata = mNuevo; c.v.METADATA = mNuevo;
-              if(fresco.estado) c.v.ESTADO = String(fresco.estado);
-            }catch(_e){}
-            // Saldado o cerrado en la base → se suelta. Es lo que antes no podía pasar nunca.
-            const restante = Number(fresco.restante);
-            if(fresco.cierre || (Number.isFinite(restante) && restante <= 0.5)){
-              console.warn('[portal] retiro #'+c.id+' ya está saldado o cerrado en la base — se suelta');
-              continue;
-            }
-          }
-          // Sin respuesta de la base NO se suelta: un retiro con plata debida no puede perderse de
-          // vista por un error de red.
+        _sostenidos.forEach(function(c){
           c.v.__soloLocal = true;
           _nuevas.push(c.v);
           console.warn('[portal] retiro #'+c.id+' con '+deps.money(c.pp.restante)+' sin pagar dejó de venir de la RPC — se conserva local');
-        }
+        });
       }catch(_e){}
       deps.V154P.solicitudes = _nuevas;
       try{ deps._portalAutoRechazar(deps.V154P.solicitudes); }catch(_e){}
@@ -714,6 +755,8 @@ async function cargarSolicitudesPortal(silencioso=false){
       // Cuando llegan, vuelven a pintar la lista solas.
       try{ deps.cargarAlertasRetiro(); }catch(_e){}
       deps.renderSolicitudesPortalCompleto();
+      // Recién acá, con la bandeja ya en pantalla y sin bloquear nada. Sin await a propósito.
+      try{ refrescarSostenidos(_sostenidos); }catch(_e){}
       try{ if(typeof deps.verificarSolicitudes === "function") deps.verificarSolicitudes(silencioso); }catch(e){}
 
       // Auto-refrescar conversación abierta cuando llegan nuevas solicitudes SOPORTE

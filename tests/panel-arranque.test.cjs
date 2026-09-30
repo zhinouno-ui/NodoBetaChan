@@ -2982,11 +2982,18 @@ function panelConSolicitudes(progreso) {
   return { sb, pedidos, vieja };
 }
 
+// El refresco del sostenido ya NO se espera dentro del cargado de la bandeja: se hace después de
+// pintar, sin bloquear. Se cambió a propósito — esperarlo ahí dejaba la bandeja tomada y todo lo
+// demás salía por "skipped", incluido el botón del operador (OFI-SAN, 29/9). Lo que se verifica
+// sigue siendo lo mismo: que la copia vieja termine corregida o soltada.
+const asentar = () => new Promise(r => setImmediate(() => setImmediate(r)));
+
 test('D-109 · si la base dice que ya se cobró entero, la copia local se suelta', async () => {
   const { sb, pedidos } = panelConSolicitudes(() => ({
     data: [{ ok: true, total: 1738907, pagado: 1738907, restante: 0, estado: 'PAGADA' }], error: null
   }));
   await sb.cargarSolicitudesPortal(true);
+  await asentar();
   assert.ok(pedidos.some(p => p[0] === 'landing_retiro_progreso' && Number(p[1].p_solicitud_id) === 266250),
     'tiene que preguntarle a la base por ese retiro');
   assert.equal(sb.V154P.solicitudes.length, 0, 'ya no falta nada: no se sostiene más');
@@ -2998,6 +3005,7 @@ test('D-109 · si la base dice que está cerrado, también se suelta', async () 
              cierre: { motivo: 'SE_LO_JUGO' } }], error: null
   }));
   await sb.cargarSolicitudesPortal(true);
+  await asentar();
   assert.equal(sb.V154P.solicitudes.length, 0, 'lo cerró alguien: no vuelve');
 });
 
@@ -3006,6 +3014,7 @@ test('D-109 · si todavía falta plata, se sostiene y con los números de la bas
     data: [{ ok: true, total: 1738907, pagado: 1500000, restante: 238907, estado: 'EN_PROCESO' }], error: null
   }));
   await sb.cargarSolicitudesPortal(true);
+  await asentar();
   assert.equal(sb.V154P.solicitudes.length, 1, 'falta plata: no se puede perder de vista');
   const pp = sb._retiroParcialInfo(sb.V154P.solicitudes[0]);
   assert.equal(pp.pagado, 1500000, 'y con lo que dice la base, no con la foto vieja de 1.700.000');
@@ -3015,6 +3024,7 @@ test('D-109 · si todavía falta plata, se sostiene y con los números de la bas
 test('D-109 · si la base no contesta, NO se suelta (plata debida no se pierde de vista)', async () => {
   const { sb } = panelConSolicitudes(() => ({ data: null, error: { message: 'sin red' } }));
   await sb.cargarSolicitudesPortal(true);
+  await asentar();
   assert.equal(sb.V154P.solicitudes.length, 1, 'ante la duda se sostiene');
   assert.equal(sb.V154P.solicitudes[0].__soloLocal, true);
 });
