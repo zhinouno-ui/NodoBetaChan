@@ -1020,8 +1020,12 @@ function cambiarUsuario(){
 function _confirmarCambioUsuario(){
   try{ document.getElementById("cambioConfirm")?.remove(); }catch(_e){}
   stopChatPoll();stopEstadoPoll();stopPortalThreadPoll();stopHistPoll();
-  ["bet300_usuario","bet300_telefono","bet300_vinculo_estado","bet300_nivel_acceso","bet300_motivo_soporte","bet300_chat_id","bet300_solicitud_id","bet300_pending_tipo","bet300_chat_token","bet300_portal_thread_seen","bet300_solicitud_started_at"].forEach(k=>localStorage.removeItem(k));
-  Object.assign(state,{usuario:"",telefono:"",nivelAcceso:"",motivoSoporte:"",solicitudId:"",pendingTipo:"",chatId:"",chatToken:"",chatLibre:false,seenMsgIds:new Set(),portalThreadSeen:new Set(),shownTexts:new Set(),_threadRendered:new Set(),_ingresarUserShown:null,_altaSoporteEnviado:false,composerImage:null,unread:0,chatGreeted:false});
+  // Antes acá había una lista a mano que dejaba atrás bet300_validacion_id y bet300_bono_usado: el
+  // usuario nuevo heredaba la validación del anterior, y en un teléfono donde ya se había usado el
+  // bono de bienvenida, al siguiente NO se le ofrecía. Ahora se va todo lo del jugador.
+  olvidarJugador();
+  Object.assign(state,{chatLibre:false,_threadRendered:new Set(),_ingresarUserShown:null,
+                       _altaSoporteEnviado:false,composerImage:null,unread:0,chatGreeted:false});
   clearComposerImage();
   $("messages").innerHTML="";
   goHome();
@@ -1047,13 +1051,47 @@ function setPendiente(tipo,solicitudId,billetera){
   if(state.solicitudId)localStorage.setItem("bet300_solicitud_id",state.solicitudId);
   localStorage.setItem("bet300_solicitud_started_at",String(state.solicitudStartedAt));
 }
+// ── Qué se borra y cuándo, en UN solo lugar ─────────────────────────────────────────────────────
+// Había cinco listas de claves escritas a mano y NINGUNA coincidía: cambiar de usuario dejaba la
+// validación y el bono del anterior; cerrar una solicitud dejaba la billetera pendiente. El resto
+// aparece después como algo que no se explica — por ejemplo, la billetera pendiente que sobrevive
+// hace que _avisoBilleteraSolicitud() compare contra una solicitud que ya no existe y avise de un
+// descuadre inventado. Agregar una clave y olvidarla en cuatro de las cinco listas es el error que
+// se repite solo, así que los grupos viven acá (mapeo del portal, 30/9).
+const CLAVES_SOLICITUD = ["bet300_pending_tipo","bet300_pending_billetera",
+                          "bet300_solicitud_id","bet300_solicitud_started_at"];
+const CLAVES_CHAT      = ["bet300_chat_id","bet300_chat_token"];
+// Lo del JUGADOR, no del aparato: al cambiar de usuario tiene que irse todo esto. La oficina
+// (public_code) y lo del dispositivo (app_instalada, fs_hint) son del teléfono y se quedan.
+const CLAVES_JUGADOR   = ["bet300_usuario","bet300_telefono","bet300_vinculo_estado",
+                          "bet300_nivel_acceso","bet300_motivo_soporte","bet300_portal_thread_seen",
+                          "bet300_validacion_id","bet300_validacion_estado","bet300_bono_usado"];
+function _borrar(claves){
+  claves.forEach(function(k){ try{ localStorage.removeItem(k); }catch(_e){} });
+}
+// conChat en false = la solicitud se cierra pero la conversación sigue abierta. Es lo que hace
+// falta cuando se rechaza: el jugador tiene que poder preguntar por qué.
+function olvidarSolicitud(conChat){
+  _borrar(CLAVES_SOLICITUD);
+  state.pendingTipo=""; state.pendingBilletera=""; state.solicitudId=""; state.solicitudStartedAt=0;
+  if(conChat !== false){
+    _borrar(CLAVES_CHAT);
+    state.chatId=""; state.chatToken=""; state.seenMsgIds=new Set();
+  }
+}
+function olvidarJugador(){
+  olvidarSolicitud(true);
+  _borrar(CLAVES_JUGADOR);
+  Object.assign(state,{usuario:"",telefono:"",nivelAcceso:"",motivoSoporte:"",
+                       portalThreadSeen:new Set(),shownTexts:new Set()});
+}
+
 function limpiarPendienteManual(){ _confirmarLimpiarPendiente(); }
 
 function limpiarPendienteSilencioso(){
   try{ stopEstadoPoll(); }catch(_e){}
-  Object.assign(state,{pendingTipo:"",solicitudId:"",pendingBilletera:"",reabierta:false});
-  ["bet300_pending_tipo","bet300_pending_billetera","bet300_solicitud_id","bet300_solicitud_started_at"]
-    .forEach(function(k){ try{ localStorage.removeItem(k); }catch(_e){} });
+  olvidarSolicitud(false);
+  state.reabierta=false;
 }
 async function _confirmarLimpiarPendiente(){
   const eraRetiro = String(state.pendingTipo||"").toUpperCase()==="RETIRO";
@@ -1082,9 +1120,7 @@ async function _confirmarLimpiarPendiente(){
   }
 
   stopChatPoll();stopEstadoPoll();
-  Object.assign(state,{pendingTipo:"",solicitudId:"",chatId:"",chatToken:"",seenMsgIds:new Set()});
-  state.pendingBilletera="";
-  ["bet300_pending_tipo","bet300_pending_billetera","bet300_solicitud_id","bet300_chat_id","bet300_chat_token","bet300_solicitud_started_at"].forEach(k=>localStorage.removeItem(k));
+  olvidarSolicitud(true);
   if(eraRetiro){ try{localStorage.removeItem(_retiroKey());}catch(_e){} }
   toast(eraRetiro?"Retiro cancelado. Ya podés enviar uno nuevo.":"Solicitud cancelada. Ya podés enviar una nueva.");
   goHome();
@@ -1328,8 +1364,8 @@ function limpiarPendienteAprobado(obs){
   estadoFinalNotificado=true;
   stopEstadoPoll();stopChatPoll();
   const tipoFinal=state.pendingTipo||"CARGA";
-  state.pendingTipo="";state.solicitudId="";state.chatId="";state.chatToken="";state.seenMsgIds=new Set();state.shownTexts=new Set();
-  ["bet300_pending_tipo","bet300_solicitud_id","bet300_chat_id","bet300_chat_token","bet300_solicitud_started_at"].forEach(k=>localStorage.removeItem(k));
+  olvidarSolicitud(true);
+  state.shownTexts=new Set();
   const esRetiro=tipoFinal==="RETIRO";
   if(!esRetiro){ try{ localStorage.setItem("bet300_bono_usado","1"); }catch(_e){} } // 1ª carga acreditada → el bono de ingreso ya se usó → la tarjeta del bono desaparece
   const titulo=esRetiro?"¡Retiro procesado!":"¡Carga acreditada!";
@@ -1382,8 +1418,8 @@ async function consultarEstadoSolicitud(mostrarMensaje=true){
     stopEstadoPoll();
     rechazadoStreak=0;
     const eraRetiro = String(state.pendingTipo||"").toUpperCase()==="RETIRO";
-    state.pendingTipo="";state.solicitudId="";
-    ["bet300_pending_tipo","bet300_solicitud_id","bet300_solicitud_started_at"].forEach(k=>localStorage.removeItem(k));
+    // Sin el chat: si se la rechazaron, el jugador tiene que poder preguntar por qué.
+    olvidarSolicitud(false);
     if(eraRetiro){ try{localStorage.removeItem(_retiroKey());}catch(_e){} }
     const s=$("screenEstado");
     if(s)s.innerHTML=`<div class="screen-title">Estado</div>
@@ -2216,8 +2252,7 @@ function plegarBilletera(card, plegar){
 
 function limpiarSolicitudAnteriorAntesDeNueva(){
   stopEstadoPoll();stopChatPoll();estadoFinalNotificado=false;
-  state.solicitudId="";state.pendingTipo="";state.chatId="";state.chatToken="";state.seenMsgIds=new Set();
-  ["bet300_solicitud_id","bet300_pending_tipo","bet300_chat_id","bet300_chat_token"].forEach(k=>localStorage.removeItem(k));
+  olvidarSolicitud(true);
 }
 
 async function enviarSolicitudCarga(usuario,monto,titular){
