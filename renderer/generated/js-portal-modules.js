@@ -591,7 +591,13 @@ async function cargarSolicitudesPortal(silencioso=false){
         deps.V154P.solicitudesErrorAt = Date.now();
         deps.V154P.solicitudesEsRed = _esErrorDeRed(r.error);
         try{ deps._v154pAvisoDesfasaje(msg); }catch(_e){}
-        if(!silencioso) console.error("[V15.4 PLUS] solicitudes portal", r.error);
+        // SIEMPRE a la consola, aunque la llamada sea silenciosa. `silencioso` existe para no
+        // molestar al operador con carteles, no para tapar el diagnóstico: el reloj de 60 s de la
+        // bandeja llama en silencio, así que TODOS los fallos del refresco automático quedaban sin
+        // registrar. Cuando OFI-SAN reportó que no le entraban cargas, en su consola no había ni
+        // una línea que dijera qué error era — había que adivinar entre red y servidor (29/9).
+        console.error("[solicitudes portal] fallo el refresco",
+          { silencioso: silencioso, esRed: _esErrorDeRed(r.error), error: r.error });
         _programarReintento();
         return r;
       }
