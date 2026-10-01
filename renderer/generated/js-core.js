@@ -10608,11 +10608,16 @@ async function avisarJugadorEnChat(usuario, texto, opts){
     } else if(typeof window.nodoEnviarMensajePortal === 'function'){
       const r = await window.nodoEnviarMensajePortal(usuario, texto, false);
       if(r && r.ok) return r;
-      if(r && r.error === 'sin-ticket') return { ok:false, error:'sin-ticket' };   // sin chat abierto: ya salió el push
+      // OJO: acá NO salió ningún push. nodoEnviarMensajePortal devuelve 'sin-ticket' ANTES de
+      // mandarlo, así que con crearSiNoHay:false y sin conversación abierta el jugador no recibe
+      // nada por este camino — se entera por la pantalla de Estado del portal, o no se entera.
+      // El comentario anterior decía lo contrario y por eso nadie miraba este caso.
+      if(r && r.error === 'sin-ticket') return { ok:false, error:'sin-ticket' };
       console.warn('[aviso] el chat del portal falló:', r && r.error);
     }
   }catch(e){ console.warn('[aviso] chat vivo falló:', e); }
-  try{ return await notificarUsuarioEnChat(usuario, texto); }catch(_e){ return null; }
+  // El portal ya se intentó arriba: acá se va derecho al camino viejo, sin repetirlo.
+  try{ return await notificarUsuarioEnChat(usuario, texto, true); }catch(_e){ return null; }
 }
 window.avisarJugadorEnChat = avisarJugadorEnChat;
 async function _avisarClaveAlJugador(usuario, texto){
@@ -10620,8 +10625,29 @@ async function _avisarClaveAlJugador(usuario, texto){
 }
 window._avisarClaveAlJugador = _avisarClaveAlJugador;
 
-async function notificarUsuarioEnChat(usuarioNombre, mensaje){
+// Diecinueve lugares del panel le avisan algo al jugador llamando acá, y TODOS escribían
+// directamente en chat_sesiones / chat_mensajes — la generación de chat que el portal ya no lee.
+// El mensaje quedaba guardado en una tabla que nadie mira: ni le llegaba ni se veía el error.
+// Se encontró con "marcar como ya cargada" (Juan, 30/9), pero le pasaba a los diecinueve.
+//
+// En vez de cambiar diecinueve llamadas, el ruteo vive acá: primero se intenta el hilo que el
+// portal SÍ lee (y que además dispara el push), y recién si eso no se puede se escribe donde se
+// escribía antes. No se abre conversación nueva: eso llenaría la bandeja con un hilo por cada
+// aviso automático, que es lo que D-92 vino evitando. Para los avisos que el operador manda a
+// propósito está avisarJugadorEnChat(..., {crearSiNoHay:true}).
+//
+// _sinPortal lo usa avisarJugadorEnChat, que ya probó el portal antes de caer acá: sin esto se
+// intentaría dos veces.
+async function notificarUsuarioEnChat(usuarioNombre, mensaje, _sinPortal){
   if(!usuarioNombre || !mensaje) return;
+
+  if(!_sinPortal && typeof window.nodoEnviarMensajePortal === 'function'){
+    try{
+      const r = await window.nodoEnviarMensajePortal(usuarioNombre, mensaje, false);
+      if(r && r.ok) return r;
+      if(!(r && r.error === 'sin-ticket')) console.warn('[aviso] el hilo del portal fallo:', r && r.error);
+    }catch(e){ console.warn('[aviso] el hilo del portal fallo:', e); }
+  }
 
   // 1° busca en el caché local de chats (poblado por cargarChats vía RPC del portal)
   let chatId = null;

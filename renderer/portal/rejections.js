@@ -62,7 +62,13 @@ const api = {};
         });
         deps.window.marcarTitularRechazado(s.USUARIO, titular, r.motivo);
         s.ESTADO='RECHAZADA';
-        try{ if(typeof deps.notificarUsuarioEnChat==='function') await deps.notificarUsuarioEnChat(s.USUARIO, '❌ '+r.texto, id, 'RECHAZADA'); }catch(_e){}
+        // Iba a notificarUsuarioEnChat, que escribe en la generación de chat que el portal ya no
+        // lee: el mensaje moría ahí. Además se llamaba con cuatro argumentos a una función de dos,
+        // así que el id y 'RECHAZADA' nunca se usaron — señal de que nadie lo había revisado.
+        // crearSiNoHay en FALSE a propósito: esto es automático y abrir un hilo por cada rechazo
+        // llenaría la bandeja (D-92). Si ya tiene conversación, le llega ahí y con push; si no, el
+        // motivo igual lo ve en la pantalla de Estado del portal, que es donde lo va a buscar.
+        try{ await deps.window.avisarJugadorEnChat(s.USUARIO, '❌ '+r.texto, { crearSiNoHay:false }); }catch(_e){}
         // Detalle completo: por qué se rechazó, qué había declarado y qué se le respondió. Sin esto
         // el historial dice "RECHAZADA" y nadie puede reconstruir el caso cuando el cliente vuelve.
         try{ await deps.registrarEnHistorial({ usuario:s.USUARIO, tipo:String(s.TIPO||'CARGA'), monto:Number(s.MONTO_DECLARADO||0),
@@ -112,13 +118,32 @@ const api = {};
             obs: obs || null,
             operador: (deps.window.operador && (deps.window.operador.usuario||deps.window.operador.nombre)) || 'panel'
           });
+          // El aviso iba por notificarUsuarioEnChat, que escribe en chat_sesiones / chat_mensajes —
+          // la generación de chat que el portal YA NO LEE. El mensaje se guardaba y moría ahí: ni
+          // le llegaba al jugador ni quedaba a la vista de nadie. Era el mismo agujero del cambio
+          // de clave (12/09), que se tapó sólo para la clave y quedó anotado en D-92.
+          //
+          // avisarJugadorEnChat sí va al hilo que el portal lee, y manda el push. crearSiNoHay en
+          // true porque esto es un mensaje que el operador decidió mandar: si el jugador no tiene
+          // conversación abierta, se le abre. (Lo que D-92 evitaba era hacer esto en los avisos
+          // AUTOMÁTICOS, que llenarían la bandeja; éste lo dispara una persona a propósito.)
+          let avisado = null;
           if(usuario){
-            await deps.notificarUsuarioEnChat(usuario,
-              "✅ Tu carga" + (monto ? (" de $" + monto.toLocaleString("es-AR")) : "") + " ya está acreditada."
-              + (obs ? ("\n📝 " + obs) : "")
-              + "\nRevisá tu saldo. Si no la ves, escribinos por acá.");
+            try{
+              avisado = await deps.window.avisarJugadorEnChat(usuario,
+                "✅ Tu carga" + (monto ? (" de $" + monto.toLocaleString("es-AR")) : "") + " ya está acreditada."
+                + (obs ? ("\n📝 " + obs) : "")
+                + "\nRevisá tu saldo. Si no la ves, escribinos por acá.",
+                { crearSiNoHay: true });
+            }catch(e){ avisado = { ok:false, error: e.message || String(e) }; }
           }
-          deps.toast("✔ #"+id+" cerrada como ya cargada", "green");
+          // Si el aviso no salió, el operador tiene que enterarse ACÁ. Antes se lo tragaba un catch
+          // vacío y la solicitud se cerraba igual, con el jugador sin saber nada.
+          if(usuario && !(avisado && avisado.ok)){
+            deps.toast("#"+id+" se cerró, pero NO se le pudo avisar a "+usuario+". Escribile por el chat.", "yellow");
+          }else{
+            deps.toast("✔ #"+id+" cerrada como ya cargada", "green");
+          }
         }catch(e){
           deps.toast("No se pudo cerrar: "+(e.message||e), "red");
         }

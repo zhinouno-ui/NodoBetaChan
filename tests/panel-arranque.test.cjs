@@ -3326,3 +3326,57 @@ test('parciales · un historial a medias NO se canta como descuadre', () => {
   assert.equal(faltaUno.histCompleto, true, 'llega hasta el primer pago: es comparable');
   assert.equal(faltaUno.discrepa, true, 'falta un pago de verdad: eso SÍ hay que decirlo');
 });
+
+// ── El aviso al jugador tiene que ir donde el portal lo lee ───────────────────
+// Diecinueve lugares del panel avisan al jugador por notificarUsuarioEnChat, y todos escribian
+// en chat_sesiones / chat_mensajes: la generacion de chat que el portal YA NO LEE. El mensaje se
+// guardaba en una tabla que nadie mira. Se encontro con "marcar como ya cargada" (Juan, 30/9),
+// pero les pasaba a los diecinueve. El ruteo vive ahora dentro de notificarUsuarioEnChat.
+
+// El stub va DESPUES de arrancarPanel: chat-hilos.js define window.nodoEnviarMensajePortal al
+// cargar, asi que ponerlo antes no sirve -- el bundle lo pisa.
+function panelConAviso(respuestaPortal) {
+  const alPortal = [];
+  const rpcs = [];
+  const sb = arrancarPanel({ rpc: async (fn) => { rpcs.push(fn); return { data: null, error: null }; } });
+  sb.nodoEnviarMensajePortal = async (usuario, texto) => {
+    alPortal.push({ usuario, texto });
+    return respuestaPortal;
+  };
+  return { sb, alPortal, rpcs };
+}
+
+test('el aviso va primero al hilo que el portal lee', async () => {
+  const { sb, alPortal, rpcs } = panelConAviso({ ok: true });
+  const r = await sb.notificarUsuarioEnChat('milo30kc', 'Tu carga ya esta acreditada.');
+  assert.equal(alPortal.length, 1, 'tiene que intentar el portal');
+  assert.equal(alPortal[0].usuario, 'milo30kc');
+  assert.match(alPortal[0].texto, /acreditada/);
+  assert.ok(r && r.ok, 'y si el portal lo tomo, se termina ahi');
+  assert.equal(rpcs.includes('panel_nodo_send_chat_message'), false,
+    'no se escribe tambien en el chat viejo: quedaria duplicado');
+});
+
+test('si el jugador no tiene conversacion abierta, cae al camino viejo', async () => {
+  // No se le abre un hilo nuevo a proposito: un aviso automatico por cada carga llenaria la
+  // bandeja de conversaciones que nadie pidio (D-92).
+  const { sb, alPortal, rpcs } = panelConAviso({ ok: false, error: 'sin-ticket' });
+  await sb.notificarUsuarioEnChat('milo30kc', 'Tu carga ya esta acreditada.');
+  assert.equal(alPortal.length, 1, 'igual se intenta');
+  assert.ok(rpcs.length > 0, 'y despues sigue por donde iba antes, no se pierde');
+});
+
+test('avisarJugadorEnChat no intenta el portal dos veces', async () => {
+  // Ya lo probo el mismo; si al caer al camino viejo se volviera a intentar, el jugador podria
+  // recibir el mismo mensaje repetido.
+  const { sb, alPortal } = panelConAviso({ ok: false, error: 'sin-ticket' });
+  await sb.avisarJugadorEnChat('milo30kc', 'Tu carga ya esta acreditada.', { crearSiNoHay: false });
+  assert.equal(alPortal.length, 1, 'un solo intento al portal, no dos');
+});
+
+test('sin usuario o sin texto no se manda nada', async () => {
+  const { sb, alPortal } = panelConAviso({ ok: true });
+  await sb.notificarUsuarioEnChat('', 'algo');
+  await sb.notificarUsuarioEnChat('milo30kc', '');
+  assert.equal(alPortal.length, 0);
+});
