@@ -550,6 +550,24 @@ function _esErrorDeRed(e){
   const m = String((e && (e.message || e)) || '').toLowerCase();
   return /fetch failed|failed to fetch|network|timeout|econn|socket|load failed|networkerror/.test(m);
 }
+// Cada cambio de estado se traía la bandeja ENTERA otra vez, y encima la esperaba. En P4 la
+// respuesta pesa 427 kB —cuatro veces la de P3, P6, P7 o P9— y una carga hace cuatro o cinco
+// cambios de estado. Con 117 cargas en dos horas y media son 195 MB, unos 624 MB en un turno de
+// ocho, bajados por una conexión de oficina para repintar una lista que casi nunca cambió.
+// Es la explicación más probable de por qué a esa PC se le corta la bandeja y a las otras no.
+//
+// Ahora se refresca UNA vez cuando la ráfaga termina, y sin esperarla: el resultado de la
+// operación no depende de que la lista esté repintada. Donde sí hace falta tenerla fresca, el
+// llamador la pide él mismo (operation-execution.js ya lo hace en los puntos que importan).
+let _refrescoPedido = null;
+function refrescarBandejaPronto(){
+  if(_refrescoPedido) return;
+  _refrescoPedido = deps.setTimeout(function(){
+    _refrescoPedido = null;
+    try{ cargarSolicitudesPortal(true); }catch(_e){}
+  }, 1200);
+}
+
 let _reintentoTimer = null, _reintentoNro = 0;
 function _cancelarReintento(){
   if(_reintentoTimer){
@@ -795,7 +813,7 @@ async function cargarSolicitudesPortal(silencioso=false){
     let r, ultimoErr;
     for(let intento = 1; intento <= 3; intento++){
       r = await deps.rpc("panel_v15_5_actualizar_solicitud_portal", payload);
-      if(!r?.error){ await cargarSolicitudesPortal(true); return r; }
+      if(!r?.error){ refrescarBandejaPronto(); return r; }
       ultimoErr = r.error;
       const msg = String(r.error.message || r.error || '').toLowerCase();
       const esRed = /fetch failed|failed to fetch|network|timeout|econn|socket|load failed|networkerror/.test(msg);

@@ -19,12 +19,13 @@ function elemento(){
            innerHTML:'', textContent:'', parentNode:{ insertBefore:noop } };
 }
 
-// setTimeout falso: las esperas cortas (el respiro entre intentos) corren solas para que el bucle
-// avance; las largas (el reintento programado) quedan en cola para dispararlas a mano.
+// setTimeout falso: las esperas muy cortas (el respiro de 500/1000 ms entre intentos) corren solas
+// para que el bucle avance; de 1100 ms para arriba quedan en cola, para poder dispararlas a mano y
+// medir si algo se agendo o no — el rebote del refresco (1200 ms) y el reintento (8 s+).
 function relojFalso(){
   const cola = [];
   function set(fn, ms){
-    if(ms < 5000){ fn(); return 0; }
+    if(ms < 1100){ fn(); return 0; }
     cola.push({ fn, ms });
     return cola.length;
   }
@@ -207,4 +208,36 @@ test('si la base no contesta, el sostenido NO se suelta', async () => {
   await c.api.cargarSolicitudesPortal(true);
   await new Promise(r => setImmediate(r));
   assert.equal(c.V154P.solicitudes.length, 1, 'se queda hasta poder preguntar');
+});
+
+// ── Dejar de bajar la bandeja entera despues de cada cambio de estado ────────────────────────────
+
+test('cambiar el estado NO se trae la bandeja entera cada vez', async () => {
+  // La respuesta de la bandeja en P4 pesa 427 kB, cuatro veces la de las demas oficinas. Una carga
+  // hace cuatro o cinco cambios de estado y cada uno la volvia a bajar Y la esperaba: 195 MB en
+  // dos horas y media, ~624 MB en un turno. Es lo que le corta la conexion a esa PC (1/10).
+  const c = armar([{ data: [] }]);
+  await c.api.actualizarSolicitudPortal(123, 'EN_PROCESO', {});
+  await c.api.actualizarSolicitudPortal(123, 'ACREDITADA', {});
+  const bandeja = c.llamadas.filter(x => x.nombre === 'panel_v15_5_listar_solicitudes_portal').length;
+  assert.equal(bandeja, 0, 'no se baja la bandeja dentro del cambio de estado');
+  const updates = c.llamadas.filter(x => x.nombre === 'panel_v15_5_actualizar_solicitud_portal').length;
+  assert.equal(updates, 2, 'los cambios de estado si salen, obvio');
+});
+
+test('la rafaga de cambios termina en UN solo refresco, no en cinco', async () => {
+  const c = armar([{ data: [] }]);
+  for(let i = 0; i < 5; i++) await c.api.actualizarSolicitudPortal(123, 'EN_PROCESO', {});
+  assert.equal(c.reloj.pendientes(), 1, 'cinco cambios agendan UN refresco, no cinco');
+  c.reloj.correr();
+  await new Promise(r => setImmediate(r));
+  const bandeja = c.llamadas.filter(x => x.nombre === 'panel_v15_5_listar_solicitudes_portal').length;
+  assert.equal(bandeja, 1, 'y cuando corre, baja la bandeja una sola vez. Hubo: ' + bandeja);
+});
+
+test('el cambio de estado devuelve lo que devolvia antes', async () => {
+  // Nadie puede depender de que la lista este repintada: lo que importa es el resultado del cambio.
+  const c = armar([{ data: [] }]);
+  const r = await c.api.actualizarSolicitudPortal(123, 'ACREDITADA', {});
+  assert.ok(r && !r.error, 'sigue devolviendo el resultado de la RPC');
 });
