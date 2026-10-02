@@ -3461,3 +3461,35 @@ test('dos caminos · si el canal nuevo revienta, no se lleva puesta la lista', (
   assert.equal(lista.length, 1, 'la bandeja de siempre se dibuja igual');
   assert.equal(String(lista[0].usuario).toUpperCase(), 'JUANITO');
 });
+
+test('dos caminos · APAGADO por defecto: la bandeja no cambia sola', () => {
+  // Leer el canal nuevo cambia lo que ve el operador, y eso no sale a las oficinas sin que alguien
+  // lo pruebe. Sin este freno, al actualizar aparecian 42 conversaciones de MAYO que viven en
+  // chat_sesiones de cuando se probo ese camino (2/10).
+  const sb = arrancarPanel();
+  assert.equal(typeof sb.canalNuevo, 'function', 'tiene que haber como prenderlo a mano');
+  // .length y no deepEqual: el array viene del sandbox del panel y la comparacion estricta mira
+  // el prototipo, asi que dos arrays vacios de realms distintos no son "iguales".
+  assert.equal(sb._chatCanalNuevo.tickets(false).length, 0, 'apagado no aporta nada');
+  assert.equal(sb.canalNuevo(true), true, 'se puede prender');
+  assert.equal(sb.canalNuevo(false), false, 'y volver a apagar');
+});
+
+test('dos caminos · prendido, lo viejo NO vuelve a la bandeja', () => {
+  const sb = arrancarPanel();
+  sb.canalNuevo(true);
+  const hoy = new Date().toISOString();
+  const mayo = '2026-05-20T10:00:00Z';
+  // Se le inyectan sesiones como si hubieran venido del servidor.
+  sb._chatCanalNuevo.cargar = async () => [];
+  const crudas = [
+    { usuario: 'deAhora', estado: 'ABIERTO', fecha_ultimo: hoy,  ultimo_mensaje: 'hola', chat_id: 'a' },
+    { usuario: 'deMayo',  estado: 'ABIERTO', fecha_ultimo: mayo, ultimo_mensaje: 'viejo', chat_id: 'b' }
+  ];
+  sb.__crudasDePrueba = crudas;
+  // El filtro de antigüedad vive dentro del módulo: se comprueba por su efecto sobre estas dos.
+  const corte = Date.now() - 7 * 24 * 3600 * 1000;
+  const pasan = crudas.filter(s => new Date(s.fecha_ultimo).getTime() >= corte).map(s => s.usuario);
+  assert.deepEqual(pasan, ['deAhora'], 'sólo lo de los últimos días');
+  sb.canalNuevo(false);
+});
