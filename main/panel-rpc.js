@@ -49,6 +49,13 @@ function registerPanelIpc({ ipcMain, env = process.env, fetch = globalThis.fetch
     'panel_v15_5_listar_solicitudes_portal',
     'panel_v15_5_actualizar_solicitud_portal',
     'landing_retiro_registrar_parcial',
+    // Sólo lectura: devuelve cómo va un retiro por partes. Faltaba, y el panel la pide para saber
+    // si un retiro que dejó de venir en la lista ya se saldó o lo cerraron. Como no estaba, main
+    // devolvía RPC_NO_PERMITIDA, el panel se lo comía en un catch vacío y el retiro se conservaba
+    // local PARA SIEMPRE: en P1 seguían dando vueltas cuatro de agosto y septiembre, uno con $1
+    // pendiente. O sea que el arreglo de D-109 —"antes de sostenerla se le pregunta a la base cómo
+    // está"— nunca llegó a preguntar nada en producción (2/10).
+    'landing_retiro_progreso',
     'panel_core_get_chat_sesiones_json',
     'panel_v154_plus_listar_chat_sesiones',
     'panel_core_get_chat_mensajes_json',
