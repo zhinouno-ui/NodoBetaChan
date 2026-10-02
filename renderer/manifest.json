@@ -62,6 +62,7 @@
         "core/cotejo-alta.js",
         "core/caja-negra-panel.js",
         "core/latencia-panel.js",
+        "core/caminos-chat.js",
         "core/discord-presencia.js",
         "core/agentes-cola-y-sesion.js",
         "core/automatizaciones.js",
