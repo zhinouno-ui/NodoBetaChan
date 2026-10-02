@@ -557,6 +557,12 @@ const api = {};
 // la bandeja, que es una eternidad con gente esperando que le carguen.
 function _esErrorDeRed(e){
   const m = String((e && (e.message || e)) || '').toLowerCase();
+  // "canceling statement due to statement timeout" NO es la red: es el servidor cortando una
+  // consulta que tardó más de lo que tiene permitido (el panel entra como anon, con 3 s de tope).
+  // Contenía la palabra "timeout" y caía acá, así que el cartel decía "se cortó la conexión" y se
+  // reintentaba tres veces seguidas contra una base que ya estaba ahogada — empujando para el lado
+  // equivocado. Se vio en la consola de Sánchez el 2/10 con el error desplegado.
+  if(/statement timeout|canceling statement/.test(m)) return false;
   return /fetch failed|failed to fetch|network|timeout|econn|socket|load failed|networkerror/.test(m);
 }
 // Cada cambio de estado se traía la bandeja ENTERA otra vez, y encima la esperaba. En P4 la

@@ -241,3 +241,16 @@ test('el cambio de estado devuelve lo que devolvia antes', async () => {
   const r = await c.api.actualizarSolicitudPortal(123, 'ACREDITADA', {});
   assert.ok(r && !r.error, 'sigue devolviendo el resultado de la RPC');
 });
+
+test('un corte por tope de tiempo del servidor NO se trata como red', async () => {
+  // "canceling statement due to statement timeout" contiene la palabra "timeout" y caia en la
+  // deteccion de red: el cartel decia "se corto la conexion" y se reintentaba tres veces seguidas
+  // contra una base que ya estaba ahogada. El panel entra como anon, con 3 s de tope. Visto en la
+  // consola de Sanchez el 2/10 con el error desplegado.
+  const TOPE = { error: { message: 'canceling statement due to statement timeout' } };
+  const c = armar([TOPE, TOPE, TOPE]);
+  await c.api.cargarSolicitudesPortal(true);
+  assert.equal(c.llamadas.length, 1, 'un solo intento: insistir al toque lo empeora');
+  assert.equal(c.V154P.solicitudesEsRed, false, 'y no se le dice al operador que fue la conexion');
+  assert.equal(c.reloj.pendientes(), 1, 'igual se vuelve a intentar solo, mas tarde');
+});
