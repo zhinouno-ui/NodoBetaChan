@@ -73,6 +73,12 @@
       intervals.push(timers.setInterval(() => {
         if(hasOpenChat()) reads.request('conversation');
       }, 3500));
+      // La lista de chats era la única sin reloj propio: se repintaba sólo cuando llegaba un aviso
+      // por el canal `nodo:chat`. Si ese aviso no salía, la bandeja de consultas quedaba con el
+      // orden y los contadores de hacía rato aunque los datos ya estuvieran en memoria (Juan, 2/10).
+      // Repintar es barato: sale de lo que ya se trajo, no pide nada al servidor. Lo que SÍ depende
+      // del servidor —que aparezca un mensaje nuevo— sigue atado al reloj de `requests`.
+      intervals.push(timers.setInterval(() => reads.request('chats'), 20000));
     }
     function stop() {
       if(stopped) return;

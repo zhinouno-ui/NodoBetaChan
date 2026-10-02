@@ -64,7 +64,9 @@ test('canales filtran oficinas y comparten la misma lectura de solicitudes', asy
 test('reemplazo y cierre eliminan canales/timers e ignoran eventos de suscripciones antiguas', async () => {
   const { timers, channels, removed, reads, service } = setup();
   service.startPolling();
-  assert.equal(timers.counts().intervals, 3, 'iniciar dos veces no duplica polls');
+  // Cuatro relojes: solicitudes, billeteras, la conversación abierta y la lista de chats. La de
+  // chats se sumó el 2/10 — era la única que dependía de que llegara un aviso para repintarse.
+  assert.equal(timers.counts().intervals, 4, 'iniciar dos veces no duplica polls');
   service.subscribeRequests();
   assert.equal(removed.length, 1);
   channels[0].fn({ eventType: 'UPDATE' }); timers.flush(); await settle();
