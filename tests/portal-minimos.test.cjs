@@ -26,7 +26,10 @@ function sacar(nombre){
     else if(PORTAL[k] === '}'){ nivel--; if(nivel === 0){ fin = k + 1; break; } }
   }
   assert.notEqual(fin, -1, 'no cierra: ' + nombre);
-  return PORTAL.slice(PORTAL.lastIndexOf('function', i), fin);
+  // Desde la firma misma. Buscar hacia atras la palabra "function" se traia la funcion ANTERIOR
+  // cuando la firma empieza con "async", y el pedazo extraido compilaba igual: la prueba parecia
+  // andar midiendo otra cosa.
+  return PORTAL.slice(i, fin);
 }
 
 // La linea de los minimos de fabrica tambien se saca del Portal: si alguien cambia el 1000 o el

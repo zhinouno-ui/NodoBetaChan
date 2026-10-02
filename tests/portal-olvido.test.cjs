@@ -34,7 +34,10 @@ function sacar(nombre){
     else if(PORTAL[k] === '}'){ n--; if(!n){ fin = k + 1; break; } }
   }
   assert.notEqual(fin, -1, 'no cierra: ' + nombre);
-  return PORTAL.slice(PORTAL.lastIndexOf('function', i), fin);
+  // Desde la firma misma. Buscar hacia atras la palabra "function" se traia la funcion ANTERIOR
+  // cuando la firma empieza con "async", y el pedazo extraido compilaba igual: la prueba parecia
+  // andar midiendo otra cosa.
+  return PORTAL.slice(i, fin);
 }
 function sacarConst(nombre){
   const re = new RegExp('const ' + nombre + '\\s*=\\s*\\[[\\s\\S]*?\\];');

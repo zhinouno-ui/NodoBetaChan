@@ -2480,6 +2480,29 @@ async function enviarMensajeSoporte(txt,imagenUrl=null){
       const d=normalize(res.data)||res.data||{};
       if(d.chat_id){state.chatId=String(d.chat_id);localStorage.setItem("bet300_chat_id",state.chatId);}
       if(d.chat_token){state.chatToken=String(d.chat_token);localStorage.setItem("bet300_chat_token",state.chatToken);}
+
+      // landing_portal_v16_crear_solicitud NO devuelve chat_id ni chat_token — nunca los devolvió.
+      // Como el portal los tomaba sólo de ahí, state.chatId quedaba vacío PARA SIEMPRE y entonces
+      // cada mensaje que escribía el jugador caía otra vez acá y abría OTRA solicitud. Un solo
+      // reclamo de un jugador dejó 25 solicitudes el 1/10 ("Borrame", "Jo", "Ko", "No"...), y así
+      // se juntaron 3.925 consultas abiertas en la red, la más vieja del 21 de julio. De ahí salen
+      // la bandeja de 427 kB, los chats contestados que reaparecen y el icono titilando (2/10).
+      //
+      // Ahora se pide el chat UNA vez, atado a ESTA solicitud. A partir del segundo mensaje entra
+      // por landing_enviar_mensaje_v2, que lo suma al chat_thread de la misma solicitud — que es
+      // justo lo que el panel lee. Una conversación, una solicitud.
+      if(!state.chatId || !state.chatToken){
+        const sid = Number(d.solicitud_id || d.id || 0) || null;
+        try{
+          const ch = await rpc("landing_crear_chat_v2_blindado", {
+            p_usuario: state.usuario, p_telefono: state.telefono || "",
+            p_public_code: state.publicCode, p_solicitud_id: sid
+          });
+          const c = (ch && !ch.error) ? (normalize(ch.data) || ch.data || {}) : {};
+          if(c.chat_id){ state.chatId=String(c.chat_id); try{ localStorage.setItem("bet300_chat_id",state.chatId); }catch(_e){} }
+          if(c.chat_token){ state.chatToken=String(c.chat_token); try{ localStorage.setItem("bet300_chat_token",state.chatToken); }catch(_e){} }
+        }catch(e){ console.warn("[BET300] no se pudo abrir el chat de la consulta", e); }
+      }
     }
   }
 
