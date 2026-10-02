@@ -28,12 +28,30 @@
     const msgs=userMsgs(t);
     return msgs.length ? (msgs[msgs.length-1].fecha||"") : "";
   }
+  // La respuesta del operador tambien cuenta como "leido". La marca de leido vive en el
+  // localStorage de CADA PC: una consulta atendida en otro turno, en otra PC o antes de
+  // reinstalar no tiene marca aca, asi que `rd` quedaba en 1970 y TODA la conversacion volvia a
+  // contar como sin leer. Y como esas consultas ademas no se cierran nunca (eran 3.925 al 2/10),
+  // el icono de chats sin leer titilaba para siempre por mensajes ya contestados (Juan, 2/10).
+  //
+  // Si lo ultimo que se dijo en el hilo lo dijo el operador, no hay nada sin leer: alguien la
+  // atendio. Es el mismo criterio que usa el auto-cierre — manda el hilo, no la marca.
+  function ultimaRespuestaOperador(t){
+    let cuando = 0;
+    for(const m of (t?.thread||[])){
+      if(U(m.origen) !== "OPERADOR") continue;
+      const x = toDate(m.fecha).getTime();
+      if(x > cuando) cuando = x;
+    }
+    return cuando;
+  }
   function unreadForTicket(t){
     if(!t || !t.accepted) return 0;
     const marks=getJson(readKey(),{});
     const readAt=marks[chatKey(t)]||"";
     const rd=toDate(readAt);
-    return userMsgs(t).filter(m=>toDate(m.fecha)>rd).length;
+    const corte = Math.max(rd.getTime(), ultimaRespuestaOperador(t));
+    return userMsgs(t).filter(m=>toDate(m.fecha).getTime()>corte).length;
   }
   function allTickets(){
     try{

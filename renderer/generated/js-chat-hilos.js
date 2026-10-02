@@ -709,13 +709,35 @@
     _lastAutoClose = ahora;
 
     const limite = AUTOCLOSE_HORAS * 60 * 60 * 1000;
+    // Antes esto miraba `chat_estado === "RESPONDIDO_PANEL"`, que lo escribe UNA sola de las
+    // formas de contestar. Cuando alguien manda varias consultas, el panel responde la principal
+    // y marca las otras ABSORBIDO_PANEL; y las que se abren quedan en ABIERTO_PANEL. Ninguna de
+    // esas dos se cerraba nunca, aunque tuvieran la respuesta escrita en el hilo.
+    //
+    // Al 2/10 eran 3.925 consultas abiertas en la red y el auto-cierre veía 163 — el 4%. Las
+    // demás volvían a la bandeja para siempre: "ya le contestaron al usuario pero vuelve a
+    // aparecer porque se refresca". P2 arrastraba desde el 21 de julio.
+    //
+    // Ahora decide por el HECHO y no por la marca: si lo último que se dijo en el hilo lo dijo el
+    // operador y pasaron 24 h, la consulta terminó — el jugador no volvió. La marca es una
+    // anotación que tres de cuatro caminos se olvidan de escribir; el hilo es lo que pasó.
+    function ultimoDelHilo(m){
+      const hilo = Array.isArray(m && m.chat_thread) ? m.chat_thread : [];
+      let ultimo = null, cuando = 0;
+      for(const x of hilo){
+        const t = new Date((x && x.fecha) || 0).getTime();
+        if(!isNaN(t) && t > 0 && t >= cuando){ cuando = t; ultimo = x; }
+      }
+      return { ultimo, cuando };
+    }
     const aVencer = soporteRows().filter(s=>{
       const m = metaObj(s);
-      if(U(m.chat_estado||"") !== "RESPONDIDO_PANEL") return false;
-      const ts = m.chat_ultima_respuesta_at;
-      if(!ts) return false;
-      const dt = new Date(ts).getTime();
-      return !isNaN(dt) && (ahora - dt) > limite;
+      if(U(m.chat_estado||"") === "CERRADO") return false;
+      const { ultimo, cuando } = ultimoDelHilo(m);
+      if(!ultimo || U(ultimo.origen||"") !== "OPERADOR") return false;   // sin contestar: no se toca
+      // Si el hilo no trae fecha usable, se cae a la que guardaba el metadata.
+      const ts = cuando || new Date(m.chat_ultima_respuesta_at||0).getTime();
+      return !isNaN(ts) && ts > 0 && (ahora - ts) > limite;
     });
 
     if(!aVencer.length) return;
