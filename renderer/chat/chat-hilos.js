@@ -208,6 +208,27 @@
       return g;
     }).sort((a,b)=>toDate(b.fecha)-toDate(a.fecha));
 
+    // ── El otro camino ────────────────────────────────────────────────────────
+    // Mientras dura el cambio, NODO escucha los DOS: las consultas que llegan como solicitud (lo
+    // de siempre, y lo que sigue mandando la página vieja que el jugador no refrescó) y las que
+    // llegan al canal que corresponde. Ninguna puede quedar sin que alguien la vea por estar del
+    // lado equivocado (Juan, 2/10).
+    //
+    // Sólo SUMA: el que ya está por solicitudes manda, porque trae el hilo completo y el estado
+    // de atención. Del canal nuevo entran únicamente los que no aparecían por ningún lado.
+    try{
+      if(window._chatCanalNuevo){
+        const yaEstan = new Set(list.map(g => U(g.usuario || '')));
+        window._chatCanalNuevo.tickets(incluirCerrados).forEach(function(t){
+          const k = U(t.usuario || '');
+          if(!k || yaEstan.has(k)) return;
+          yaEstan.add(k);
+          list.push(t);
+        });
+        list.sort((a,b)=>toDate(b.fecha)-toDate(a.fecha));
+      }
+    }catch(_e){}
+
     if(incluirCerrados){
       // 1) Persistir los cerrados que SÍ vinieron del server (con su hilo actualizado).
       try{ _chatsCerradosGuardar(list); }catch(_e){}

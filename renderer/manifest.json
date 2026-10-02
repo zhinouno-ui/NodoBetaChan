@@ -179,6 +179,7 @@
       "id": "js:chat-hilos",
       "type": "script",
       "sources": [
+        "chat/chat-canal-nuevo.js",
         "chat/chat-hilos.js"
       ]
     },

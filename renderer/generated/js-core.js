@@ -1202,7 +1202,13 @@ function _panelRealtime(){
     refresh: {
       requests: () => typeof cargarSolicitudesPortal === 'function' ? cargarSolicitudesPortal(true) : cargarSolicitudes(true),
       wallets: () => cargarBilleteras(false),
-      chats: () => typeof cargarChatsPortal === 'function' ? cargarChatsPortal(true) : cargarChats(true),
+      chats: () => {
+        // Durante el cambio de caminos, el reloj de la lista también trae las conversaciones del
+        // canal nuevo. Sin await ni encadenado: si ese lado no contesta, la lista de siempre se
+        // dibuja igual (Juan, 2/10).
+        try{ if(window._chatCanalNuevo) window._chatCanalNuevo.cargar(); }catch(_e){}
+        return typeof cargarChatsPortal === 'function' ? cargarChatsPortal(true) : cargarChats(true);
+      },
       conversation: () => typeof cargarChatPortalActual === 'function' ? cargarChatPortalActual(true) : cargarChatActual(true)
     },
     // Devuelve una firma corta de cómo está la bandeja. Mientras no cambie, no se baja la lista.

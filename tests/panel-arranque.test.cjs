@@ -3380,3 +3380,84 @@ test('sin usuario o sin texto no se manda nada', async () => {
   await sb.notificarUsuarioEnChat('milo30kc', '');
   assert.equal(alPortal.length, 0);
 });
+
+// ── NODO escuchando los DOS caminos del chat ─────────────────────────────────
+// Durante el cambio, la pagina nueva manda al canal que corresponde y la vieja sigue creando
+// solicitudes. Va a haber jugadores que no refresquen el portal -- y si lo hacen va a ser tarde --
+// asi que ninguna consulta puede quedar sin que alguien la vea por estar del lado equivocado.
+// Esto SOLO suma: si el canal nuevo no contesta, la lista queda exactamente como hoy (Juan, 2/10).
+
+function panelConDosCaminos(solicitudes, sesionesDelCanalNuevo) {
+  const sb = arrancarPanel();
+  sb.V154P = sb.V154P || {};
+  sb.V154P.solicitudes = solicitudes;
+  sb.solicitudes = solicitudes;
+  if (sesionesDelCanalNuevo !== null) {
+    sb._chatCanalNuevo = {
+      cargar: async () => sesionesDelCanalNuevo,
+      tickets: () => sesionesDelCanalNuevo,
+      mensajesDe: async () => [],
+      crudas: () => sesionesDelCanalNuevo
+    };
+  } else {
+    delete sb._chatCanalNuevo;
+  }
+  return sb;
+}
+
+function solicitudDeSoporte(id, usuario, mensaje) {
+  return { ID: id, SOLICITUD_ID: id, TIPO: 'SOPORTE', ESTADO: 'EN_REVISION',
+           USUARIO: usuario, MENSAJE_INICIAL: mensaje, mensaje_inicial: mensaje,
+           FECHA_CREACION: '2026-10-02T10:00:00Z', metadata: {}, METADATA: {} };
+}
+function sesionNueva(usuario, ultimo) {
+  return { id: 'CANAL_' + usuario.toUpperCase(), usuario, telefono: '', items: [],
+           fecha: '2026-10-02T11:00:00Z', mensaje: ultimo, solicitudId: '', masterId: null,
+           accepted: true, cerrado: false,
+           thread: [{ origen: 'USUARIO', usuario, mensaje: ultimo, fecha: '2026-10-02T11:00:00Z' }],
+           unread: 1, last: null, _canalNuevo: true, _chatId: 'ch-' + usuario };
+}
+
+test('dos caminos · quien llega SOLO por el canal nuevo igual aparece', () => {
+  const sb = panelConDosCaminos(
+    [solicitudDeSoporte(1, 'porLaVieja', 'hola desde la pagina vieja')],
+    [sesionNueva('porLaNueva', 'hola desde la pagina nueva')]
+  );
+  const lista = sb.ticketsAgrupados();
+  const usuarios = lista.map(t => String(t.usuario).toUpperCase());
+  assert.ok(usuarios.includes('PORLAVIEJA'), 'la de siempre sigue estando');
+  assert.ok(usuarios.includes('PORLANUEVA'), 'y la del canal nuevo tambien, o queda sin atender');
+});
+
+test('dos caminos · el mismo jugador no aparece dos veces', () => {
+  // Durante el cambio el mismo jugador puede estar en los dos lados. Si se duplicara, el operador
+  // contestaria una y la otra quedaria ahi para siempre.
+  const sb = panelConDosCaminos(
+    [solicitudDeSoporte(1, 'juanito', 'mensaje por solicitud')],
+    [sesionNueva('juanito', 'mensaje por el canal nuevo')]
+  );
+  const lista = sb.ticketsAgrupados();
+  const cuantos = lista.filter(t => String(t.usuario).toUpperCase() === 'JUANITO').length;
+  assert.equal(cuantos, 1, 'uno solo, no dos');
+  const suyo = lista.find(t => String(t.usuario).toUpperCase() === 'JUANITO');
+  assert.ok(!suyo._canalNuevo, 'manda el de solicitudes: trae el hilo completo y el estado');
+});
+
+test('dos caminos · si el canal nuevo no esta, la lista queda igual que siempre', () => {
+  const con = panelConDosCaminos([solicitudDeSoporte(1, 'juanito', 'hola')], []);
+  const sin = panelConDosCaminos([solicitudDeSoporte(1, 'juanito', 'hola')], null);
+  // JSON y no deepEqual: cada arrancarPanel() es su propio sandbox, y los arrays de dos sandboxes
+  // distintos no son "iguales" para la comparacion estricta aunque tengan lo mismo adentro.
+  assert.equal(
+    JSON.stringify(con.ticketsAgrupados().map(t => String(t.usuario))),
+    JSON.stringify(sin.ticketsAgrupados().map(t => String(t.usuario))),
+    'sin canal nuevo o con el canal vacio, lo mismo');
+});
+
+test('dos caminos · si el canal nuevo revienta, no se lleva puesta la lista', () => {
+  const sb = panelConDosCaminos([solicitudDeSoporte(1, 'juanito', 'hola')], []);
+  sb._chatCanalNuevo = { tickets: () => { throw new Error('se cayo'); } };
+  const lista = sb.ticketsAgrupados();
+  assert.equal(lista.length, 1, 'la bandeja de siempre se dibuja igual');
+  assert.equal(String(lista[0].usuario).toUpperCase(), 'JUANITO');
+});
