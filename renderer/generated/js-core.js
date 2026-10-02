@@ -5596,12 +5596,34 @@ async function cargarHistorial(){
 // Operaciones de agentes importadas por CSV (admi) → solo alimentan el CRM, no el historial operativo.
 // Agregamos del lado del servidor (cargas/montos/última carga por jugador) para no traer
 // decenas de miles de filas ni sesgar por las más recientes.
-async function cargarOperacionesAgente(){
+// Esto son CUATRO consultas pesadas que alimentan el CRM, y se disparaban en CADA carga de
+// historial, tenga el operador el CRM abierto o no. panel_crm_agente_resumen sola tarda 3,1 s
+// (3.877 filas) y se llamó 5.382 veces el 2/10 entre las quince PCs. Cuando la base está ocupada
+// se pasa del tope de tiempo y PostgREST devuelve 500 — que es el error que aparecía en la consola
+// de Sánchez junto al de la bandeja. Y el panel se lo comía: `error ? (window._agenteResumen||[])`.
+//
+// Se guarda el resultado unos minutos. Quien de verdad lo necesite fresco —abrir Jugadores, por
+// ejemplo— llama con forzar=true y lo vuelve a pedir.
+const _CRM_VIVE_MS = 5 * 60 * 1000;
+let _crmUltima = 0, _crmEnCurso = null;
+async function cargarOperacionesAgente(forzar){
+  const ahora = Date.now();
+  if(!forzar && window._agenteResumen && (ahora - _crmUltima) < _CRM_VIVE_MS) return window._agenteResumen;
+  if(_crmEnCurso) return _crmEnCurso;                      // no apilar cuatro consultas iguales
+  _crmEnCurso = _cargarOperacionesAgenteAhora().finally(function(){
+    _crmEnCurso = null; _crmUltima = Date.now();
+  });
+  return _crmEnCurso;
+}
+async function _cargarOperacionesAgenteAhora(){
   const pcs = (typeof pcAliasesHist==="function" ? pcAliasesHist() : [String(pcOperativa||"")]);
   try{
     const { data, error } = await supabaseClient.rpc("panel_crm_agente_resumen", { p_pc_codigos: pcs, p_secret: window.PANEL_DATA_SECRET });
+    // El error iba derecho a la basura. Es una consulta de 3 segundos y cuando se pasa del tope el
+    // servidor devuelve 500: el CRM se quedaba sin datos y nadie se enteraba.
+    if(error) console.warn('[crm] agente_resumen fallo', error);
     window._agenteResumen = error ? (window._agenteResumen||[]) : (data||[]);
-  }catch(_e){ window._agenteResumen = window._agenteResumen||[]; }
+  }catch(e){ console.warn('[crm] agente_resumen fallo', e); window._agenteResumen = window._agenteResumen||[]; }
   // Flags push/app por jugador → para mostrar 🔔/📱 en el CRM
   try{
     const { data, error } = await supabaseClient.rpc("panel_crm_flags", { p_pc_codigos: pcs, p_secret: window.PANEL_DATA_SECRET });
