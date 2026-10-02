@@ -56,6 +56,10 @@ function registerPanelIpc({ ipcMain, env = process.env, fetch = globalThis.fetch
     // pendiente. O sea que el arreglo de D-109 —"antes de sostenerla se le pregunta a la base cómo
     // está"— nunca llegó a preguntar nada en producción (2/10).
     'landing_retiro_progreso',
+    // Señal barata de la bandeja: 125 bytes y 24 ms, contra 246 kB y 310 ms de traerla entera.
+    // Permite mirar cada 10 s si cambió algo sin bajar la lista: sólo se baja cuando de verdad
+    // hay novedad. Sin esto, refrescar cada 10 s serían ~700 MB por turno (2/10).
+    'panel_bandeja_senal',
     'panel_core_get_chat_sesiones_json',
     'panel_v154_plus_listar_chat_sesiones',
     'panel_core_get_chat_mensajes_json',

@@ -4,11 +4,12 @@
 })(globalThis, function(Refresh){
   'use strict';
 
-  function create({ client, getOffice, getAliases, hasOpenChat, refresh,
+  function create({ client, getOffice, getAliases, hasOpenChat, refresh, senal,
     notify = () => {}, playSound = () => {}, logger = console, timers = globalThis }) {
     const channels = new Map();
     const intervals = [];
     let stopped = false;
+    let ultimaSenal = null;   // la última foto de la bandeja; mientras no cambie, no se baja nada
     const reads = Refresh.create({
       requests: refresh.requests, wallets: refresh.wallets, chats: refresh.chats,
       conversation: () => { if(hasOpenChat()) return refresh.conversation(); }
@@ -76,9 +77,26 @@
       // La lista de chats era la única sin reloj propio: se repintaba sólo cuando llegaba un aviso
       // por el canal `nodo:chat`. Si ese aviso no salía, la bandeja de consultas quedaba con el
       // orden y los contadores de hacía rato aunque los datos ya estuvieran en memoria (Juan, 2/10).
-      // Repintar es barato: sale de lo que ya se trajo, no pide nada al servidor. Lo que SÍ depende
-      // del servidor —que aparezca un mensaje nuevo— sigue atado al reloj de `requests`.
+      // Repintar es barato: sale de lo que ya se trajo, no pide nada al servidor.
       intervals.push(timers.setInterval(() => reads.request('chats'), 20000));
+
+      // Una solicitud tardaba hasta 60 s en aparecer, y aparecía de golpe. Bajar ese reloj a 10 s
+      // costaría ~700 MB por turno en la oficina más cargada —más de lo que acabamos de sacar—
+      // porque se traería la bandeja entera cada vez. Así que cada 10 s se pregunta sólo SI CAMBIÓ
+      // algo (125 bytes, 24 ms) y la lista se baja únicamente cuando hay novedad de verdad.
+      // El reloj de 60 s queda igual, como red de seguridad por si la señal falla (Juan, 2/10).
+      if(typeof senal === 'function'){
+        intervals.push(timers.setInterval(async () => {
+          try{
+            const ahora = await senal();
+            if(!ahora) return;
+            if(ultimaSenal !== null && ahora === ultimaSenal) return;   // nada nuevo: no se baja nada
+            const primera = ultimaSenal === null;
+            ultimaSenal = ahora;
+            if(!primera) reads.request('requests');
+          }catch(_e){}
+        }, 10000));
+      }
     }
     function stop() {
       if(stopped) return;

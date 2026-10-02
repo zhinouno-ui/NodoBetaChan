@@ -78,3 +78,83 @@ test('reemplazo y cierre eliminan canales/timers e ignoran eventos de suscripcio
   assert.deepEqual(reads, { requests: 0, chats: 0, wallets: 0, conversation: 0 });
   assert.deepEqual(timers.counts(), { timeouts: 0, intervals: 0 });
 });
+
+// ── La señal barata de la bandeja ────────────────────────────────────────────
+// Una solicitud tardaba hasta 60 s en aparecer. Bajar ese reloj a 10 s costaria ~700 MB por turno
+// en la oficina mas cargada, porque se traeria la bandeja entera (246 kB) cada vez. Entonces cada
+// 10 s se pregunta SOLO si cambio algo -- panel_bandeja_senal: 125 bytes, 24 ms -- y la lista se
+// baja unicamente cuando hay novedad (Juan, 2/10).
+
+// El reloj de 60 s baja la bandeja igual, y el coordinador junta las dos lecturas si caen en el
+// mismo tick: con todos los intervalos disparando a la vez no se puede ver lo que agrega la senal.
+// Aca se corre SOLO el intervalo de la senal -- que es el ultimo que registra startPolling -- que
+// es como pasa de verdad: la senal va cada 10 s y el reloj grande cada 60.
+function setupConSenal(valores) {
+  const reloj = fakeClock();
+  const deIntervalos = [];
+  const timers = {
+    setTimeout: (fn, ms) => reloj.setTimeout(fn, ms),
+    clearTimeout: (id) => reloj.clearTimeout(id),
+    setInterval: (fn, ms) => { deIntervalos.push({ fn, ms }); return reloj.setInterval(fn, ms); },
+    clearInterval: (id) => reloj.clearInterval(id)
+  };
+  const reads = { requests: 0, chats: 0, wallets: 0, conversation: 0 };
+  let i = 0; const pedidas = [];
+  const client = { channel: () => ({ on(){ return this; }, subscribe(){ return this; } }), removeChannel(){} };
+  const service = Realtime.create({
+    client, timers, getOffice: () => 'P4', getAliases: () => ['P4'], hasOpenChat: () => false,
+    refresh: Object.fromEntries(Object.keys(reads).map(k => [k, () => reads[k]++])),
+    senal: async () => { pedidas.push(1); return valores[Math.min(i++, valores.length - 1)]; }
+  });
+  service.startPolling();
+  const elDeLaSenal = deIntervalos.find(x => x.ms === 10000);
+  return { reloj, reads, service, pedidas, elDeLaSenal };
+}
+
+// Una vuelta de la senal: se dispara su intervalo y se deja correr lo que haya encolado.
+async function vuelta(s){
+  await s.elDeLaSenal.fn();
+  await settle();
+  s.reloj.flush(); await settle();
+}
+
+test('senal · existe su propio reloj, de 10 segundos', () => {
+  const s = setupConSenal(['x']);
+  assert.ok(s.elDeLaSenal, 'startPolling tiene que registrar el reloj de la senal');
+  s.service.stop();
+});
+
+test('senal · la primera lectura solo toma la foto, no baja la bandeja', async () => {
+  const s = setupConSenal(['3|2026-10-02T10:00:00Z|x']);
+  await vuelta(s);
+  assert.equal(s.pedidas.length, 1, 'pregunta la senal: 125 bytes');
+  assert.equal(s.reads.requests, 0, 'y NO se trae las 246 kB: todavia no sabe si cambio');
+  s.service.stop();
+});
+
+test('senal · si no cambia nada, NO se baja la bandeja', async () => {
+  const igual = '3|2026-10-02T10:00:00Z|x';
+  const s = setupConSenal([igual, igual, igual, igual, igual]);
+  for(let v = 0; v < 5; v++) await vuelta(s);
+  assert.equal(s.pedidas.length, 5, 'pregunto las cinco veces');
+  assert.equal(s.reads.requests, 0, 'cinco vueltas sin novedad = cero bajadas de 246 kB');
+  s.service.stop();
+});
+
+test('senal · si cambia, baja la bandeja una vez y despues para', async () => {
+  const s = setupConSenal(['3|A|x', '4|B|y', '4|B|y', '4|B|y']);
+  await vuelta(s);
+  assert.equal(s.reads.requests, 0, 'la foto inicial no baja nada');
+  await vuelta(s);
+  assert.equal(s.reads.requests, 1, 'cambio -> una bajada');
+  await vuelta(s); await vuelta(s);
+  assert.equal(s.reads.requests, 1, 'sigue igual -> no vuelve a bajar');
+  s.service.stop();
+});
+
+test('senal · si la RPC no esta, no rompe nada', async () => {
+  const s = setupConSenal([null, null, null]);
+  for(let v = 0; v < 3; v++) await vuelta(s);
+  assert.equal(s.reads.requests, 0, 'sin senal no inventa lecturas; queda el reloj de 60 s');
+  s.service.stop();
+});

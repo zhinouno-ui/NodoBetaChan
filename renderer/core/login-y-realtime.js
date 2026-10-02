@@ -210,6 +210,19 @@ function _panelRealtime(){
       chats: () => typeof cargarChatsPortal === 'function' ? cargarChatsPortal(true) : cargarChats(true),
       conversation: () => typeof cargarChatPortalActual === 'function' ? cargarChatPortalActual(true) : cargarChatActual(true)
     },
+    // Devuelve una firma corta de cómo está la bandeja. Mientras no cambie, no se baja la lista.
+    // Si la RPC no está (panel viejo contra base vieja) devuelve null y queda sólo el reloj de 60 s.
+    senal: async () => {
+      try{
+        const r = await window.panelAPI.rpc('panel_bandeja_senal', { p_pc_codigo: pcOperativa || '' });
+        if(!r || r.error) return null;
+        let d = r.data;
+        if(typeof d === 'string'){ try{ d = JSON.parse(d); }catch(_e){ return null; } }
+        if(Array.isArray(d)) d = d[0];
+        if(!d || d.ok !== true) return null;
+        return String(d.abiertas) + '|' + String(d.ultima || '') + '|' + String(d.ultima_alta || '');
+      }catch(_e){ return null; }
+    },
     notify: message => toast(message),
     playSound: type => sonido(type)
   });
