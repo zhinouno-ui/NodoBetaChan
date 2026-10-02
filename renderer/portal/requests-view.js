@@ -235,18 +235,16 @@ const api = {};
 // Cartel de "esto está viejo". Vive FUERA de la tabla porque la tabla se repinta entera
 // y se lo llevaría puesto. Se define acá arriba porque la primera carga puede fallar
 // antes de que el render haya corrido una sola vez — y ese es justo el caso que importa.
+// El cartel ya no se dibuja: va a la CONSOLA. Decía la verdad — sólo aparece cuando la consulta
+// falla de verdad — pero el operador se pasaba el turno mirándolo y apretando el botón por algo
+// que no podía resolver. Lo que hace falta es que el dato esté donde yo lo pueda ir a buscar sin
+// preguntarle a nadie (Juan, 2/10). `verDesfasaje()` en la consola de cualquier PC lo devuelve.
+//
+// Lo que SÍ queda en pantalla es que la caja vacía no mienta: si no se pudo consultar, no puede
+// decir "no hay solicitudes". Eso no es un cartel que moleste, es la lista diciendo la verdad.
+const _desfasajes = [];
 api._v154pAvisoDesfasaje = function(motivo){
-  const box = deps.document.getElementById("tablaSolicitudesInicio");
-  if(!box || !box.parentNode) return;
-  let av = deps.document.getElementById("v154pDesfasaje");
-  if(!motivo){ if(av) av.remove(); return; }
-  if(!av){
-    av = deps.document.createElement("div");
-    av.id = "v154pDesfasaje";
-    av.style.cssText = "background:rgba(240,136,62,.12);border:1px solid #f0883e55;"
-      + "border-radius:7px;padding:7px 10px;margin-bottom:8px;font-size:12.5px;color:#f0883e";
-    box.parentNode.insertBefore(av, box);
-  }
+  if(!motivo) return;
   const desde = (deps.window.V154P && (deps.V154P.solicitudesOkAt || deps.V154P.solicitudesLastRenderAt)) || 0;
   const min = desde ? Math.round((Date.now()-desde)/60000) : null;
   // Escrito para el que está atendiendo, no para nosotros. Decía "no la tomes como la foto de
@@ -255,11 +253,22 @@ api._v154pAvisoDesfasaje = function(motivo){
   //   qué le falta (puede haber solicitudes que no ve) · desde cuándo · que no tiene que hacer nada.
   // Sin lo último apretaba el botón una y otra vez creyendo que era la única forma de destrabarlo.
   const esRed = !!(deps.window.V154P && deps.V154P.solicitudesEsRed);
-  av.innerHTML = (esRed ? "⚠ <b>Se cortó la conexión</b>" : "⚠ <b>El sistema no responde</b>")
-    + " — puede haber solicitudes que todavía no ves."
-    + (min!=null ? " Lo último que llegó es de hace "+(min<1?"menos de un minuto":(min+" min"))+"." : "")
-    + " Se está reintentando solo."
-    + ' <button class="mini-btn gray" style="margin-left:6px" onclick="cargarSolicitudesPortal(false)">Actualizar ahora</button>';
+  const reg = {
+    t: new Date().toISOString(),
+    pc: String(deps.window.pcOperativa || ''),
+    causa: esRed ? 'conexion' : 'servidor',
+    minutosSinActualizar: min,
+    motivo: String(motivo).slice(0, 300)
+  };
+  _desfasajes.push(reg);
+  if(_desfasajes.length > 200) _desfasajes.shift();
+  console.warn('[bandeja] no se pudo refrescar', reg);
+};
+// Para leerlo desde la consola de cualquier PC, sin molestar a quien esté atendiendo.
+api.verDesfasaje = function(){
+  if(!_desfasajes.length){ console.log('[bandeja] sin fallas registradas'); return []; }
+  console.table(_desfasajes.slice(-50));
+  return _desfasajes.slice();
 };
 
     return { globals: api, renderSolicitudesPortalEnInicio, renderSolicitudesPortalCompleto };
