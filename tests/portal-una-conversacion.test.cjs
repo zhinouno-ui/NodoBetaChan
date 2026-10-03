@@ -77,25 +77,26 @@ function armar({ chatRota = false } = {}){
   return { ctx, llamadas, creadas, enviados };
 }
 
-test('el primer mensaje abre la consulta Y consigue el chat', async () => {
+test('una consulta va al CANAL DE CHAT, no crea solicitud', async () => {
+  // Era lo que faltaba de lo que pidio Juan: redirigir la pagina nueva a los canales que
+  // corresponden. Las cargas y retiros ya iban a solicitudes; el chat seguia creando una.
   const c = armar();
-  await c.ctx.enviarMensajeSoporte('Tengo varios usuarios');
-  assert.equal(c.creadas(), 1, 'una solicitud, la del reclamo');
-  assert.equal(c.ctx.state.chatId, '77', 'y el chat queda abierto');
-  assert.equal(c.ctx.state.chatToken, 'tok-77');
-  const pidio = c.llamadas.find(x => x.nombre === 'landing_chat_abrir_v3');
-  assert.ok(pidio, 'tiene que pedir el chat');
-  assert.equal(pidio.args.p_solicitud_id, 1001, 'atado a ESA solicitud, no suelto');
-  assert.equal(pidio.args.p_usuario, 'scarymovie871');
+  await c.ctx.enviarMensajeSoporte('hola, una consulta');
+  assert.equal(c.creadas(), 0, 'NINGUNA solicitud: la consulta no es una solicitud');
+  assert.equal(c.enviados(), 1, 'el mensaje va al canal de chat');
+  const abrio = c.llamadas.find(x => x.nombre === 'landing_chat_abrir_v3');
+  assert.ok(abrio, 'y antes abre la conversacion');
+  assert.equal(abrio.args.p_solicitud_id, null, 'sin solicitud atada: es un chat, no una solicitud');
 });
 
-test('los mensajes que siguen NO abren otra solicitud', async () => {
-  // Esto es lo que fallaba: trece mensajes seguidos eran trece solicitudes.
+test('cinco mensajes = una conversacion, cero solicitudes', async () => {
   const c = armar();
-  for(const t of ['Tengo varios usuarios','Y se mezclan','Borrame','Jo','Ko','No','El usuario.'])
+  for(const t of ['Tengo varios usuarios','Y se mezclan','Borrame','Jo','Ko'])
     await c.ctx.enviarMensajeSoporte(t);
-  assert.equal(c.creadas(), 1, 'SIETE mensajes -> UNA sola solicitud. Hubo: ' + c.creadas());
-  assert.equal(c.enviados(), 6, 'los otros seis van al hilo de esa consulta');
+  assert.equal(c.creadas(), 0, 'cero solicitudes');
+  assert.equal(c.enviados(), 5, 'los cinco al mismo chat');
+  const aperturas = c.llamadas.filter(x => x.nombre === 'landing_chat_abrir_v3').length;
+  assert.equal(aperturas, 1, 'y UNA sola conversacion, no cinco');
 });
 
 test('el chat se guarda en el telefono: no se pierde al recargar', async () => {
@@ -105,14 +106,12 @@ test('el chat se guarda en el telefono: no se pierde al recargar', async () => {
   assert.equal(c.ctx.localStorage.getItem('bet300_chat_token'), 'tok-77');
 });
 
-test('si no se puede abrir el chat, el mensaje igual sale', async () => {
-  // Ante la duda, que el reclamo llegue. Vuelve a crear solicitud, que es como funcionaba antes:
-  // feo, pero el jugador no queda sin que nadie lo lea.
+test('si el canal de chat no responde, el reclamo NO se pierde', async () => {
+  // Red de seguridad mientras el camino nuevo se termina de probar: cae al de siempre y el
+  // mensaje llega igual. El dia que sobre, se saca.
   const c = armar({ chatRota: true });
   await c.ctx.enviarMensajeSoporte('hola');
-  await c.ctx.enviarMensajeSoporte('alguien ahi?');
-  assert.equal(c.ctx.state.chatId, '', 'no inventó un chat que no existe');
-  assert.equal(c.creadas(), 2, 'cae al camino viejo: el mensaje llega igual');
+  assert.equal(c.creadas(), 1, 'cae al camino viejo, pero llega');
 });
 
 test('no se manda nada vacio', async () => {
@@ -122,18 +121,7 @@ test('no se manda nada vacio', async () => {
   assert.equal(c.llamadas.length, 0);
 });
 
-
 test('cada consulta abre un chat NUEVO, no reutiliza el del jugador', () => {
-  // landing_crear_chat_v2 devolvia la sesion abierta que el jugador ya tenia en esa oficina, con
-  // meses de mensajes adentro: el portal le reprodujo claves de septiembre como si fueran de
-  // ahora. landing_chat_abrir_v3 busca por ESTA consulta, no por usuario (Juan, 3/10).
-  assert.ok(PORTAL.includes('landing_chat_abrir_v3'), 'el portal tiene que usar la nueva');
-  assert.ok(!PORTAL.includes('landing_crear_chat_v2_blindado", {'),
-    'y no la vieja para abrir la consulta');
-});
-
-test('ya no queda el parche de la marca de agua', () => {
-  // Era un parche sobre otro parche. Con el chat abriendose nuevo, no hay historial que filtrar.
-  assert.ok(!PORTAL.includes('bet300_chat_desde'), 'sin la clave de la marca');
-  assert.ok(!PORTAL.includes('_antesDeEngancharse'), 'sin el filtro');
+  assert.ok(PORTAL.includes('landing_chat_abrir_v3'), 'el portal usa la nueva');
+  assert.ok(!PORTAL.includes('landing_crear_chat_v2_blindado", {'), 'y no la vieja');
 });

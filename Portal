@@ -2481,19 +2481,55 @@ async function enviarSolicitudClave(){
   setTimeout(()=>subscribePush(),1200);
 }
 
+// Una consulta va al CANAL DE CHAT. No crea una solicitud.
+//
+// Hasta ahora cada consulta se guardaba como SOLICITUD, y de ahi salia todo: la bandeja llena de
+// chats (256 de 300 filas en P4), 3.925 consultas abiertas en la red con la mas vieja del 21 de
+// julio, y la bandeja de 427 kB que le cortaba la conexion a la oficina mas cargada.
+//
+// El canal que corresponde -- chat_sesiones / chat_mensajes -- existia entero y permitido, y NODO
+// ya lo lee. Esto es lo que faltaba: que el portal escriba ahi (Juan, 3/10).
+//
+// Las CARGAS y los RETIROS siguen yendo a solicitudes, que es donde van.
 async function enviarMensajeSoporte(txt,imagenUrl=null){
   const mensaje=String(txt||"").trim();
   if(!mensaje&&!imagenUrl)return;
-  let res=null;
 
-  if(state.chatId&&state.chatToken){
+  // 1) Si todavia no hay conversacion, se abre UNA. landing_chat_abrir_v3 no reutiliza la del
+  //    jugador: abre una limpia, sin el historial de meses que traia la anterior.
+  if(!state.chatId || !state.chatToken){
+    try{
+      const ch = await rpc("landing_chat_abrir_v3", {
+        p_usuario: state.usuario, p_telefono: state.telefono || "",
+        p_public_code: state.publicCode, p_solicitud_id: null
+      });
+      const c = (ch && !ch.error) ? (normalize(ch.data) || ch.data || {}) : {};
+      if(c && c.ok && c.chat_id){
+        state.chatId=String(c.chat_id);
+        state.chatToken=String(c.chat_token||"");
+        try{
+          localStorage.setItem("bet300_chat_id",state.chatId);
+          localStorage.setItem("bet300_chat_token",state.chatToken);
+        }catch(_e){}
+      }else{
+        console.warn("[BET300] no se pudo abrir la conversacion:", (c&&c.motivo)||(ch&&ch.error));
+      }
+    }catch(e){ console.warn("[BET300] no se pudo abrir la conversacion", e); }
+  }
+
+  // 2) El mensaje va al canal de chat.
+  let res=null;
+  if(state.chatId && state.chatToken){
     res=await rpc("landing_enviar_mensaje_v2",{
       p_chat_id:Number(state.chatId),p_chat_token:state.chatToken,
       p_emisor:state.usuario,p_mensaje:mensaje,p_imagen_url:imagenUrl||""
     });
   }
 
-  if(!res||res.error){
+  // 3) Si el canal no respondio, el reclamo NO se pierde: se manda como siempre. Es la red de
+  //    seguridad mientras el camino nuevo se termina de probar; el dia que sobre, se saca.
+  if(!res || res.error){
+    console.warn("[BET300] el canal de chat no respondio, va por el camino viejo:", res && res.error);
     const bp=billeteraPayloadPlano();
     const payload={usuario:state.usuario,telefono:state.telefono||"",pc_codigo:state.pcCodigo,public_code:state.publicCode,host:location.host,tipo:"SOPORTE",...bp,...(imagenUrl?{imagen_url:imagenUrl}:{}),..._marcaDeTiempo()};
     res=await rpc("landing_portal_v16_crear_solicitud",{
@@ -2501,50 +2537,12 @@ async function enviarMensajeSoporte(txt,imagenUrl=null){
       p_tipo:"SOPORTE",p_monto:0,p_titular:"",p_destino:null,
       p_mensaje:mensaje||(imagenUrl?"📎 Imagen adjunta":""),p_metadata:payload
     });
-    if(!res.error){
-      const d=normalize(res.data)||res.data||{};
-      if(d.chat_id){state.chatId=String(d.chat_id);localStorage.setItem("bet300_chat_id",state.chatId);}
-      if(d.chat_token){state.chatToken=String(d.chat_token);localStorage.setItem("bet300_chat_token",state.chatToken);}
-
-      // landing_portal_v16_crear_solicitud NO devuelve chat_id ni chat_token — nunca los devolvió.
-      // Como el portal los tomaba sólo de ahí, state.chatId quedaba vacío PARA SIEMPRE y entonces
-      // cada mensaje que escribía el jugador caía otra vez acá y abría OTRA solicitud. Un solo
-      // reclamo de un jugador dejó 25 solicitudes el 1/10 ("Borrame", "Jo", "Ko", "No"...), y así
-      // se juntaron 3.925 consultas abiertas en la red, la más vieja del 21 de julio. De ahí salen
-      // la bandeja de 427 kB, los chats contestados que reaparecen y el icono titilando (2/10).
-      //
-      // Ahora se pide el chat UNA vez, atado a ESTA solicitud. A partir del segundo mensaje entra
-      // por landing_enviar_mensaje_v2, que lo suma al chat_thread de la misma solicitud — que es
-      // justo lo que el panel lee. Una conversación, una solicitud.
-      if(!state.chatId || !state.chatToken){
-        const sid = Number(d.solicitud_id || d.id || 0) || null;
-        try{
-          // landing_chat_abrir_v3: abre una conversación NUEVA para ESTA consulta. La anterior
-          // (landing_crear_chat_v2) buscaba una sesión abierta del jugador en esa oficina y
-          // devolvía ESA, con meses de mensajes adentro — por eso el portal le reprodujo claves
-          // de septiembre como si fueran de ahora. Ésta no busca por usuario: busca por esta
-          // consulta, así un reintento no abre dos, y si no hay, abre una limpia (Juan, 3/10).
-          const ch = await rpc("landing_chat_abrir_v3", {
-            p_usuario: state.usuario, p_telefono: state.telefono || "",
-            p_public_code: state.publicCode, p_solicitud_id: sid
-          });
-          const c = (ch && !ch.error) ? (normalize(ch.data) || ch.data || {}) : {};
-          if(c && c.ok && c.chat_id){
-            state.chatId=String(c.chat_id); try{ localStorage.setItem("bet300_chat_id",state.chatId); }catch(_e){}
-            state.chatToken=String(c.chat_token||""); try{ localStorage.setItem("bet300_chat_token",state.chatToken); }catch(_e){}
-          }else if(c && c.motivo){
-            console.warn("[BET300] no se pudo abrir el chat de la consulta:", c.motivo);
-          }
-        }catch(e){ console.warn("[BET300] no se pudo abrir el chat de la consulta", e); }
-      }
-    }
   }
 
   if(!res||res.error){addMsg("No pudimos enviar el mensaje. Intentá en unos segundos.","bot");return;}
   startChatPoll();
   startPortalThreadPoll();
 }
-
 async function sendFreeMessage(){
   _marcarToque();
   const input=$("freeInput"),txt=input.value.trim();
