@@ -1,0 +1,80 @@
+-- Agujeros de seguridad en landing_chat_abrir_v3, encontrados en la revision de la encargada
+-- del 3/10 y cerrados ese mismo dia. La funcion la escribi yo esa manana: el error es mio.
+--
+-- Las definiciones aplicadas estan en la base (migraciones chat_abrir_v3_*). Esto es el registro
+-- de QUE estaba mal y COMO se comprobo, para que no vuelva.
+--
+-- ============================================================================
+-- 1. CRITICO: cualquiera podia sacar el token del chat de otro jugador
+-- ============================================================================
+-- La rama de reuso devolvia chat_id y chat_public_token de CUALQUIER solicitud:
+--
+--     where cs.solicitud_id = p_solicitud_id          -- y nada mas
+--
+-- Los id de solicitud son correlativos (299333, 299334...) y la funcion esta abierta a anon.
+-- Recorriendo numeros desde el enlace publico de cualquier oficina se sacaban tokens; con un
+-- token, landing_leer_chat_v2 entrega la conversacion entera (nombres, CBU, comprobantes) y
+-- landing_enviar_mensaje_v2 permite escribir haciendose pasar por el jugador.
+--
+-- Arreglo: la conversacion tiene que ser del MISMO usuario y de la MISMA oficina.
+--
+-- Comprobado ejecutando el ataque:
+--   victima abre chat        -> solicitud 299333, token 908093c3...
+--   ZZ_atacante pide 299333  -> el_atacante_saco_el_token = false   OK
+--   ZZ_victima pide 299333   -> el_duenio_lo_recupera     = true    (no se rompio el reintento)
+--
+-- ============================================================================
+-- 2. CRITICO (este no estaba en el informe; aparecio probando el 1)
+-- ============================================================================
+-- Despues de la comprobacion fallida se hacia `v_sol := p_solicitud_id` a secas. O sea: el
+-- numero ajeno se rechazaba para LEER pero se seguia usando para CREAR. El chat del atacante
+-- quedaba colgado de la solicitud de la victima, y landing_enviar_mensaje_v2 le copiaba sus
+-- mensajes al hilo de ella -- que es lo que ve el operador.
+--
+-- Arreglo: el numero solo se acepta si la solicitud es de ese usuario y esa oficina.
+--
+-- Comprobado:
+--   ZZ_atacante  (antes del arreglo) -> solicitud_id 299333  = la de la victima
+--   ZZ_atacante2 (despues)           -> solicitud_id 299335  = propia            OK
+--
+-- ============================================================================
+-- 3. ALTO: se podia llenar la bandeja de cualquier oficina
+-- ============================================================================
+-- Cada llamada abria un chat Y una solicitud SOPORTE nueva, a nombre de cualquier usuario.
+-- Arreglo: si ese usuario ya tiene una conversacion abierta en esa oficina de la ultima hora,
+-- se reusa esa.
+--
+-- NO se pide vinculo valido, aunque el informe lo sugiere: el chat de soporte es justamente por
+-- donde el jugador que todavia NO esta validado pide que lo habiliten. Exigirlo lo dejaria sin
+-- forma de pedir ayuda. El tope por usuario+oficina acota el dano sin trabar a nadie.
+--
+-- Queda abierto: alguien que invente nombres de usuario distintos sigue pudiendo crear una
+-- solicitud por nombre. Lo que lo cierra del todo es crear la solicitud puente recien con el
+-- PRIMER MENSAJE, no al abrir el chat. Un chat vacio no llega a la bandeja. Pendiente.
+--
+-- ============================================================================
+-- 4. Tokens predecibles
+-- ============================================================================
+-- Eran md5(random()). random() no es criptografico. Ahora dos gen_random_uuid() concatenados
+-- (64 caracteres). gen_random_bytes NO esta disponible con search_path=public: probado, falla.
+--
+-- ============================================================================
+-- 5. landing_leer_chat_v2: los ::text tapaban todos los indices
+-- ============================================================================
+--     where cs.id::text = p_chat_id::text
+--       and cs.chat_public_token::text = p_chat_token::text
+--
+-- Las dos columnas ya son del tipo que llega. El cast solo servia para obligar a recorrer la
+-- tabla entera -- incluido el indice unico del token, que el informe daba por salvado.
+-- Idem `cm.chat_id::text` contra chat_mensajes.
+--
+-- Hoy son 123 sesiones y 446 mensajes, asi que no se nota. Con el portal nuevo consultando cada
+-- 5 segundos por jugador, si. Sacados los casts de las columnas (el del parametro queda, no
+-- estorba). Comprobado: devuelve los mismos 3 mensajes y sigue rechazando un token falso.
+--
+-- ============================================================================
+-- Filas de prueba que quedaron (el permiso no me deja borrarlas):
+--   delete from chat_mensajes where chat_id in
+--     (select chat_id from chat_sesiones where usuario like 'ZZ_%');
+--   delete from chat_sesiones      where usuario like 'ZZ_%';
+--   delete from landing_solicitudes where usuario like 'ZZ_%';
