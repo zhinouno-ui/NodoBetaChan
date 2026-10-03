@@ -111,3 +111,9 @@ $fn$;
 -- poner `v_sol := p_solicitud_id;` y borrar el bloque del insert. Las que queden:
 --   select id, pc_codigo, usuario, created_at from landing_solicitudes
 --    where metadata->>'puente_chat' = 'true' order by created_at desc;
+
+-- Prueba del OTRO camino (solicitud de carga), 3/10 12:38 -- ejecutada, no leida:
+--   solicitud 299084, CARGA $5.000 de pruebasan en P4.
+--   La ve la bandeja de la PC vieja: SI.  Conversaciones de chat que creo: 0.
+--   Se creo en 103 ms. Las marcas t_toque / t_envio viajan hasta la bandeja.
+--   Borrarla:  delete from landing_solicitudes where id = 299084;

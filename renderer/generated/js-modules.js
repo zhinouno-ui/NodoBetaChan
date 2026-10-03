@@ -860,26 +860,40 @@
     for(const [name, task] of Object.entries(tasks)) {
       entries.set(name, { task, timer: null, running: false, dirty: false });
     }
+    // `request` devuelve una promesa con el RESULTADO de la lectura. Hace falta para saber si la
+    // lectura entró de verdad: cargarSolicitudesPortal no tira excepción cuando falla, devuelve
+    // {error}. Sin esto, el que avisó no tiene forma de distinguir "ya está" de "no bajó nada", y
+    // daba por consumido un aviso que nunca se llegó a leer (Juan, 3/10).
     function request(name) {
       const entry = entries.get(name);
       if(!entry) throw new Error('Lectura desconocida: ' + name);
-      if(disposed) return;
+      if(disposed) return Promise.resolve(undefined);
       entry.dirty = true;
-      if(entry.running || entry.timer !== null) return;
+      if(!entry.waiters) entry.waiters = [];
+      const esperar = new Promise(resolve => entry.waiters.push(resolve));
+      if(entry.running || entry.timer !== null) return esperar;
       entry.timer = timers.setTimeout(() => {
         entry.timer = null;
         if(disposed) return;
         entry.dirty = false;
         entry.running = true;
+        // Los que estaban esperando ANTES de arrancar se resuelven con esta vuelta; los que
+        // lleguen mientras corre quedan para la siguiente.
+        const avisar = entry.waiters;
+        entry.waiters = [];
         Promise.resolve().then(() => {
           if(!disposed) return entry.task();
+        }).then(valor => {
+          avisar.forEach(resolve => { try { resolve(valor); } catch(_) {} });
         }).catch(error => {
           try { onError(error, name); } catch(_) {}
+          avisar.forEach(resolve => { try { resolve(undefined); } catch(_) {} });
         }).finally(() => {
           entry.running = false;
           if(entry.dirty && !disposed) request(name);
         });
       }, delay);
+      return esperar;
     }
     function dispose() {
       disposed = true;
@@ -887,6 +901,11 @@
         if(entry.timer !== null) timers.clearTimeout(entry.timer);
         entry.timer = null;
         entry.dirty = false;
+        // Nadie se queda esperando una promesa que ya no va a resolver nunca.
+        if(entry.waiters) {
+          entry.waiters.forEach(resolve => { try { resolve(undefined); } catch(_) {} });
+          entry.waiters = [];
+        }
       }
     }
     return { request, dispose };
@@ -986,9 +1005,24 @@
             const ahora = await senal();
             if(!ahora) return;
             if(ultimaSenal !== null && ahora === ultimaSenal) return;   // nada nuevo: no se baja nada
-            const primera = ultimaSenal === null;
-            ultimaSenal = ahora;
-            if(!primera) reads.request('requests');
+            if(ultimaSenal === null){ ultimaSenal = ahora; return; }    // primera foto: sólo se guarda
+            // La señal se da por consumida SÓLO si la bandeja entró de verdad.
+            //
+            // Antes se marcaba acá mismo, antes de leer. Si la lectura fallaba —y en P4 la bandeja
+            // pesa 382 kB y tarda entre 187 y 1.104 ms, así que falla— esa novedad quedaba
+            // consumida: en el tick siguiente la señal ya era igual a la guardada, no se pedía
+            // nada, y la solicitud no aparecía hasta que pegara el reintento (8 s, 16 s, 32 s,
+            // 60 s) o el reloj de 60 s. Con dos o tres entrando juntas, se acumulaban todas y
+            // caían de golpe. Es lo que reportó Juan el 3/10.
+            //
+            // Ahora, si no entró, la señal queda sin consumir y se vuelve a pedir en el próximo
+            // tick: la espera máxima pasa a ser 10 s, pase lo que pase con el reintento.
+            // Se retiene SÓLO cuando se sabe que falló. Cualquier otra forma de respuesta se
+            // trata como antes: el objetivo es cambiar el caso del error, no inventar reintentos
+            // donde no los había. `skipped` es "había otra lectura en curso", no "ya la tengo".
+            const r = await reads.request('requests');
+            const fallo = !!(r && (r.error || r.skipped));
+            if(!fallo) ultimaSenal = ahora;
           }catch(_e){}
         }, 10000));
       }

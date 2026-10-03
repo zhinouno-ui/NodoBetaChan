@@ -112,9 +112,15 @@ function setupConSenal(valores) {
 }
 
 // Una vuelta de la senal: se dispara su intervalo y se deja correr lo que haya encolado.
+// El intervalo se ARRANCA y se espera al final: desde que la senal no se da por consumida hasta
+// que la lectura entro, adentro hay un await que solo avanza cuando corre el reloj de aca.
+// Esperarlo antes de hacer flush trababa la prueba contra si misma.
 async function vuelta(s){
-  await s.elDeLaSenal.fn();
+  const enVuelo = s.elDeLaSenal.fn();
   await settle();
+  s.reloj.flush(); await settle();
+  s.reloj.flush(); await settle();
+  await Promise.resolve(enVuelo).catch(() => {});
   s.reloj.flush(); await settle();
 }
 

@@ -91,9 +91,24 @@
             const ahora = await senal();
             if(!ahora) return;
             if(ultimaSenal !== null && ahora === ultimaSenal) return;   // nada nuevo: no se baja nada
-            const primera = ultimaSenal === null;
-            ultimaSenal = ahora;
-            if(!primera) reads.request('requests');
+            if(ultimaSenal === null){ ultimaSenal = ahora; return; }    // primera foto: sólo se guarda
+            // La señal se da por consumida SÓLO si la bandeja entró de verdad.
+            //
+            // Antes se marcaba acá mismo, antes de leer. Si la lectura fallaba —y en P4 la bandeja
+            // pesa 382 kB y tarda entre 187 y 1.104 ms, así que falla— esa novedad quedaba
+            // consumida: en el tick siguiente la señal ya era igual a la guardada, no se pedía
+            // nada, y la solicitud no aparecía hasta que pegara el reintento (8 s, 16 s, 32 s,
+            // 60 s) o el reloj de 60 s. Con dos o tres entrando juntas, se acumulaban todas y
+            // caían de golpe. Es lo que reportó Juan el 3/10.
+            //
+            // Ahora, si no entró, la señal queda sin consumir y se vuelve a pedir en el próximo
+            // tick: la espera máxima pasa a ser 10 s, pase lo que pase con el reintento.
+            // Se retiene SÓLO cuando se sabe que falló. Cualquier otra forma de respuesta se
+            // trata como antes: el objetivo es cambiar el caso del error, no inventar reintentos
+            // donde no los había. `skipped` es "había otra lectura en curso", no "ya la tengo".
+            const r = await reads.request('requests');
+            const fallo = !!(r && (r.error || r.skipped));
+            if(!fallo) ultimaSenal = ahora;
           }catch(_e){}
         }, 10000));
       }
