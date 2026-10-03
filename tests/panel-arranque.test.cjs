@@ -3462,34 +3462,37 @@ test('dos caminos · si el canal nuevo revienta, no se lleva puesta la lista', (
   assert.equal(String(lista[0].usuario).toUpperCase(), 'JUANITO');
 });
 
-test('dos caminos · APAGADO por defecto: la bandeja no cambia sola', () => {
-  // Leer el canal nuevo cambia lo que ve el operador, y eso no sale a las oficinas sin que alguien
-  // lo pruebe. Sin este freno, al actualizar aparecian 42 conversaciones de MAYO que viven en
-  // chat_sesiones de cuando se probo ese camino (2/10).
+test('dos caminos · el canal nuevo escucha SIEMPRE, sin interruptor', () => {
+  // Llego a estar detras de un interruptor, por las 42 conversaciones de mayo. Pero el que las
+  // deja afuera es el filtro de antiguedad, no el interruptor -- y un canal que hay que acordarse
+  // de prender es un canal donde algun dia no va a estar prendido (Juan, 3/10).
   const sb = arrancarPanel();
-  assert.equal(typeof sb.canalNuevo, 'function', 'tiene que haber como prenderlo a mano');
-  // .length y no deepEqual: el array viene del sandbox del panel y la comparacion estricta mira
-  // el prototipo, asi que dos arrays vacios de realms distintos no son "iguales".
-  assert.equal(sb._chatCanalNuevo.tickets(false).length, 0, 'apagado no aporta nada');
-  assert.equal(sb.canalNuevo(true), true, 'se puede prender');
-  assert.equal(sb.canalNuevo(false), false, 'y volver a apagar');
+  assert.equal(typeof sb.canalNuevo, 'undefined', 'no tiene que haber nada que prender ni apagar');
+  assert.equal(typeof sb._chatCanalNuevo.tickets, 'function', 'y el canal tiene que estar leyendo');
 });
 
-test('dos caminos · prendido, lo viejo NO vuelve a la bandeja', () => {
+test('dos caminos · lo viejo NO vuelve a la bandeja', () => {
+  // Lo que protege de verdad: nada con mas de 7 dias sin actividad entra a la lista. En la base
+  // hay 117 conversaciones de prueba de mayo; con este filtro aparecen DOS, las dos de P1.
   const sb = arrancarPanel();
-  sb.canalNuevo(true);
   const hoy = new Date().toISOString();
   const mayo = '2026-05-20T10:00:00Z';
-  // Se le inyectan sesiones como si hubieran venido del servidor.
-  sb._chatCanalNuevo.cargar = async () => [];
-  const crudas = [
-    { usuario: 'deAhora', estado: 'ABIERTO', fecha_ultimo: hoy,  ultimo_mensaje: 'hola', chat_id: 'a' },
+  sb.__sesionesDePrueba = [
+    { usuario: 'deAhora', estado: 'ABIERTO', fecha_ultimo: hoy,  ultimo_mensaje: 'hola',  chat_id: 'a' },
     { usuario: 'deMayo',  estado: 'ABIERTO', fecha_ultimo: mayo, ultimo_mensaje: 'viejo', chat_id: 'b' }
   ];
-  sb.__crudasDePrueba = crudas;
-  // El filtro de antigüedad vive dentro del módulo: se comprueba por su efecto sobre estas dos.
   const corte = Date.now() - 7 * 24 * 3600 * 1000;
-  const pasan = crudas.filter(s => new Date(s.fecha_ultimo).getTime() >= corte).map(s => s.usuario);
-  assert.deepEqual(pasan, ['deAhora'], 'sólo lo de los últimos días');
-  sb.canalNuevo(false);
+  const pasan = sb.__sesionesDePrueba
+    .filter(x => new Date(x.fecha_ultimo).getTime() >= corte)
+    .map(x => x.usuario);
+  assert.equal(JSON.stringify(pasan), JSON.stringify(['deAhora']), 'solo lo de los ultimos dias');
+});
+
+test('dos caminos · el filtro de antiguedad sigue puesto en el codigo', () => {
+  // Si alguien saca el filtro, vuelven las 117 conversaciones de prueba a la bandeja de todos.
+  const fs2 = require('node:fs');
+  const path2 = require('node:path');
+  const src = fs2.readFileSync(path2.join(__dirname, '..', 'renderer', 'chat', 'chat-canal-nuevo.js'), 'utf8');
+  assert.match(src, /DIAS_UTILES\s*=\s*7/, 'el filtro de 7 dias');
+  assert.match(src, /t >= corte/, 'y que se aplique de verdad');
 });
