@@ -41,7 +41,7 @@
 -- 3. ALTO: se podia llenar la bandeja de cualquier oficina
 -- ============================================================================
 -- Cada llamada abria un chat Y una solicitud SOPORTE nueva, a nombre de cualquier usuario.
--- Arreglo: si ese usuario ya tiene una conversacion abierta en esa oficina de la ultima hora,
+-- SACADO el 3/10 por pedido de Juan: ver abajo.
 -- se reusa esa.
 --
 -- NO se pide vinculo valido, aunque el informe lo sugiere: el chat de soporte es justamente por
@@ -78,3 +78,22 @@
 --     (select chat_id from chat_sesiones where usuario like 'ZZ_%');
 --   delete from chat_sesiones      where usuario like 'ZZ_%';
 --   delete from landing_solicitudes where usuario like 'ZZ_%';
+
+-- ============================================================================
+-- CORRECCION del mismo dia: el tope por usuario/oficina quedo SACADO
+-- ============================================================================
+-- Juan: "lo veo al reverendo pedo incluir una medida que no aporta ni quita si no que puede
+-- llegar a generar problemas, un bloqueo de algo puede hacer que proximamente se bloquee algo
+-- importante y no avise a nadie".
+--
+-- Tiene razon, y ademas contradecia una instruccion suya de esa misma manana: "hace sencillo,
+-- solo hace que se abra otro chat nuevo". El tope reusaba el chat viejo, que es exactamente lo
+-- que no queria.
+--
+-- Los arreglos de SEGURIDAD quedan: no frenan a nadie legitimo, solo impiden entrar al chat
+-- ajeno. Comprobado despues de sacarlo:
+--   abre_uno_nuevo_cada_vez  = true
+--   el_agujero_sigue_abierto = false
+--
+-- Lo que tapa el llenado de bandeja SIN frenar a nadie es crear la solicitud recien con el
+-- primer mensaje. Queda pendiente, y no es un freno: es no anotar un chat vacio.
