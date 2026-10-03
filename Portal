@@ -688,6 +688,24 @@ function _infoNavegador(){
 // quedaba mirando la nada. Las otras dos colas ya arrancaban con una lectura adelantada; esta no.
 function startChatPoll(){stopChatPoll();if(!state.chatId)return;chatPollTimer=setInterval(pollOperatorMessages,5000);setTimeout(pollOperatorMessages,700);}
 function stopChatPoll(){if(chatPollTimer){clearInterval(chatPollTimer);chatPollTimer=null;}}
+// Desde cuándo vale lo que llega por el chat. Se fija la primera vez que el portal se engancha a
+// una conversación y queda guardado, así tampoco se repite al recargar la página.
+function _marcarDesdeCuando(){
+  try{
+    if(!localStorage.getItem("bet300_chat_desde"))
+      localStorage.setItem("bet300_chat_desde", new Date().toISOString());
+  }catch(_e){}
+}
+function _antesDeEngancharse(fecha){
+  try{
+    const desde = localStorage.getItem("bet300_chat_desde");
+    if(!desde) return false;                       // sin marca no se descarta nada
+    const t = new Date(fecha || 0).getTime();
+    if(!Number.isFinite(t) || t <= 0) return false;  // sin fecha usable, se muestra
+    return t < new Date(desde).getTime();
+  }catch(_e){ return false; }
+}
+
 async function pollOperatorMessages(){
   if(!state.chatId||!$("widget")?.classList.contains("open"))return;
   const res=await rpc("landing_leer_chat_v2",{p_chat_id:Number(state.chatId),p_chat_token:state.chatToken});
@@ -697,6 +715,11 @@ async function pollOperatorMessages(){
     const msgKey=String(m.id||m.created_at||JSON.stringify(m));
     if(state.seenMsgIds.has(msgKey))return;
     state.seenMsgIds.add(msgKey);
+    // Nada de ANTES de que esta conversación se enganchara. landing_crear_chat_v2 REUTILIZA la
+    // sesión abierta que el usuario ya tenía en esa oficina, y landing_leer_chat_v2 devuelve el
+    // historial entero. Al conseguir por fin el chat_id, el portal le reprodujo al jugador meses
+    // de mensajes viejos de golpe: claves de hace días, rechazos del 9/9 (Juan, 3/10).
+    if(_antesDeEngancharse(m.created_at)) return;
     const emisor=String(m.tipo_emisor||m.emisor||"").toUpperCase();
     const isOp=emisor.includes("OPER")||emisor.includes("ADMIN")||emisor.includes("PANEL")||emisor.includes("SIST")||emisor.includes("BOT")||emisor.includes("AUTO");
     const texto=m.mensaje||m.texto||"";
@@ -1060,7 +1083,10 @@ function setPendiente(tipo,solicitudId,billetera){
 // se repite solo, así que los grupos viven acá (mapeo del portal, 30/9).
 const CLAVES_SOLICITUD = ["bet300_pending_tipo","bet300_pending_billetera",
                           "bet300_solicitud_id","bet300_solicitud_started_at"];
-const CLAVES_CHAT      = ["bet300_chat_id","bet300_chat_token"];
+// bet300_chat_desde va con el chat: si se olvida la conversación, la marca de agua también. La
+// próxima vez que se enganche a una se vuelve a fijar en ese momento, así el historial viejo de
+// una sesión reutilizada sigue sin reproducirse.
+const CLAVES_CHAT      = ["bet300_chat_id","bet300_chat_token","bet300_chat_desde"];
 // Lo del JUGADOR, no del aparato: al cambiar de usuario tiene que irse todo esto. La oficina
 // (public_code) y lo del dispositivo (app_instalada, fs_hint) son del teléfono y se quedan.
 const CLAVES_JUGADOR   = ["bet300_usuario","bet300_telefono","bet300_vinculo_estado",
@@ -2499,7 +2525,13 @@ async function enviarMensajeSoporte(txt,imagenUrl=null){
             p_public_code: state.publicCode, p_solicitud_id: sid
           });
           const c = (ch && !ch.error) ? (normalize(ch.data) || ch.data || {}) : {};
-          if(c.chat_id){ state.chatId=String(c.chat_id); try{ localStorage.setItem("bet300_chat_id",state.chatId); }catch(_e){} }
+          if(c.chat_id){
+            // ANTES de quedarse con el chat: la conversación que devuelve puede ser una vieja que
+            // el jugador ya tenía abierta en esa oficina, con meses de mensajes adentro. Se marca
+            // desde cuándo vale, para no reproducírselos.
+            _marcarDesdeCuando();
+            state.chatId=String(c.chat_id); try{ localStorage.setItem("bet300_chat_id",state.chatId); }catch(_e){}
+          }
           if(c.chat_token){ state.chatToken=String(c.chat_token); try{ localStorage.setItem("bet300_chat_token",state.chatToken); }catch(_e){} }
         }catch(e){ console.warn("[BET300] no se pudo abrir el chat de la consulta", e); }
       }

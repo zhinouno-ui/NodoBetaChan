@@ -69,7 +69,12 @@ function armar({ chatRota = false } = {}){
     }
   };
   vm.createContext(ctx);
-  vm.runInContext(sacar('async function enviarMensajeSoporte('), ctx);
+  // _marcarDesdeCuando se llama al quedarse con el chat: marca desde cuándo valen los mensajes,
+  // porque la conversación que devuelve la base puede ser una vieja con meses adentro.
+  vm.runInContext([
+    sacar('function _marcarDesdeCuando('),
+    sacar('async function enviarMensajeSoporte(')
+  ].join(NL), ctx);
   const creadas = () => llamadas.filter(x => x.nombre === 'landing_portal_v16_crear_solicitud').length;
   const enviados = () => llamadas.filter(x => x.nombre === 'landing_enviar_mensaje_v2').length;
   return { ctx, llamadas, creadas, enviados };
@@ -118,4 +123,51 @@ test('no se manda nada vacio', async () => {
   await c.ctx.enviarMensajeSoporte('');
   await c.ctx.enviarMensajeSoporte('   ');
   assert.equal(c.llamadas.length, 0);
+});
+
+test('al engancharse a una conversación vieja NO se le reproduce el historial', async () => {
+  // landing_crear_chat_v2 REUTILIZA la sesion abierta que el usuario ya tenia en esa oficina, y
+  // landing_leer_chat_v2 devuelve el historial entero. Al conseguir por fin el chat_id, el portal
+  // le reprodujo al jugador meses de mensajes viejos de golpe: claves de hace dias, rechazos del
+  // 9/9 (Juan, 3/10). Se marca desde cuando valen y lo anterior no se muestra.
+  const c = armar();
+  await c.ctx.enviarMensajeSoporte('hola');
+  const desde = c.ctx.localStorage.getItem('bet300_chat_desde');
+  assert.ok(desde, 'al quedarse con el chat tiene que anotar desde cuando vale');
+  assert.ok(Date.parse(desde) > 0, 'y tiene que ser una fecha de verdad: ' + desde);
+});
+
+test('la marca de desde-cuando se fija UNA vez, no se corre con cada mensaje', async () => {
+  // Si se reescribiera en cada mensaje, se irian descartando los mensajes del operador que
+  // llegaron en el medio.
+  const c = armar();
+  await c.ctx.enviarMensajeSoporte('uno');
+  const primera = c.ctx.localStorage.getItem('bet300_chat_desde');
+  await c.ctx.enviarMensajeSoporte('dos');
+  await c.ctx.enviarMensajeSoporte('tres');
+  assert.equal(c.ctx.localStorage.getItem('bet300_chat_desde'), primera, 'no se mueve');
+});
+
+test('el filtro descarta lo viejo y deja pasar lo nuevo', async () => {
+  // La prueba del filtro en si: con la marca puesta hoy, un mensaje del 29/9 no se muestra y uno
+  // de ahora si. Se ejecuta la funcion REAL del Portal.
+  const ctx = {
+    localStorage: { _m:new Map(),
+      getItem(k){ return this._m.has(k)?this._m.get(k):null; },
+      setItem(k,v){ this._m.set(String(k),String(v)); } },
+    Number, Date
+  };
+  vm.createContext(ctx);
+  vm.runInContext([sacar('function _marcarDesdeCuando('), sacar('function _antesDeEngancharse(')].join(NL), ctx);
+
+  assert.equal(ctx._antesDeEngancharse('2026-09-29T11:15:00Z'), false,
+    'sin marca todavia, no se descarta nada');
+
+  ctx._marcarDesdeCuando();
+  assert.equal(ctx._antesDeEngancharse('2026-09-29T11:15:00Z'), true,  'la clave del 29/9 NO se repite');
+  assert.equal(ctx._antesDeEngancharse('2026-09-09T07:30:00Z'), true,  'ni el rechazo del 9/9');
+  assert.equal(ctx._antesDeEngancharse(new Date(Date.now()+60000).toISOString()), false,
+    'lo que llegue de ahora en mas SI se muestra');
+  assert.equal(ctx._antesDeEngancharse(null), false, 'sin fecha usable se muestra: ante la duda, que llegue');
+  assert.equal(ctx._antesDeEngancharse('cualquier cosa'), false, 'idem con una fecha rota');
 });
