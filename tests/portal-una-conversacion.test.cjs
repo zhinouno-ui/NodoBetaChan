@@ -57,9 +57,11 @@ function armar({ chatRota = false } = {}){
         // Tal cual produccion: ni chat_id ni chat_token.
         return { data: { ok:true, id, solicitud_id:id, estado:'PENDIENTE' } };
       }
-      if(nombre === 'landing_crear_chat_v2_blindado'){
+      if(nombre === 'landing_chat_abrir_v3'){
         if(chatRota) return { error: { message: 'no se pudo' } };
-        return { data: { chat_id: 77, chat_token: 'tok-77', estado:'ABIERTO' } };
+        // Tal cual la de produccion: ok, y `nueva` para saber si abrio una o reuso la de ESTA
+        // consulta. Nunca la del jugador.
+        return { data: { ok: true, chat_id: 77, chat_token: 'tok-77', nueva: true } };
       }
       if(nombre === 'landing_enviar_mensaje_v2'){
         if(!args.p_chat_id || !args.p_chat_token) return { error:{ message:'Chat no autorizado' } };
@@ -69,12 +71,7 @@ function armar({ chatRota = false } = {}){
     }
   };
   vm.createContext(ctx);
-  // _marcarDesdeCuando se llama al quedarse con el chat: marca desde cuándo valen los mensajes,
-  // porque la conversación que devuelve la base puede ser una vieja con meses adentro.
-  vm.runInContext([
-    sacar('function _marcarDesdeCuando('),
-    sacar('async function enviarMensajeSoporte(')
-  ].join(NL), ctx);
+  vm.runInContext(sacar('async function enviarMensajeSoporte('), ctx);
   const creadas = () => llamadas.filter(x => x.nombre === 'landing_portal_v16_crear_solicitud').length;
   const enviados = () => llamadas.filter(x => x.nombre === 'landing_enviar_mensaje_v2').length;
   return { ctx, llamadas, creadas, enviados };
@@ -86,7 +83,7 @@ test('el primer mensaje abre la consulta Y consigue el chat', async () => {
   assert.equal(c.creadas(), 1, 'una solicitud, la del reclamo');
   assert.equal(c.ctx.state.chatId, '77', 'y el chat queda abierto');
   assert.equal(c.ctx.state.chatToken, 'tok-77');
-  const pidio = c.llamadas.find(x => x.nombre === 'landing_crear_chat_v2_blindado');
+  const pidio = c.llamadas.find(x => x.nombre === 'landing_chat_abrir_v3');
   assert.ok(pidio, 'tiene que pedir el chat');
   assert.equal(pidio.args.p_solicitud_id, 1001, 'atado a ESA solicitud, no suelto');
   assert.equal(pidio.args.p_usuario, 'scarymovie871');
@@ -125,49 +122,18 @@ test('no se manda nada vacio', async () => {
   assert.equal(c.llamadas.length, 0);
 });
 
-test('al engancharse a una conversación vieja NO se le reproduce el historial', async () => {
-  // landing_crear_chat_v2 REUTILIZA la sesion abierta que el usuario ya tenia en esa oficina, y
-  // landing_leer_chat_v2 devuelve el historial entero. Al conseguir por fin el chat_id, el portal
-  // le reprodujo al jugador meses de mensajes viejos de golpe: claves de hace dias, rechazos del
-  // 9/9 (Juan, 3/10). Se marca desde cuando valen y lo anterior no se muestra.
-  const c = armar();
-  await c.ctx.enviarMensajeSoporte('hola');
-  const desde = c.ctx.localStorage.getItem('bet300_chat_desde');
-  assert.ok(desde, 'al quedarse con el chat tiene que anotar desde cuando vale');
-  assert.ok(Date.parse(desde) > 0, 'y tiene que ser una fecha de verdad: ' + desde);
+
+test('cada consulta abre un chat NUEVO, no reutiliza el del jugador', () => {
+  // landing_crear_chat_v2 devolvia la sesion abierta que el jugador ya tenia en esa oficina, con
+  // meses de mensajes adentro: el portal le reprodujo claves de septiembre como si fueran de
+  // ahora. landing_chat_abrir_v3 busca por ESTA consulta, no por usuario (Juan, 3/10).
+  assert.ok(PORTAL.includes('landing_chat_abrir_v3'), 'el portal tiene que usar la nueva');
+  assert.ok(!PORTAL.includes('landing_crear_chat_v2_blindado", {'),
+    'y no la vieja para abrir la consulta');
 });
 
-test('la marca de desde-cuando se fija UNA vez, no se corre con cada mensaje', async () => {
-  // Si se reescribiera en cada mensaje, se irian descartando los mensajes del operador que
-  // llegaron en el medio.
-  const c = armar();
-  await c.ctx.enviarMensajeSoporte('uno');
-  const primera = c.ctx.localStorage.getItem('bet300_chat_desde');
-  await c.ctx.enviarMensajeSoporte('dos');
-  await c.ctx.enviarMensajeSoporte('tres');
-  assert.equal(c.ctx.localStorage.getItem('bet300_chat_desde'), primera, 'no se mueve');
-});
-
-test('el filtro descarta lo viejo y deja pasar lo nuevo', async () => {
-  // La prueba del filtro en si: con la marca puesta hoy, un mensaje del 29/9 no se muestra y uno
-  // de ahora si. Se ejecuta la funcion REAL del Portal.
-  const ctx = {
-    localStorage: { _m:new Map(),
-      getItem(k){ return this._m.has(k)?this._m.get(k):null; },
-      setItem(k,v){ this._m.set(String(k),String(v)); } },
-    Number, Date
-  };
-  vm.createContext(ctx);
-  vm.runInContext([sacar('function _marcarDesdeCuando('), sacar('function _antesDeEngancharse(')].join(NL), ctx);
-
-  assert.equal(ctx._antesDeEngancharse('2026-09-29T11:15:00Z'), false,
-    'sin marca todavia, no se descarta nada');
-
-  ctx._marcarDesdeCuando();
-  assert.equal(ctx._antesDeEngancharse('2026-09-29T11:15:00Z'), true,  'la clave del 29/9 NO se repite');
-  assert.equal(ctx._antesDeEngancharse('2026-09-09T07:30:00Z'), true,  'ni el rechazo del 9/9');
-  assert.equal(ctx._antesDeEngancharse(new Date(Date.now()+60000).toISOString()), false,
-    'lo que llegue de ahora en mas SI se muestra');
-  assert.equal(ctx._antesDeEngancharse(null), false, 'sin fecha usable se muestra: ante la duda, que llegue');
-  assert.equal(ctx._antesDeEngancharse('cualquier cosa'), false, 'idem con una fecha rota');
+test('ya no queda el parche de la marca de agua', () => {
+  // Era un parche sobre otro parche. Con el chat abriendose nuevo, no hay historial que filtrar.
+  assert.ok(!PORTAL.includes('bet300_chat_desde'), 'sin la clave de la marca');
+  assert.ok(!PORTAL.includes('_antesDeEngancharse'), 'sin el filtro');
 });
