@@ -1086,6 +1086,31 @@ function olvidarJugador(){
                        portalThreadSeen:new Set(),shownTexts:new Set()});
 }
 
+// Cambiar de oficina = empezar de cero. Es el ÚNICO lugar donde se fija la oficina.
+//
+// Lo que guarda el portal vive por SITIO, no por oficina. Siete oficinas no tienen dominio propio
+// (P8, P9, P9B, P10, P10B, P10C, P11): entran por ?r= en el mismo dominio, así que comparten
+// almacenamiento. Si alguien entraba por el enlace de una y después por el de otra, se le
+// arrastraba la validación de la primera: veía las billeteras de la ÚLTIMA, transfería, y recién
+// al enviar la solicitud le avisaba que no estaba validado. Peor imposible — se entera después de
+// mandar la plata (Juan, 3/10).
+//
+// Lo del aparato (que la app está instalada, la ayuda ya vista) se queda: no cambia porque cambie
+// la oficina.
+function _fijarOficina(code){
+  const nueva = String(code == null ? '' : code).trim();
+  if(!nueva) return;
+  try{
+    const antes = localStorage.getItem("bet300_public_code") || "";
+    if(antes && antes !== nueva){
+      olvidarJugador();
+      console.log("[BET300] cambio de oficina (" + antes + " → " + nueva + "): se empieza de cero");
+    }
+    localStorage.setItem("bet300_public_code", nueva);
+  }catch(_e){}
+  state.publicCode = nueva;
+}
+
 function limpiarPendienteManual(){ _confirmarLimpiarPendiente(); }
 
 function limpiarPendienteSilencioso(){
@@ -1554,7 +1579,7 @@ const MODO_PRUEBA = (function(){
   }catch(_e){ return null; }
 })();
 if(MODO_PRUEBA){
-  try{ localStorage.setItem("bet300_public_code", MODO_PRUEBA.ruta); }catch(_e){}
+  _fijarOficina(MODO_PRUEBA.ruta);
   document.addEventListener("DOMContentLoaded", function(){
     const d=document.createElement("div");
     d.textContent="⚠ PRUEBAS · "+MODO_PRUEBA.oficina;
@@ -1573,14 +1598,14 @@ async function initRoute(){
     return;                       // sin mudanza de dominio: te quedás donde estás
   }
   const qp=(new URLSearchParams(location.search).get("r")||"").trim();
-  if(qp){ state.publicCode=qp; try{ localStorage.setItem("bet300_public_code", qp); }catch(_e){} }
+  if(qp){ _fijarOficina(qp); }
   if(!qp){
     try{
       const rh=await rpc("landing_resolver_ruta_por_host",{p_host:location.host});
       const dh=normalize(rh.data)||rh.data||{};
       if(dh && dh.ok && (dh.pc_codigo||dh.public_code)){
         state.pcCodigo=dh.pc_codigo||null;
-        if(dh.public_code){ state.publicCode=dh.public_code; try{localStorage.setItem("bet300_public_code",dh.public_code);}catch(_e){} }
+        if(dh.public_code){ _fijarOficina(dh.public_code); }
         console.log("[BET300] agente por host",location.host,"->",state.pcCodigo,state.publicCode);
         if(state.pcCodigo) return;
       }
@@ -1638,7 +1663,7 @@ async function canjearEnlaceAcceso(){
   state.usuario=String(d.usuario||"");
   state.telefono=String(d.telefono||"");
   state.pcCodigo=d.pc_codigo||state.pcCodigo;
-  if(d.public_code){ state.publicCode=d.public_code; try{localStorage.setItem("bet300_public_code",d.public_code);}catch(_e){} }
+  if(d.public_code){ _fijarOficina(d.public_code); }
   state.nivelAcceso="OK"; state.motivoSoporte="";
   try{
     localStorage.setItem("bet300_usuario",state.usuario);
