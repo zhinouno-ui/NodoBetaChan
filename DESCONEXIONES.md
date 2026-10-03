@@ -3639,3 +3639,60 @@ ejecutandolo, no leyendolo. Por eso viajan las dos horas crudas y la cuenta se a
 **Queda abierto** — la suscripcion en vivo sigue apuntando a `solicitudes` en
 `renderer/runtime/realtime.js:47`, y la lista de chats sigue sin reloj propio. Con la medicion
 puesta, ahora se puede decidir eso con numeros en vez de a ojo.
+
+---
+
+## NO TOCAR · lo que Juan dio por cerrado el 2/10
+
+Revisado en dev y declarado funcionando al 100%. Si un cambio los roza, se avisa ANTES:
+
+- **Drex: ingreso y deteccion de cierre de sesion.** "esta perfecto, queda asi".
+- **Carga y descarga.** "perfecto".
+
+Esto no es una opinion sobre el codigo: es que ya costaron sesiones enteras y no se vuelven a
+abrir sin motivo. Ver [[arreglar-todos-los-caminos]].
+
+---
+
+## D-118 · El cuadro de validacion se mueve solo mientras el operador escribe
+
+**Evidencia** — En "Validar y vincular usuario", el cuadro **se desplaza cada vez que dibuja cada
+motor**, no una sola vez: primero aparece USUARIO EN SISTEMA, despues ESTE USUARIO OPERO CON OTRO
+NUMERO, despues el de ESE TELEFONO YA TIENE CUENTA. Cada uno empuja al resto hacia abajo. El
+operador esta tipeando y el cuadro se le corre debajo del cursor.
+
+Y hay momentos en que **los mensajes directamente no aparecen**. Juan: "no tiene sentido que
+exista ese sistema si el mensaje no se va a visualizar la mitad de las veces".
+
+Tambien hay informacion repetida: el boton "usar este" de ESTE USUARIO OPERO CON OTRO NUMERO dice
+lo mismo que el cuadro de abajo. Podria resolverse en un solo mensaje.
+
+**Por que importa** — Validar y vincular se hace contra reloj, y encima esperando que responda
+algo que no es nuestro. Un cuadro que se mueve mientras se escribe obliga a volver a buscar donde
+estaba, y eso en cada alta.
+
+**Estado** — ANOTADO, sin tocar. Juan: "anota solamente, no lo vamos a hacer ahora".
+
+---
+
+## D-119 · Los avisos de riesgo estan todos al mismo nivel y el operador los saltea
+
+**Evidencia** — El cuadro "ESE TELEFONO YA TIENE CUENTA" trae informacion que vale:
+
+```
+ALTO · Ese telefono ya tiene 1 usuario(s) en esta oficina. Valida el que tiene en vez de crear otro.
+ALTO · Ese telefono ya cobro 3 bono(s) de primer ingreso. Un usuario nuevo volveria a cobrarlo.
+ALTO · Su CBU aparece en 15 cuentas distintas. Con 3 o mas no se explica por familia.
+INFO · Tiene 4 usuario(s) en otras oficinas. Es normal: se juega en varias.
+```
+
+Pero **los operadores terminan obviandolos**. Son cuatro renglones de texto parejo donde tres
+dicen ALTO y uno dice INFO, y a simple vista pesan igual. No hay forma de mirarlo y decidir en un
+segundo, que es lo que el momento pide.
+
+"Su CBU aparece en 15 cuentas distintas" no es lo mismo que "tiene 4 usuarios en otras oficinas",
+y hoy se leen igual.
+
+**Alcance** — Pasa igual en validar/vincular y en crear usuario: es el mismo cuadro.
+
+**Estado** — ANOTADO, sin tocar. Va junto con D-118: los dos son el mismo momento de trabajo.
