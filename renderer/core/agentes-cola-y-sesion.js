@@ -16,8 +16,36 @@ function normalizarUsuarioCasino(u){
 //       · Si NO existe exactamente → asumimos que se subió normalizado al casino → mandar NORMALIZADO.
 //
 // El happy-path normal (alias sin chars especiales) NO hace ninguna query extra → no afecta la carga.
+// Cómo figura cada jugador EN AGENTES, según la última búsqueda que lo encontró (Juan, 21/11: "normalizar el
+// usuario en base a la carga anterior que dio positiva"). Si el portal o el operador lo escriben distinto
+// (Gastóngasti / gastongasti / GASTONGASTI), se busca como Agentes ya lo tiene. Uno por backoffice.
+const _ALIAS_CASINO_KEY = 'nodo_alias_casino_v1';
+function _aliasCasinoMapa(){ try{ return JSON.parse(localStorage.getItem(_ALIAS_CASINO_KEY) || '{}') || {}; }catch(_e){ return {}; } }
+function _aliasCasinoClave(usuario){
+  const be = (window._agentBackendState && window._agentBackendState.backend) || '';
+  return be + '|' + normalizarUsuarioCasino(usuario);
+}
+function nodoAliasCasinoRecordado(usuario){
+  if(!usuario) return '';
+  return _aliasCasinoMapa()[_aliasCasinoClave(usuario)] || '';
+}
+function _recordarAliasCasino(usuario, enAgentes){
+  try{
+    if(!usuario || !enAgentes) return;
+    if(normalizarUsuarioCasino(usuario) !== normalizarUsuarioCasino(enAgentes)) return;   // otro jugador: no se mezcla
+    const m = _aliasCasinoMapa(), k = _aliasCasinoClave(usuario);
+    if(m[k] === enAgentes) return;
+    delete m[k]; m[k] = String(enAgentes);
+    const claves = Object.keys(m);
+    for(let i = 0; i < claves.length - 3000; i++) delete m[claves[i]];
+    localStorage.setItem(_ALIAS_CASINO_KEY, JSON.stringify(m));
+  }catch(_e){}
+}
+window.nodoAliasCasinoRecordado = nodoAliasCasinoRecordado;
 async function _resolverAliasParaCasino(usuario){
   if(!usuario) return usuario;
+  const recordado = nodoAliasCasinoRecordado(usuario);
+  if(recordado) return recordado;
   const norm = normalizarUsuarioCasino(usuario);
   if(norm === usuario) return usuario; // sin caracteres raros, nada que decidir
   try {
@@ -235,6 +263,7 @@ async function callDrex(method, ...args){
       const aliasFinal = await _resolverAliasParaCasino(args[0]);
       // Reenviamos los args extra (ej: options { skipBalance: true })
       _r = await window.ctrlElectron.drexAutomation('buscarUsuario', aliasFinal, ...args.slice(1));
+      if(_r && _r.ok !== false && _r.exists && _r.user) _recordarAliasCasino(args[0], _r.user);
     } else {
       _r = await window.ctrlElectron.drexAutomation(method, ...args);
     }

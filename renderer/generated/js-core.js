@@ -12229,8 +12229,36 @@ function _drexEncolar(nombre, fn, opts){
     st.activo = { nombre:nombre, desde:Date.now() };
     const t0 = Date.now();
     let _to = null;
+// Cómo figura cada jugador EN AGENTES, según la última búsqueda que lo encontró (Juan, 21/11: "normalizar el
+// usuario en base a la carga anterior que dio positiva"). Si el portal o el operador lo escriben distinto
+// (Gastóngasti / gastongasti / GASTONGASTI), se busca como Agentes ya lo tiene. Uno por backoffice.
+const _ALIAS_CASINO_KEY = 'nodo_alias_casino_v1';
+function _aliasCasinoMapa(){ try{ return JSON.parse(localStorage.getItem(_ALIAS_CASINO_KEY) || '{}') || {}; }catch(_e){ return {}; } }
+function _aliasCasinoClave(usuario){
+  const be = (window._agentBackendState && window._agentBackendState.backend) || '';
+  return be + '|' + normalizarUsuarioCasino(usuario);
+}
+function nodoAliasCasinoRecordado(usuario){
+  if(!usuario) return '';
+  return _aliasCasinoMapa()[_aliasCasinoClave(usuario)] || '';
+}
+function _recordarAliasCasino(usuario, enAgentes){
+  try{
+    if(!usuario || !enAgentes) return;
+    if(normalizarUsuarioCasino(usuario) !== normalizarUsuarioCasino(enAgentes)) return;   // otro jugador: no se mezcla
+    const m = _aliasCasinoMapa(), k = _aliasCasinoClave(usuario);
+    if(m[k] === enAgentes) return;
+    delete m[k]; m[k] = String(enAgentes);
+    const claves = Object.keys(m);
+    for(let i = 0; i < claves.length - 3000; i++) delete m[claves[i]];
+    localStorage.setItem(_ALIAS_CASINO_KEY, JSON.stringify(m));
+  }catch(_e){}
+}
+window.nodoAliasCasinoRecordado = nodoAliasCasinoRecordado;
     return Promise.race([
       Promise.resolve().then(fn),
+  const recordado = nodoAliasCasinoRecordado(usuario);
+  if(recordado) return recordado;
       new Promise(function(_res, rej){
         _to = setTimeout(function(){
           rej(new Error('La tarea "'+nombre+'" superó '+Math.round(_DREX_TAREA_MAX_MS/1000)+'s · se destrabó la cola'));
@@ -12448,6 +12476,7 @@ async function _ejecutarLoginDrex() {
       // No resolver — el modal queda abierto para reintentar
     }
   } catch(e){
+      if(_r && _r.ok !== false && _r.exists && _r.user) _recordarAliasCasino(args[0], _r.user);
     if(errEl) errEl.textContent = "Error: " + (e.message || "sin detalle");
     if(btn){ btn.disabled = false; btn.textContent = "Conectar"; }
   }

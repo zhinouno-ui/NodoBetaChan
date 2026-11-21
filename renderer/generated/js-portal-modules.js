@@ -3387,7 +3387,6 @@ const api = {};
         <div style="background:#0d1320;border:1px solid #243049;border-radius:12px;padding:10px 12px;margin-bottom:12px;font-size:13px">
           <div style="color:#64748b;font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.04em;margin-bottom:7px">Lo que declaró el usuario</div>
           <div id="portalJobRef" style="display:grid;grid-template-columns:1fr 1fr;gap:5px 14px;color:#cbd5e1"></div>
-          <div id="portalJobVinculo" style="margin-top:8px;padding-top:8px;border-top:1px solid #243049;font-size:13px"></div>
           <div id="portalJobPromo" style="margin-top:8px"></div>
           <div id="portalJobAlertas" style="margin-top:6px"></div>
           <div id="portalJobFichas" style="display:none;margin-top:8px;padding-top:8px;border-top:1px solid #243049;font-size:13px"></div>
@@ -3412,7 +3411,9 @@ const api = {};
           </div>
         </div>
         <div id="portalJobResultado" style="flex:0 0 auto;margin-top:9px"></div>
-        <div style="flex:0 0 auto;display:flex;justify-content:flex-end;gap:8px;margin-top:12px">
+        <!-- De dónde viene el usuario: una línea corta al lado de los botones, donde sobra lugar (Juan, 21/11). -->
+        <div style="flex:0 0 auto;display:flex;justify-content:flex-end;align-items:center;gap:8px;margin-top:12px">
+          <div id="portalJobVinculo" style="flex:1 1 auto;min-width:0;font-size:12px;color:#94a3b8;line-height:1.3"></div>
           <button id="portalJobParcialBtn" class="mini-btn" style="background:#7c3aed;display:none" type="button" onclick="portalJobIrParcial()" title="Pagar el retiro por partes / desde varias billeteras">💸 Parcial</button>
           <button class="mini-btn" style="background:#374151" type="button" onclick="cerrarPortalJobModal()">Cancelar</button>
           <button id="portalJobEnviarBtn" class="mini-btn green" type="button" onclick="confirmarPortalJobModal()">Aprobar</button>
@@ -3522,29 +3523,45 @@ const api = {};
     const u = String(usuario||'').toLowerCase().trim();
     if(!u){ el.innerHTML=''; return; }
     el.dataset.usuario = u;
-    el.innerHTML = '<span style="color:#64748b">Vínculo usuario/teléfono:</span> <span style="color:#94a3b8">consultando…</span>';
+    delete el.dataset.vinculoId;
+    el.innerHTML = '';
     try{
       const pcs = (typeof deps.pcAliasesHist==='function') ? deps.pcAliasesHist() : [String(deps.pcOperativa||'')];
       deps.window.NodoSalud?.begin('IDENTIDAD')?.record('DATA','OK','PORTAL_VINCULO_READ');
+      // El mismo usuario puede venir escrito distinto (con o sin acento, mayúsculas): se busca como lo escribió,
+      // sin acentos, y como figura en Agentes según la última operación que anduvo (Juan, 21/11).
       const { data } = await deps.supabaseClient.from('usuarios_portal_vinculos')
-        .select('id,estado_vinculo,telefono_canon,fuente')
-        .in('pc_codigo', pcs).eq('usuario', u).limit(1);
-      const v = (data && data[0]) || null;
-      if(!v){
-        el.innerHTML = '<span style="color:#64748b">Vínculo:</span> <b style="color:#fbbf24">⚪ no registrado</b> <span style="color:#64748b">— se vincula cuando el usuario ingrese al portal</span>';
-        return;
-      }
-      el.dataset.vinculoId = v.id;
-      const est = String(v.estado_vinculo||'');
-      const color = est==='VINCULADO'?'#22c55e':est==='BLOQUEADO'?'#ef4444':'#fbbf24';
-      const icon  = est==='VINCULADO'?'🟢':est==='BLOQUEADO'?'🔴':'🟡';
-      let html = '<span style="color:#64748b">Vínculo:</span> <b style="color:'+color+'">'+icon+' '+deps.esc(est)+'</b>';
-      if(v.telefono_canon) html += ' <span style="color:#64748b">· tel '+deps.esc(deps.window._tel ? deps.window._tel(v.telefono_canon) : v.telefono_canon)+'</span>';
-      if(v.fuente) html += ' <span style="color:#64748b">· '+deps.esc(v.fuente)+'</span>';
-      if(est==='PENDIENTE') html += ' <button class="mini-btn green" style="font-size:11px;margin-left:8px" onclick="portalConfirmarVinculo()">✓ Confirmar vínculo</button>';
-      el.innerHTML = html;
+        .select('id,estado_vinculo,fuente')
+        .in('pc_codigo', pcs).in('usuario', variantesUsuario(u)).limit(1);
+      if(el.dataset.usuario !== u) return;   // se abrió otra solicitud mientras tanto
+      el.innerHTML = vinculoHtml((data && data[0]) || null, deps.esc);
+      if(data && data[0]) el.dataset.vinculoId = data[0].id;
     }catch(e){ el.innerHTML=''; }
   }
+  function sinAcentos(s){ return String(s||'').normalize('NFD').replace(/[̀-ͯ]/g,''); }
+  function variantesUsuario(u){
+    const out = [u, sinAcentos(u)];
+    try{
+      const rec = typeof deps.window.nodoAliasCasinoRecordado === 'function' ? deps.window.nodoAliasCasinoRecordado(u) : '';
+      if(rec) out.push(String(rec).toLowerCase().trim(), sinAcentos(String(rec).toLowerCase().trim()));
+    }catch(_e){}
+    return out.filter(function(x, i){ return x && out.indexOf(x) === i; });
+  }
+  // Para el operador, en castellano: nada de VINCULADO, CSV_WHATICKET ni códigos de importación.
+  const FUENTES = { CSV_WHATICKET:'base de WhatsApp', OPERADOR_PANEL:'lo cargó un operador',
+    PORTAL_PRIMER_INGRESO:'entró por el portal', SOPORTE_AUTO:'por el chat de soporte' };
+  function vinculoHtml(v, esc){
+    if(!v) return '<span title="Este usuario nunca pasó por la validación: no tiene teléfono vinculado.">⚪ Sin vínculo</span>';
+    const est = String(v.estado_vinculo||'').toUpperCase();
+    const txt = est==='VINCULADO' ? '🟢 Vinculado' : est==='BLOQUEADO' ? '🔴 Vínculo bloqueado'
+      : est==='PENDIENTE' ? '🟡 Vínculo sin confirmar' : est==='DUPLICADO' ? '🟡 Teléfono repetido con otro usuario' : '🟡 Vínculo a revisar';
+    const de = FUENTES[String(v.fuente||'').toUpperCase().replace(/[-\s]+/g,'_')] || '';
+    let html = '<span>'+esc(txt)+(de ? ' <span style="color:#64748b">· '+esc(de)+'</span>' : '')+'</span>';
+    if(est==='PENDIENTE') html += ' <button class="mini-btn green" style="font-size:11px;padding:3px 7px;margin-left:4px" onclick="portalConfirmarVinculo()">Confirmar</button>';
+    return html;
+  }
+  api._vinculoHtml = vinculoHtml;
+  api._variantesUsuario = variantesUsuario;
   api.portalConfirmarVinculo = async function(){
     const el = deps.document.getElementById('portalJobVinculo');
     const id = el && el.dataset.vinculoId;

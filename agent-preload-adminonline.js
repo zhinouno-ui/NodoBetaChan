@@ -470,12 +470,22 @@ async function ejecutarBusqueda(alias, timeout = DEFAULT_TIMEOUT) {
   await waitFor(findSearchInput, timeout, 120, 'input-busqueda');
   let input = await _asegurarTextoBusqueda(wanted, 3);
   if (!input) return { refresco: false, textoOk: false, vistaOk: false };
+  // El ámbito va ANTES de buscar (P4, 21/11: cada carga del portal daba "Usuario no encontrado" la primera
+  // vez y andaba al reintentar, con o sin acento). Sin "Todos los jugadores" la página busca sólo entre los
+  // jugadores directos: el jugador de un subagente no aparece y la lista vacía parecía "no existe". La prueba
+  // de que se miró en todos los jugadores es el chip debajo del buscador, no que haya filas en pantalla: las
+  // filas que había eran las de la búsqueda anterior.
+  if (!_chipJugadores()) {
+    const l0 = findLupa();
+    if (l0) { clickRadix(l0); await delay(250); await elegirTodosLosJugadores(5000); }
+    input = (await _asegurarTextoBusqueda(wanted, 2)) || input;
+  }
   const firmaAntes = firmaFilas();
   try {
     ['keydown', 'keypress', 'keyup'].forEach(t => input.dispatchEvent(new KeyboardEvent(t, { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true })));
   } catch (_) {}
   await delay(350);
-  let vistaOk = filasJugador().length > 0 || _chipJugadores();
+  let vistaOk = _chipJugadores();
   if (firmaFilas() === firmaAntes) {
     const lupa = findLupa();
     if (lupa) clickRadix(lupa);
@@ -490,7 +500,7 @@ async function ejecutarBusqueda(alias, timeout = DEFAULT_TIMEOUT) {
     if (firmaFilas() !== firmaAntes || _listaCorrespondeA(wanted)) {
       const estable = await esperarListaEstable(wanted, 8000);
       await delay(150);
-      return { refresco: true, textoOk: true, estable, vistaOk: vistaOk || filasJugador().length > 0 };
+      return { refresco: true, textoOk: true, estable, vistaOk: _chipJugadores() };
     }
     if (!reintentado && now() - inicio > 5000) {
       reintentado = true;
@@ -505,10 +515,10 @@ async function ejecutarBusqueda(alias, timeout = DEFAULT_TIMEOUT) {
   await delay(250);
   if (_listaCorrespondeA(wanted)) {
     const estable = await esperarListaEstable(wanted, 4000);
-    return { refresco: true, textoOk: true, estable, vistaOk: vistaOk || filasJugador().length > 0 };
+    return { refresco: true, textoOk: true, estable, vistaOk: _chipJugadores() };
   }
   console.warn('[buscar] sin refresco tras 12s · filas en pantalla: ' + filasJugador().length + ' · input="' + ((findSearchInput() || {}).value || '') + '"');
-  return { refresco: false, textoOk: true, estable: false, vistaOk };
+  return { refresco: false, textoOk: true, estable: false, vistaOk: _chipJugadores() };
 }
 // "No existe" solo se concluye con las CUATRO condiciones (lista movida, texto escrito, lista quieta, vista de jugadores).
 function _puedeConcluirQueNoExiste(r) { return !!(r && r.refresco && r.textoOk && r.estable && r.vistaOk); }
