@@ -1501,11 +1501,18 @@ const api = {};
     let movs = [];
     try{
       if(typeof deps.callDrex === 'function' && deps.window.ctrlElectron){
-        const m = await deps.callDrex('leerMovimientosCredito', { desdeMs: desdeMs, alias: usuario });
+        // Sólo la PRIMERA página (Juan, 21/11: "revisa como 4 páginas al reverendo pedo; si se marca como ya
+        // cargado es actual, si no está en la página 1 se desestima"). Donde hay filtro por alias (AdminOnline)
+        // esa página es la de ese jugador; si el filtro no anda, la primera página del informe general.
+        const pedir = function(filtrar){ return deps.callDrex('leerMovimientosCredito',
+          { desdeMs: desdeMs, alias: usuario, filtrarAlias: filtrar, maxPaginas: 1 }); };
+        let m = await pedir(true);
+        if(m && m.ok === false && m.motivo === 'SIN_FILTRO') m = await pedir(false);
         if(m && m.ok){
           movs = (m.filas||[]).filter(function(f){ return /dep[oó]sito de un jugador/i.test(f.tipo) && /DONE/i.test(f.estado)
             && Math.round(f.cantidad) === monto && String(f.alias||'').toLowerCase() === usuario.toLowerCase(); });
-          out.agentesEstado = m.completo ? 'leido' : 'incompleto';
+          // La página 1 es toda la revisión: lo que no está ahí no cuenta como "ya cargada".
+          out.agentesEstado = 'leido';
         }else out.agentesEstado = (m && m.needsLogin) ? 'sin_sesion' : 'no_se_pudo';
       }
     }catch(e){ out.agentesEstado = /no permitido|not a function|desconocid/i.test(String(e&&e.message||'')) ? 'no_disponible' : 'no_se_pudo'; }
