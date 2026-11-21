@@ -20,3 +20,22 @@ drop trigger if exists trg_historial_cotejo_sin_repetidas on public.historial_op
 create trigger trg_historial_cotejo_sin_repetidas
   before insert on public.historial_ops
   for each row execute function public._historial_cotejo_sin_repetidas();
+
+-- Y la marca vieja "sin carga en Agentes": la 2.1.9 la pone de a montones y sin confirmar (164 en P4, y vuelve a
+-- ponerlas). Desde la versión siguiente la marca confirmada es "no aparece en Agentes"; la vieja ya no se acepta:
+-- si una actualización la agrega, se deja la nota como estaba (el resto del cambio entra igual).
+create or replace function public._historial_sin_marca_vieja_agentes()
+returns trigger language plpgsql set search_path = public as $$
+begin
+  if coalesce(new.notas, '') ilike '%sin carga en Agentes%' and coalesce(old.notas, '') not ilike '%sin carga en Agentes%' then
+    new.notas := old.notas;
+  end if;
+  return new;
+end $$;
+
+drop trigger if exists trg_historial_sin_marca_vieja_agentes on public.historial_ops;
+create trigger trg_historial_sin_marca_vieja_agentes
+  before update of notas on public.historial_ops
+  for each row execute function public._historial_sin_marca_vieja_agentes();
+-- Vuelta atrás: drop trigger trg_historial_sin_marca_vieja_agentes on public.historial_ops;
+--              drop function public._historial_sin_marca_vieja_agentes();

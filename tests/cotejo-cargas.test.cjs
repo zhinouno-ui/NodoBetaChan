@@ -225,3 +225,10 @@ test('cada vuelta mira desde la anterior (con margen), no 6 horas: Agentes no qu
 test('con muchos avisos se muestran 5 y cuántos más hay', () => {
   assert.match(fuente, /var resto = lista\.length > 5 \? lista\.length - 5 : 0;/);
 });
+
+test('la marca vieja de la 2.1.9 ("sin carga en Agentes") no se muestra ni se vuelve a juzgar', () => {
+  assert.match(fuente, /var MARCA_SIN_AGENTES  = "no aparece en Agentes";/);
+  assert.match(fuente, /indexOf\(MARCA_SIN_AGENTES_VIEJA\) < 0/);
+  const avisos = fuente.slice(fuente.indexOf('async function _leerAvisos'), fuente.indexOf('function _esc('));
+  assert.doesNotMatch(avisos, /MARCA_SIN_AGENTES_VIEJA/, 'el cartel sólo trae la marca confirmada');
+});

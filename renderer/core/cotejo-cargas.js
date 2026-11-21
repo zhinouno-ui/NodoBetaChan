@@ -37,7 +37,11 @@
   var DUDA_MS            = 60 * 60000;     // una fila igual suelta a menos de una hora: no se decide
   var CADA_CUANTO_MS     = 10 * 60000;
   var MARCA_FUERA        = "fuera de NODO";
-  var MARCA_SIN_AGENTES  = "sin carga en Agentes";
+  // La marca cambió el 21/11: "sin carga en Agentes" la ponía la 2.1.9 de a montones y sin confirmar (P4). Desde
+  // ahora la marca confirmada (buscando al jugador) es otra; la vieja no se muestra ni se vuelve a juzgar, y el
+  // servidor deja de aceptarla (servidor/cotejo-sin-filas-repetidas.sql).
+  var MARCA_SIN_AGENTES  = "no aparece en Agentes";
+  var MARCA_SIN_AGENTES_VIEJA = "sin carga en Agentes";
   var MARCA_RECONOCIDA   = "reconocida por";
   var MARCA_CHUNIOR      = "no estaba en NODO";               // la pone la pasada por Chunior (cotejo-chunior.js)
 
@@ -106,7 +110,7 @@
     var sobrantes = Number.isFinite(desdeLeido) ? libres.filter(function(h){
       var t = _ms(h);
       return !usadas[h.id] && !h._enDuda && Number.isFinite(t) && t >= desdeLeido && (ahora - t) >= GRACIA_SIN_AGENTES
-        && String(h.notas || "").indexOf(MARCA_SIN_AGENTES) < 0
+        && String(h.notas || "").indexOf(MARCA_SIN_AGENTES) < 0 && String(h.notas || "").indexOf(MARCA_SIN_AGENTES_VIEJA) < 0
         && (opts.esNuestra ? opts.esNuestra(h) : true);
     }) : [];
     return { pares: pares, sobrantes: sobrantes };
@@ -319,7 +323,7 @@
       for(var j = 0; j < confirmadas.length; j++){
         var h = confirmadas[j];
         var esRetiro = _tipoFila(h) === "RETIRO";
-        var txt = MARCA_SIN_AGENTES + ": " + (h.chunior_movimiento_id ? "anotado en Chunior" : "NODO lo marcó hecho")
+        var txt = MARCA_SIN_AGENTES + " (buscado por alias): " + (h.chunior_movimiento_id ? "anotado en Chunior" : "NODO lo marcó hecho")
           + " pero en Agentes no aparece " + (esRetiro ? "este retiro" : "esta carga");
         if(await _anotarNotas(h, txt)) resumen.sinAgentes++;
       }
