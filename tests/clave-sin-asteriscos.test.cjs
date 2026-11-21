@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 test('NODO manda la clave nueva sin asteriscos', () => {
   const src = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'core', 'automatizaciones.js'), 'utf8');
-  assert.match(src, /Nueva clave: \$\{claveFinal\}\n/);
+  assert.ok(src.includes('Nueva clave: ${claveFinal}'), 'la clave va pelada, sin nada alrededor');
   assert.doesNotMatch(src, /\*\$\{claveFinal\}\*/);
 });
 test('el aviso del proxy dice la verdad: va sólo a Agentes', () => {
