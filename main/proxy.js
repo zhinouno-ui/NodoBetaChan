@@ -14,14 +14,24 @@ function createProxyService({ app, session, env = process.env }) {
       .trim();
   }
 
+  // El esquema que trae el host manda. Los proxies de las oficinas están cargados en el admi como
+  // "https://arNN.proxy.nordvpn.com" puerto 89: es un proxy HTTPS (se le habla con TLS). La 2.1.5 pasaba
+  // el host tal cual y Chromium lo usaba como proxy HTTPS. El 15/11 se le empezó a sacar el "https://"
+  // y quedó "http=arNN…:89": se le hablaba HTTP plano a un puerto TLS, ninguna página cargaba y Agentes
+  // quedaba en blanco al elegir el puesto (P4, 19/11; medido: sin https → ERR_EMPTY_RESPONSE, con https →
+  // el proxy contesta). La 2.1.9 lo sigue sacando. Ahora se limpia sólo lo que sobra (barra final, ruta) y
+  // el esquema se conserva; sin esquema en el host, manda el campo protocolo.
   function buildProxyRules(rawHost, rawPort, rawProtocol) {
-    const host = cleanProxyHost(rawHost);
+    const raw = String(rawHost || "").trim();
+    const esquemaHost = ((raw.match(/^([a-z][a-z0-9+.-]*):\/\//i) || [])[1] || "").toLowerCase();
+    const host = cleanProxyHost(raw);
     const port = String(rawPort || "").trim();
-    const protocol = String(rawProtocol || "http").trim().toLowerCase();
+    const esquema = esquemaHost || String(rawProtocol || "http").trim().toLowerCase();
 
     if (!host || !port) return "";
 
-    if (protocol.startsWith("socks")) return `socks=${host}:${port}`;
+    if (esquema.startsWith("socks")) return `socks=${host}:${port}`;
+    if (esquema === "https") return `http=https://${host}:${port};https=https://${host}:${port}`;
     return `http=${host}:${port};https=${host}:${port}`;
   }
 

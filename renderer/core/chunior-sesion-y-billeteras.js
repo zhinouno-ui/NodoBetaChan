@@ -218,7 +218,7 @@ async function _chuniorConfirmarPuesto(value, text){
     try{
       if(window.ctrlElectron && ctrlElectron.proxyApply){
         const r = await ctrlElectron.proxyApply(pcCodigoNuevo);
-        if(r && r.ok && r.enabled) toast("🌐 Proxy de oficina aplicado a Chunior y Agentes","green");
+        if(r && r.ok && r.enabled) toast("🌐 Proxy de oficina aplicado a Agentes","green");
         else if(r && r.reason==="missing-secret") toast("⚠️ Esta PC no tiene la clave de la oficina → Chunior y Agentes pueden fallar.","red");
         else if(r && r.ok===false) toast("⚠️ No se pudo configurar la conexión de esta oficina. Chunior puede no cargar.","red");
         else if(r && r.enabled===false) toast("🌐 Esta oficina no tiene proxy en el admi → salida directa.","blue");

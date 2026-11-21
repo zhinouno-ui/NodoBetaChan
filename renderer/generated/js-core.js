@@ -12978,7 +12978,8 @@ async function ejecutarAutoClave(id){
   // La que quedó de verdad en el sistema de juego (la devuelve el agente), no sólo la que se pidió.
   const claveFinal = (r && r.password) || claveNueva;
   await _avisarClaveAlJugador(usuario,
-    `✅ Tu clave fue actualizada correctamente.\n🔑 Nueva clave: *${claveFinal}*\nIngresá al casino con tu usuario y esta clave.`);
+    // Sin asteriscos: en el Portal se veían y el jugador no sabía si eran parte de la clave (18/11).
+    `✅ Listo, cambiamos tu clave.\n🔑 Nueva clave: ${claveFinal}\nEntrá al casino con tu usuario y esta clave.`);
 
   toast(`Clave cambiada · ${usuario} → ${claveFinal}`, "green");
   await window.ctrlElectron.navigateAgent();
@@ -13912,7 +13913,7 @@ async function _chuniorConfirmarPuesto(value, text){
     try{
       if(window.ctrlElectron && ctrlElectron.proxyApply){
         const r = await ctrlElectron.proxyApply(pcCodigoNuevo);
-        if(r && r.ok && r.enabled) toast("🌐 Proxy de oficina aplicado a Chunior y Agentes","green");
+        if(r && r.ok && r.enabled) toast("🌐 Proxy de oficina aplicado a Agentes","green");
         else if(r && r.reason==="missing-secret") toast("⚠️ Esta PC no tiene la clave de la oficina → Chunior y Agentes pueden fallar.","red");
         else if(r && r.ok===false) toast("⚠️ No se pudo configurar la conexión de esta oficina. Chunior puede no cargar.","red");
         else if(r && r.enabled===false) toast("🌐 Esta oficina no tiene proxy en el admi → salida directa.","blue");

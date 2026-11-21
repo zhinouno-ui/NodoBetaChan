@@ -178,6 +178,7 @@ test('startup and runtime proxy only change the dedicated partition, including d
     ['persist:nodo-agentes', { mode: 'fixed_servers', proxyRules: 'socks=runtime:1080', proxyBypassRules: '<local>' }],
     ['persist:nodo-agentes', 'close']
   ]);
+  assert.ok(!calls.some(c => c[0] === 'nodo-chunior'), 'la sesión de Chunior no se toca');
   let prevented = 0;
   let auth;
   const event = { preventDefault() { prevented++; } };
@@ -187,7 +188,7 @@ test('startup and runtime proxy only change the dedicated partition, including d
   assert.deepEqual(auth, ['u', 'p']);
 });
 
-test('proxy strips protocol scheme and path from host on startup and runtime config', async () => {
+test('proxy: limpia la barra y la ruta del host pero conserva el esquema (proxy HTTPS de las oficinas)', async () => {
   const app = new EventEmitter();
   const calls = [];
   const sessions = new Map();
@@ -208,12 +209,30 @@ test('proxy strips protocol scheme and path from host on startup and runtime con
   await proxy.configure();
   await proxy.apply({ enabled: true, host: 'https://ar86.proxy.nordvpn.com/', port: '89', protocol: 'http' });
   const bad = await proxy.apply({ enabled: true, host: 'https://', port: '89', protocol: 'http' });
+  // 19/11: el "https://" del host es el tipo de proxy (NordVPN, puerto 89, TLS) y se conserva. Sacárselo
+  // dejaba a Agentes en blanco en P4: se le hablaba HTTP plano a un puerto que espera TLS.
   assert.deepEqual(calls, [
-    ['persist:nodo-agentes', { mode: 'fixed_servers', proxyRules: 'http=office.proxy.local:8000;https=office.proxy.local:8000', proxyBypassRules: '<local>' }],
-    ['persist:nodo-agentes', { mode: 'fixed_servers', proxyRules: 'http=ar86.proxy.nordvpn.com:89;https=ar86.proxy.nordvpn.com:89', proxyBypassRules: '<local>' }],
+    ['persist:nodo-agentes', { mode: 'fixed_servers', proxyRules: 'http=https://office.proxy.local:8000;https=https://office.proxy.local:8000', proxyBypassRules: '<local>' }],
+    ['persist:nodo-agentes', { mode: 'fixed_servers', proxyRules: 'http=https://ar86.proxy.nordvpn.com:89;https=https://ar86.proxy.nordvpn.com:89', proxyBypassRules: '<local>' }],
     ['persist:nodo-agentes', { mode: 'direct' }]
   ]);
   assert.deepEqual(bad, { ok: true, enabled: false });
+});
+
+test('proxy: sin esquema en el host manda el campo protocolo; con esquema manda el del host', async () => {
+  const calls = [];
+  const ses = { async setProxy(c) { calls.push(c.proxyRules || c.mode); }, async closeAllConnections() {} };
+  const proxy = createProxyService({ app: new EventEmitter(), env: {}, session: { fromPartition: () => ses } });
+  await proxy.apply({ enabled: true, host: 'ar87.proxy.nordvpn.com', port: '89', protocol: 'https' });
+  await proxy.apply({ enabled: true, host: 'http://office.local', port: '3128', protocol: 'https' });
+  await proxy.apply({ enabled: true, host: 'office.local', port: '3128', protocol: 'http' });
+  await proxy.apply({ enabled: true, host: 'socks5://office.local', port: '1080', protocol: 'http' });
+  assert.deepEqual(calls, [
+    'http=https://ar87.proxy.nordvpn.com:89;https=https://ar87.proxy.nordvpn.com:89',
+    'http=office.local:3128;https=office.local:3128',
+    'http=office.local:3128;https=office.local:3128',
+    'socks=office.local:1080'
+  ]);
 });
 
 test('partition failure never falls back to proxying the default session', async () => {
@@ -792,3 +811,6 @@ test('Ctrl+R reinicia NODO entero si cambió el código del proceso principal, y
   assert.match(src, /for \(const dir of \['main', 'services'\]\)/, 'mira main.js, main/ y services/');
   assert.match(src, /\/\\\.\(c\?js\|html\)\$\/i/, 'los archivos de código, no cualquier cosa');
 });
+
+
+
