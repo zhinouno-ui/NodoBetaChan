@@ -51,6 +51,19 @@ test('callDrex recuerda el alias de Agentes cuando la búsqueda lo encontró', (
   assert.match(src, /if\(_r && _r\.ok !== false && _r\.exists && _r\.user\) _recordarAliasCasino\(args\[0\], _r\.user\);/);
 });
 
+// Juan, 21/11: "intentaron buscar el usuario sin acento". Gastóngasti no estaba igual en la tabla usuarios y
+// NODO le mandaba "gastongasti" a Agentes.
+test('con acento se busca TAL CUAL primero; sin acento sólo si Agentes dijo que no existe', async () => {
+  const c = cargarAlias('adminonline');
+  assert.equal(await c._resolverAliasParaCasino('Gastóngasti'), 'Gastóngasti');
+  assert.equal(await c._resolverAliasParaCasino('juan.perez'), 'juan.perez');
+  const src = fs.readFileSync(path.join(RAIZ, 'renderer', 'core', 'agentes-cola-y-sesion.js'), 'utf8').replace(/\r\n/g, '\n');
+  const f = src.slice(src.indexOf("if(method === 'buscarUsuario'"), src.indexOf('} else {', src.indexOf("if(method === 'buscarUsuario'")));
+  assert.ok(f.indexOf("drexAutomation('buscarUsuario', aliasFinal") < f.indexOf("drexAutomation('buscarUsuario', _sinSignos"));
+  assert.match(f, /_r\.exists === false && _sinSignos && _sinSignos !== String\(aliasFinal\)\.toLowerCase\(\)/);
+  assert.match(f, /if\(_r2 && _r2\.ok !== false && _r2\.exists\) _r = _r2;/);
+});
+
 function modal(window) {
   const m = require(path.join(RAIZ, 'renderer', 'portal', 'operation-modal.js'));
   const deps = {};

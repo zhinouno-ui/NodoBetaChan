@@ -9900,6 +9900,17 @@ function nodoPintarEstadoSistema(probando){
       + '<span style="color:#cbd5e1">' + escapeHtml(p.nombre) + '</span>'
       + '<span style="color:' + color + '">' + escapeHtml(texto) + '</span></div>';
   };
+  // Las acciones van agrupadas por sistema (Agentes · el backoffice en uso, Chunior, Revisiones).
+  const conGrupos = function(lista, conNombreDeGrupo){
+    let grupo = null;
+    return lista.map(function(p){
+      if(conNombreDeGrupo && p.grupo) return fila(Object.assign({}, p, { nombre: p.grupo + " · " + p.nombre }));
+      const cab = (p.grupo || null) !== grupo && p.grupo
+        ? '<div style="margin-top:8px;font-weight:800;color:#e2e8f0">' + escapeHtml(p.grupo) + '</div>' : '';
+      grupo = p.grupo || null;
+      return cab + fila(p);
+    }).join("");
+  };
   const titulo = fallas.length
     ? '<div style="font-size:12px;font-weight:800;color:#f87171">Hay ' + fallas.length + (fallas.length === 1 ? ' parte con problemas' : ' partes con problemas') + '</div>'
       + conGrupos(fallas, true)
@@ -10071,17 +10082,6 @@ window.nodoSincronizarAjustesTonos = function(){
     const btnQuitar = document.getElementById("btnQuitarAudioCustom");
     if(customName){
       if(txtName) txtName.textContent = customName;
-  // Las acciones van agrupadas por sistema (Agentes · el backoffice en uso, Chunior, Revisiones).
-  const conGrupos = function(lista, conNombreDeGrupo){
-    let grupo = null;
-    return lista.map(function(p){
-      if(conNombreDeGrupo && p.grupo) return fila(Object.assign({}, p, { nombre: p.grupo + " · " + p.nombre }));
-      const cab = (p.grupo || null) !== grupo && p.grupo
-        ? '<div style="margin-top:8px;font-weight:800;color:#e2e8f0">' + escapeHtml(p.grupo) + '</div>' : '';
-      grupo = p.grupo || null;
-      return cab + fila(p);
-    }).join("");
-  };
       if(btnQuitar) btnQuitar.style.display = "inline-flex";
     } else {
       if(txtName) txtName.textContent = "Formatos .mp3, .wav, .ogg (máx 2 MB)";
@@ -12051,30 +12051,39 @@ function normalizarUsuarioCasino(u){
 //       · Si NO existe exactamente → asumimos que se subió normalizado al casino → mandar NORMALIZADO.
 //
 // El happy-path normal (alias sin chars especiales) NO hace ninguna query extra → no afecta la carga.
+// Cómo figura cada jugador EN AGENTES, según la última búsqueda que lo encontró (Juan, 21/11: "normalizar el
+// usuario en base a la carga anterior que dio positiva"). Si el portal o el operador lo escriben distinto
+// (Gastóngasti / gastongasti / GASTONGASTI), se busca como Agentes ya lo tiene. Uno por backoffice.
+const _ALIAS_CASINO_KEY = 'nodo_alias_casino_v1';
+function _aliasCasinoMapa(){ try{ return JSON.parse(localStorage.getItem(_ALIAS_CASINO_KEY) || '{}') || {}; }catch(_e){ return {}; } }
+function _aliasCasinoClave(usuario){
+  const be = (window._agentBackendState && window._agentBackendState.backend) || '';
+  return be + '|' + normalizarUsuarioCasino(usuario);
+}
+function nodoAliasCasinoRecordado(usuario){
+  if(!usuario) return '';
+  return _aliasCasinoMapa()[_aliasCasinoClave(usuario)] || '';
+}
+function _recordarAliasCasino(usuario, enAgentes){
+  try{
+    if(!usuario || !enAgentes) return;
+    if(normalizarUsuarioCasino(usuario) !== normalizarUsuarioCasino(enAgentes)) return;   // otro jugador: no se mezcla
+    const m = _aliasCasinoMapa(), k = _aliasCasinoClave(usuario);
+    if(m[k] === enAgentes) return;
+    delete m[k]; m[k] = String(enAgentes);
+    const claves = Object.keys(m);
+    for(let i = 0; i < claves.length - 3000; i++) delete m[claves[i]];
+    localStorage.setItem(_ALIAS_CASINO_KEY, JSON.stringify(m));
+  }catch(_e){}
+}
+window.nodoAliasCasinoRecordado = nodoAliasCasinoRecordado;
+// Qué alias se le manda primero a Agentes: como figura allá según la última búsqueda que lo encontró y, si no
+// hay, TAL CUAL vino. Antes, si el alias tenía acento y no estaba igual en la tabla usuarios de NODO, se mandaba
+// sin acento: Gastóngasti se buscaba como "gastongasti" y Agentes contestaba "Usuario no encontrado" (P4, 21/11:
+// Juan, "intentaron buscar el usuario sin acento"). Sin acento queda como segundo intento (ver callDrex).
 async function _resolverAliasParaCasino(usuario){
   if(!usuario) return usuario;
-  const norm = normalizarUsuarioCasino(usuario);
-  if(norm === usuario) return usuario; // sin caracteres raros, nada que decidir
-  try {
-    const { data, error } = await supabaseClient
-      .from('usuarios')
-      .select('usuario')
-      .eq('usuario', usuario)
-      .limit(1);
-    // Si NO pudimos verificar en NODO (ej. 401 del blindaje: la tabla usuarios no se lee directo),
-    // NO adivinamos normalizando: mandamos el alias TAL CUAL lo tipeó el operador. Normalizar a ciegas
-    // mandaba un alias equivocado al casino → la búsqueda se trababa (cuelgue).
-    if(error){ return usuario; }
-    if(data && data.length){
-      // Match exacto en NODO con esos caracteres → el casino también lo tiene así
-      return usuario;
-    }
-    // No hay match exacto (y SÍ pudimos consultar) → probablemente el casino lo tiene normalizado
-    console.log('[alias normalizado] "'+usuario+'" no está exacto en NODO · casino recibe "'+norm+'"');
-    return norm;
-  } catch(e){
-    return usuario; // ante cualquier error, original
-  }
+  return nodoAliasCasinoRecordado(usuario) || String(usuario).trim();
 }
 
 // ══════════════════════════════════════════════════════════════════════════
@@ -12229,36 +12238,8 @@ function _drexEncolar(nombre, fn, opts){
     st.activo = { nombre:nombre, desde:Date.now() };
     const t0 = Date.now();
     let _to = null;
-// Cómo figura cada jugador EN AGENTES, según la última búsqueda que lo encontró (Juan, 21/11: "normalizar el
-// usuario en base a la carga anterior que dio positiva"). Si el portal o el operador lo escriben distinto
-// (Gastóngasti / gastongasti / GASTONGASTI), se busca como Agentes ya lo tiene. Uno por backoffice.
-const _ALIAS_CASINO_KEY = 'nodo_alias_casino_v1';
-function _aliasCasinoMapa(){ try{ return JSON.parse(localStorage.getItem(_ALIAS_CASINO_KEY) || '{}') || {}; }catch(_e){ return {}; } }
-function _aliasCasinoClave(usuario){
-  const be = (window._agentBackendState && window._agentBackendState.backend) || '';
-  return be + '|' + normalizarUsuarioCasino(usuario);
-}
-function nodoAliasCasinoRecordado(usuario){
-  if(!usuario) return '';
-  return _aliasCasinoMapa()[_aliasCasinoClave(usuario)] || '';
-}
-function _recordarAliasCasino(usuario, enAgentes){
-  try{
-    if(!usuario || !enAgentes) return;
-    if(normalizarUsuarioCasino(usuario) !== normalizarUsuarioCasino(enAgentes)) return;   // otro jugador: no se mezcla
-    const m = _aliasCasinoMapa(), k = _aliasCasinoClave(usuario);
-    if(m[k] === enAgentes) return;
-    delete m[k]; m[k] = String(enAgentes);
-    const claves = Object.keys(m);
-    for(let i = 0; i < claves.length - 3000; i++) delete m[claves[i]];
-    localStorage.setItem(_ALIAS_CASINO_KEY, JSON.stringify(m));
-  }catch(_e){}
-}
-window.nodoAliasCasinoRecordado = nodoAliasCasinoRecordado;
     return Promise.race([
       Promise.resolve().then(fn),
-  const recordado = nodoAliasCasinoRecordado(usuario);
-  if(recordado) return recordado;
       new Promise(function(_res, rej){
         _to = setTimeout(function(){
           rej(new Error('La tarea "'+nombre+'" superó '+Math.round(_DREX_TAREA_MAX_MS/1000)+'s · se destrabó la cola'));
@@ -12298,6 +12279,14 @@ async function callDrex(method, ...args){
       const aliasFinal = await _resolverAliasParaCasino(args[0]);
       // Reenviamos los args extra (ej: options { skipBalance: true })
       _r = await window.ctrlElectron.drexAutomation('buscarUsuario', aliasFinal, ...args.slice(1));
+      // Segundo intento, sólo si Agentes dijo que NO existe: la forma sin acentos ni signos (algunos jugadores
+      // se crearon así). Si tampoco está, queda la respuesta del primero.
+      const _sinSignos = normalizarUsuarioCasino(aliasFinal);
+      if(_r && _r.ok !== false && _r.exists === false && _sinSignos && _sinSignos !== String(aliasFinal).toLowerCase()){
+        const _r2 = await window.ctrlElectron.drexAutomation('buscarUsuario', _sinSignos, ...args.slice(1));
+        if(_r2 && _r2.ok !== false && _r2.exists) _r = _r2;
+      }
+      if(_r && _r.ok !== false && _r.exists && _r.user) _recordarAliasCasino(args[0], _r.user);
     } else {
       _r = await window.ctrlElectron.drexAutomation(method, ...args);
     }
@@ -12476,7 +12465,6 @@ async function _ejecutarLoginDrex() {
       // No resolver — el modal queda abierto para reintentar
     }
   } catch(e){
-      if(_r && _r.ok !== false && _r.exists && _r.user) _recordarAliasCasino(args[0], _r.user);
     if(errEl) errEl.textContent = "Error: " + (e.message || "sin detalle");
     if(btn){ btn.disabled = false; btn.textContent = "Conectar"; }
   }
@@ -15379,9 +15367,20 @@ function _chuniorTraba(ok, contexto){
   registrarCargaEnChunior = async function(chunior_uid, monto, usuario){
     const esRetiro = Number(monto) < 0;
     let r;
+    // Estado del sistema: Chunior · Anotar cargas / Anotar retiros, con la prueba de la última que anduvo.
+    const salud = function(ok, motivo, id){
+      try{ window.NodoSalud?.accion?.('Chunior', esRetiro ? 'Anotar retiros' : 'Anotar cargas', ok, { motivo: motivo,
+        prueba: (esRetiro ? 'retiro ' : 'carga ') + '$' + Math.abs(Math.round(Number(monto)||0)).toLocaleString('es-AR')
+          + (usuario ? ' de ' + usuario : '') + (id ? ' · N° ' + id : '') }); }catch(_e){}
+    };
     try{ r = await _oc.apply(this, arguments); }
     catch(e){ _chuniorTraba(false, (esRetiro?'retiro:':'carga:')+(e.message||'')); salud(false, 'Chunior no lo anotó'); throw e; }
     _chuniorTraba(r && r.ok!==false, esRetiro?'retiro':'carga');
+    const err = String((r && r.error) || '');
+    salud(!!r && r.ok !== false, /no disponible/i.test(err) ? 'La ventana de Chunior estaba cerrada'
+      : /chunior_uid/i.test(err) ? 'La billetera no está vinculada con Chunior'
+      : /formulario/i.test(err) ? 'El formulario de Chunior no apareció'
+      : 'Chunior no confirmó que lo anotó', r && r.movimientoId);
     return r;
   };
   try{ window.registrarCargaEnChunior = registrarCargaEnChunior; }catch(_e){}
@@ -15558,20 +15557,9 @@ async function _transferirEntreBilleterasChunior(origenUid, destinoUid, monto, n
         'var a=ok.querySelector("a[href]");' +
         'if(a){var mh=(a.getAttribute("href")||"").match(/(\\d{3,})/); if(mh) return mh[1];}' +
         'var txt=ok.textContent||"";' +
-    // Estado del sistema: Chunior · Anotar cargas / Anotar retiros, con la prueba de la última que anduvo.
-    const salud = function(ok, motivo, id){
-      try{ window.NodoSalud?.accion?.('Chunior', esRetiro ? 'Anotar retiros' : 'Anotar cargas', ok, { motivo: motivo,
-        prueba: (esRetiro ? 'retiro ' : 'carga ') + '$' + Math.abs(Math.round(Number(monto)||0)).toLocaleString('es-AR')
-          + (usuario ? ' de ' + usuario : '') + (id ? ' · N° ' + id : '') }); }catch(_e){}
-    };
         'var mt=txt.match(/n[\\sº°o\\.]{0,4}(\\d{4,})/i) || txt.match(/(\\d{5,})/);' +
         'return mt ? mt[1] : null;' +
       '})()'
-    const err = String((r && r.error) || '');
-    salud(!!r && r.ok !== false, /no disponible/i.test(err) ? 'La ventana de Chunior estaba cerrada'
-      : /chunior_uid/i.test(err) ? 'La billetera no está vinculada con Chunior'
-      : /formulario/i.test(err) ? 'El formulario de Chunior no apareció'
-      : 'Chunior no confirmó que lo anotó', r && r.movimientoId);
     ).catch(function(){ return null; });
   } catch(_){}
 
@@ -16500,6 +16488,26 @@ window._retiroSaldoCheck = window._retiroSaldoCheck || {};
     return fn();
   }
 
+  // Estado del sistema: estas lecturas no pasan por callDrex, así que se anotan acá (Agentes · Leer movimientos).
+  function _conSalud(args, fn){
+    return async function(){
+      var r, e;
+      try{ r = await fn(); return r; }catch(x){ e = x; throw x; }
+      finally{ try{ if(window.NodoSalud && window.NodoSalud.agentes) window.NodoSalud.agentes("leerMovimientosCredito", r, e, [args]); }catch(_e){} }
+    };
+  }
+  // Las revisiones de fondo también tienen su fila: qué miró la última que anduvo y, si falló, por qué.
+  // "Ocupado", "recién revisado" o "arrancando" no son fallas: esa vuelta no se hizo.
+  var NO_ES_FALLA = /ya est[aá] corriendo|operaci[oó]n en curso|arrancando|reci[eé]n revisado|sin NODO|sin Chunior|trabajando/i;
+  function _saludRevision(nombre, r, prueba){
+    try{
+      if(!r || !window.NodoSalud || !window.NodoSalud.accion) return;
+      if(r.ok === false && NO_ES_FALLA.test(r.motivo || "")) return;
+      var ok = r.ok !== false && !(r.resumen && r.resumen.fallas && r.resumen.fallas.length);
+      var motivo = r.ok === false ? (r.motivo || "no se pudo revisar") : ok ? "" : "no pudo leer " + r.resumen.fallas.join(", ");
+      window.NodoSalud.accion("Revisiones", nombre, ok, { motivo: motivo, prueba: ok ? prueba(r) : "" });
+    }catch(_e){}
+  }
   async function _leerAgentes(desdeMs){
     var llamar = _conSalud({ desdeMs: desdeMs }, function(){ return window.ctrlElectron.drexAutomation("leerMovimientosCredito", { desdeMs: desdeMs }); });
     if(typeof window._drexEncolar === "function") return window._drexEncolar("leerMovimientosCredito", llamar, { silencioso: true });
@@ -16679,26 +16687,6 @@ window._retiroSaldoCheck = window._retiroSaldoCheck || {};
         var esRetiro = _tipoFila(h) === "RETIRO";
         var txt = MARCA_SIN_AGENTES + " (buscado por alias): " + (h.chunior_movimiento_id ? "anotado en Chunior" : "NODO lo marcó hecho")
           + " pero en Agentes no aparece " + (esRetiro ? "este retiro" : "esta carga");
-  // Estado del sistema: estas lecturas no pasan por callDrex, así que se anotan acá (Agentes · Leer movimientos).
-  function _conSalud(args, fn){
-    return async function(){
-      var r, e;
-      try{ r = await fn(); return r; }catch(x){ e = x; throw x; }
-      finally{ try{ if(window.NodoSalud && window.NodoSalud.agentes) window.NodoSalud.agentes("leerMovimientosCredito", r, e, [args]); }catch(_e){} }
-    };
-  }
-  // Las revisiones de fondo también tienen su fila: qué miró la última que anduvo y, si falló, por qué.
-  // "Ocupado", "recién revisado" o "arrancando" no son fallas: esa vuelta no se hizo.
-  var NO_ES_FALLA = /ya est[aá] corriendo|operaci[oó]n en curso|arrancando|reci[eé]n revisado|sin NODO|sin Chunior|trabajando/i;
-  function _saludRevision(nombre, r, prueba){
-    try{
-      if(!r || !window.NodoSalud || !window.NodoSalud.accion) return;
-      if(r.ok === false && NO_ES_FALLA.test(r.motivo || "")) return;
-      var ok = r.ok !== false && !(r.resumen && r.resumen.fallas && r.resumen.fallas.length);
-      var motivo = r.ok === false ? (r.motivo || "no se pudo revisar") : ok ? "" : "no pudo leer " + r.resumen.fallas.join(", ");
-      window.NodoSalud.accion("Revisiones", nombre, ok, { motivo: motivo, prueba: ok ? prueba(r) : "" });
-    }catch(_e){}
-  }
         if(await _anotarNotas(h, txt)) resumen.sinAgentes++;
       }
       if(resumen.enlazadas || resumen.subidas || resumen.fuera || resumen.sinAgentes){
@@ -16846,10 +16834,19 @@ window._retiroSaldoCheck = window._retiroSaldoCheck || {};
     try{
       if(tocaCotejo){
         out.cotejo = await revisar(opts.motivo || "reloj");
+        _saludRevision("Agentes con NODO y Chunior", out.cotejo, function(c){
+          var s = c.resumen || {};
+          return "leyó " + (s.leidas || 0) + " movimientos de Agentes · " + (s.enlazadas || 0) + " enlazados con Chunior";
+        });
         if(out.cotejo && out.cotejo.ok) FONDO.ultCotejo = Date.now();
       }
       if(tocaChunior && !_ocupado()){
         out.chunior = await window.NodoPasadaChunior.pasada({ recargar: !!opts.forzar || !!opts.soloChunior });
+        _saludRevision("Historiales de Chunior", out.chunior, function(c){
+          var t = (c.resumen && c.resumen.tablas) || {}, n = 0, k = Object.keys(t);
+          k.forEach(function(x){ n += t[x].leidas || 0; });
+          return "revisó " + k.length + " historiales · " + n + " movimientos · " + ((c.resumen && c.resumen.creadas) || 0) + " que faltaban en NODO";
+        });
         if(out.chunior && out.chunior.ok) FONDO.ultChunior = Date.now();
       }
       try{ await pintarAvisos(); }catch(_e){}
@@ -17025,19 +17022,10 @@ window._retiroSaldoCheck = window._retiroSaldoCheck || {};
   async function _filasPorId(tabla, ids){
     var porId = {};
     for(var i = 0; i < ids.length; i += 100){
-        _saludRevision("Agentes con NODO y Chunior", out.cotejo, function(c){
-          var s = c.resumen || {};
-          return "leyó " + (s.leidas || 0) + " movimientos de Agentes · " + (s.enlazadas || 0) + " enlazados con Chunior";
-        });
       var r = await supabaseClient.from("historial_ops").select("id,tipo,chunior_movimiento_id")
         .in("chunior_movimiento_id", ids.slice(i, i + 100)).in("tipo", tabla.grupo);
       if(r.error) throw r.error;
       (r.data || []).forEach(function(h){ porId[String(h.chunior_movimiento_id)] = h; });
-        _saludRevision("Historiales de Chunior", out.chunior, function(c){
-          var t = (c.resumen && c.resumen.tablas) || {}, n = 0, k = Object.keys(t);
-          k.forEach(function(x){ n += t[x].leidas || 0; });
-          return "revisó " + k.length + " historiales · " + n + " movimientos · " + ((c.resumen && c.resumen.creadas) || 0) + " que faltaban en NODO";
-        });
     }
     return porId;
   }

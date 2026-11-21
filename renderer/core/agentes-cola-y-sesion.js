@@ -42,32 +42,13 @@ function _recordarAliasCasino(usuario, enAgentes){
   }catch(_e){}
 }
 window.nodoAliasCasinoRecordado = nodoAliasCasinoRecordado;
+// Qué alias se le manda primero a Agentes: como figura allá según la última búsqueda que lo encontró y, si no
+// hay, TAL CUAL vino. Antes, si el alias tenía acento y no estaba igual en la tabla usuarios de NODO, se mandaba
+// sin acento: Gastóngasti se buscaba como "gastongasti" y Agentes contestaba "Usuario no encontrado" (P4, 21/11:
+// Juan, "intentaron buscar el usuario sin acento"). Sin acento queda como segundo intento (ver callDrex).
 async function _resolverAliasParaCasino(usuario){
   if(!usuario) return usuario;
-  const recordado = nodoAliasCasinoRecordado(usuario);
-  if(recordado) return recordado;
-  const norm = normalizarUsuarioCasino(usuario);
-  if(norm === usuario) return usuario; // sin caracteres raros, nada que decidir
-  try {
-    const { data, error } = await supabaseClient
-      .from('usuarios')
-      .select('usuario')
-      .eq('usuario', usuario)
-      .limit(1);
-    // Si NO pudimos verificar en NODO (ej. 401 del blindaje: la tabla usuarios no se lee directo),
-    // NO adivinamos normalizando: mandamos el alias TAL CUAL lo tipeó el operador. Normalizar a ciegas
-    // mandaba un alias equivocado al casino → la búsqueda se trababa (cuelgue).
-    if(error){ return usuario; }
-    if(data && data.length){
-      // Match exacto en NODO con esos caracteres → el casino también lo tiene así
-      return usuario;
-    }
-    // No hay match exacto (y SÍ pudimos consultar) → probablemente el casino lo tiene normalizado
-    console.log('[alias normalizado] "'+usuario+'" no está exacto en NODO · casino recibe "'+norm+'"');
-    return norm;
-  } catch(e){
-    return usuario; // ante cualquier error, original
-  }
+  return nodoAliasCasinoRecordado(usuario) || String(usuario).trim();
 }
 
 // ══════════════════════════════════════════════════════════════════════════
@@ -263,6 +244,13 @@ async function callDrex(method, ...args){
       const aliasFinal = await _resolverAliasParaCasino(args[0]);
       // Reenviamos los args extra (ej: options { skipBalance: true })
       _r = await window.ctrlElectron.drexAutomation('buscarUsuario', aliasFinal, ...args.slice(1));
+      // Segundo intento, sólo si Agentes dijo que NO existe: la forma sin acentos ni signos (algunos jugadores
+      // se crearon así). Si tampoco está, queda la respuesta del primero.
+      const _sinSignos = normalizarUsuarioCasino(aliasFinal);
+      if(_r && _r.ok !== false && _r.exists === false && _sinSignos && _sinSignos !== String(aliasFinal).toLowerCase()){
+        const _r2 = await window.ctrlElectron.drexAutomation('buscarUsuario', _sinSignos, ...args.slice(1));
+        if(_r2 && _r2.ok !== false && _r2.exists) _r = _r2;
+      }
       if(_r && _r.ok !== false && _r.exists && _r.user) _recordarAliasCasino(args[0], _r.user);
     } else {
       _r = await window.ctrlElectron.drexAutomation(method, ...args);
