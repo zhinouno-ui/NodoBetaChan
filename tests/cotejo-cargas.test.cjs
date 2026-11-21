@@ -201,8 +201,20 @@ test('P4: lee NODO de la más nueva, no crea filas repetidas y no marca de a mon
   assert.match(fuente, /\.order\("created_at", \{ ascending: false \}\)\.limit\(TOPE_FILAS_NODO\)/);
   assert.match(fuente, /if\(filas\.length >= TOPE_FILAS_NODO\) throw/);
   assert.match(fuente, /await _chuniorYaEnNodo\(v\.movimientoId\)\)\{ resumen\.dudas\+\+; return; \}/, 'si el N° de Chunior ya es de una fila de NODO, no se crea otra');
-  assert.match(fuente, /if\(r\.sobrantes\.length > TOPE_SIN_AGENTES\)/);
-  assert.match(fuente, /var cubreDesde = lectura\.completo \? desde : NaN;/, '"sin carga en Agentes" sólo con la lectura completa');
+  // "Sin carga en Agentes" se confirma de a una buscando al jugador con el filtro del informe, como mucho 3 por vuelta.
+  assert.match(fuente, /\.slice\(0, TOPE_SIN_AGENTES\)/);
+  assert.match(fuente, /if\(conf === true\) confirmadas\.push\(cand\)/);
+  assert.match(fuente, /\{ alias: h\.usuario, filtrarAlias: true, desdeMs: _ms\(h\) - DUDA_MS, maxPaginas: 3 \}/);
+  assert.match(fuente, /if\(!r \|\| !r\.ok \|\| r\.filtradoPorAlias !== true\) return null;/, 'sin filtro por alias no se afirma nada');
+});
+
+test('AdminOnline: busca a un jugador con Filtros → Buscar por alias → Aplicar, y después limpia el filtro', () => {
+  const pre = fs.readFileSync(path.join(ROOT, 'agent-preload-adminonline.js'), 'utf8');
+  assert.match(pre, /async function _aplicarFiltroAlias\(alias\)/);
+  assert.match(pre, /buscar por alias/i);
+  assert.match(pre, /findByText\(\/\^aplicar\$\/i, 'button'\)/);
+  assert.match(pre, /findByText\(\/\^limpiar filtros\$\/i, 'button'\)/);
+  assert.match(pre, /filtradoPorAlias: filtrado/);
 });
 
 test('cada vuelta mira desde la anterior (con margen), no 6 horas: Agentes no queda ocupado leyendo páginas', () => {

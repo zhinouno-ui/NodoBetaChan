@@ -16471,6 +16471,21 @@ window._retiroSaldoCheck = window._retiroSaldoCheck || {};
     if(r.error) throw r.error;
     return !!(r.data && r.data.length);
   }
+  // ¿Ese movimiento de NODO está en Agentes? Busca al jugador con el filtro del informe. true = confirmado que NO
+  // está; false = está (o hay uno igual cerca); null = no se puede afirmar (sin filtro, lectura cortada, error).
+  async function _confirmarSinAgentes(h){
+    var llamar = function(){ return window.ctrlElectron.drexAutomation("leerMovimientosCredito",
+      { alias: h.usuario, filtrarAlias: true, desdeMs: _ms(h) - DUDA_MS, maxPaginas: 3 }); };
+    var r = (typeof window._drexEncolar === "function")
+      ? await window._drexEncolar("leerMovimientosCredito", llamar, { silencioso: true }) : await llamar();
+    if(!r || !r.ok || r.filtradoPorAlias !== true) return null;
+    var tipo = _tipoFila(h), t = _ms(h);
+    var esta = (r.filas || []).some(function(m){
+      return _tipoMov(m) === tipo && _monto(m.cantidad) === _monto(h.monto) && Math.abs(m.ms - t) <= DUDA_MS;
+    });
+    if(esta) return false;
+    return r.completo ? true : null;
+  }
   function _hastaGuardado(){ try{ return Number(localStorage.getItem(CLAVE_HASTA)) || 0; }catch(_e){ return 0; } }
   async function _anotarNotas(fila, extra){
     var notas = (fila.notas ? fila.notas + " · " : "") + extra;
@@ -16568,9 +16583,9 @@ window._retiroSaldoCheck = window._retiroSaldoCheck || {};
       // NODO desde un poco antes: la fila puede ir unos segundos antes que el movimiento.
       var filas = await _leerNodo(desde - VENTANA_NODO_MS);
       var masViejo = movs.reduce(function(a, m){ return Math.min(a, m.ms); }, Infinity);
-      // "Sin carga en Agentes" sólo con una lectura completa del período: si Agentes cortó antes (páginas, tope),
-      // no se puede decir que algo no está.
-      var cubreDesde = lectura.completo ? desde : NaN;
+      // Las filas de NODO del período sin movimiento en esta lectura son CANDIDATAS: cada una se confirma
+      // buscando a ese jugador con el filtro del informe (abajo), no por no haberla visto en las páginas.
+      var cubreDesde = desde;
       var r = emparejar(movs, filas, { desdeLeidoMs: cubreDesde,
         esNuestra: function(h){ return String(h.origen || "") !== "COTEJO"; } });
       for(var i = 0; i < r.pares.length; i++){
@@ -16587,13 +16602,23 @@ window._retiroSaldoCheck = window._retiroSaldoCheck || {};
       }
       // Muchas de golpe no son errores de los operadores: es que el cotejo no está viendo bien (relojes, lectura).
       // No se marca ninguna y queda para revisar (P4, 21/11: 142 cargas marcadas de una).
-      if(r.sobrantes.length > TOPE_SIN_AGENTES){
-        console.warn("[cotejo-cargas] " + r.sobrantes.length + " filas sin carga en Agentes en una vuelta: no se marca ninguna");
-        resumen.dudas += r.sobrantes.length;
-        r.sobrantes = [];
+      // "Sin carga en Agentes" se afirma de a una y buscando: con el filtro de alias del informe se traen los
+      // movimientos de ESE jugador en la última semana, y recién si ahí no está, se marca (Juan, 21/11: la lista
+      // de 20 por página ya no llega a las cargas de hace un rato). Como mucho TOPE_SIN_AGENTES por vuelta, para
+      // no tener Agentes ocupado; las que quedan en duda no se vuelven a buscar por una hora. Si el backoffice no
+      // tiene ese filtro (agentesbet.io, Drex), no se marca nada.
+      var aConfirmar = r.sobrantes.filter(function(h){ return !_enDudaReciente({ alias: "fila", cantidad: 0, fecha: h.id }); })
+        .slice(0, TOPE_SIN_AGENTES);
+      var confirmadas = [];
+      for(var k = 0; k < aConfirmar.length; k++){
+        if(_ocupado()) break;
+        var cand = aConfirmar[k], conf = null;
+        try{ conf = await _confirmarSinAgentes(cand); }catch(_e){ conf = null; }
+        if(conf === true) confirmadas.push(cand);
+        else { resumen.dudas += conf === null ? 1 : 0; _anotarDuda({ alias: "fila", cantidad: 0, fecha: cand.id }); }
       }
-      for(var j = 0; j < r.sobrantes.length; j++){
-        var h = r.sobrantes[j];
+      for(var j = 0; j < confirmadas.length; j++){
+        var h = confirmadas[j];
         var esRetiro = _tipoFila(h) === "RETIRO";
         var txt = MARCA_SIN_AGENTES + ": " + (h.chunior_movimiento_id ? "anotado en Chunior" : "NODO lo marcó hecho")
           + " pero en Agentes no aparece " + (esRetiro ? "este retiro" : "esta carga");

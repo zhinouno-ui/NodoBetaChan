@@ -1203,7 +1203,17 @@ async function leerMovimientosCredito(args = {}) {
   if (meMovi && !(await _irARuta(TOKENS_REPORT_PATH))) {
     return { ok: false, motivo: 'OTRA_PANTALLA', message: 'No pude abrir "Movimientos de crédito": no encontré su link en el menú de AdminOnline (revisá la ruta ' + TOKENS_REPORT_PATH + ').' };
   }
+  let filtrado = false;
   try {
+    // Buscar UN jugador con el filtro de la página (Alias → Aplicar), en vez de pasar páginas: con mucho
+    // movimiento la lista de 20 por página no llega a las cargas de hace un rato y el cotejo las daba por
+    // "sin carga en Agentes" (Juan, 21/11). El rango de fechas que trae la página por defecto es la última semana.
+    if (args.filtrarAlias && alias) {
+      const r = await _aplicarFiltroAlias(alias);
+      if (!r.ok) return { ok: false, motivo: 'SIN_FILTRO', message: r.message };
+      filtrado = true;
+      if (r.vacio) return { ok: true, filas: [], completo: true, paginas: 1, filtradoPorAlias: true };
+    }
     const filas = [];
     let completo = false, paginas = 0, firmaAnterior = '';
     while (paginas < tope) {
@@ -1227,10 +1237,34 @@ async function leerMovimientosCredito(args = {}) {
       clickElement(sig);
       await _esperarQue(() => _filasInforme().map(f => f.fecha + f.alias + f.cantidad).join('|') !== firmaAnterior, 8000);
     }
-    return { ok: true, filas, completo, paginas };
+    return { ok: true, filas, completo, paginas, filtradoPorAlias: filtrado };
   } finally {
+    if (filtrado) { try { const limpiar = findByText(/^limpiar filtros$/i, 'button'); if (limpiar) { clickElement(limpiar); await delay(400); } } catch (_e) {} }
     if (meMovi) { try { if (!(await _irARuta(antes))) await _irARuta('/agents/control'); } catch (_e) {} }
   }
+}
+// Filtros del informe: "Filtros" (se despliega) → campo "Buscar por alias" → "Aplicar". Se espera a que la tabla
+// muestre sólo ese alias, o que quede vacía. Si no se puede confirmar, no vale como lectura.
+async function _aplicarFiltroAlias(alias) {
+  const campo = () => visibleElements('input').find(i => /buscar por alias/i.test(i.getAttribute('placeholder') || '')) || null;
+  if (!campo()) {
+    // Texto exacto "Filtros": una caja más grande que empieza con "Filtros…" no es el botón.
+    const abrir = findByText(/^filtros$/i, 'button, [role="button"], [data-state], div, span');
+    if (abrir) { clickElement(abrir); await _esperarQue(() => !!campo(), 4000); }
+  }
+  const input = campo();
+  if (!input) return { ok: false, message: 'No encontré el filtro por alias del informe.' };
+  if (!(await setFieldAndVerify(input, alias, 4))) return { ok: false, message: 'No se pudo escribir el alias en el filtro.' };
+  const aplicar = findByText(/^aplicar$/i, 'button');
+  if (!aplicar) return { ok: false, message: 'No encontré "Aplicar" en los filtros del informe.' };
+  const antes = _filasInforme().map(f => f.fecha + f.alias + f.cantidad).join('|');
+  clickElement(aplicar);
+  const soloEse = () => { const p = _filasInforme(); return p.length > 0 && p.every(f => String(f.alias).toLowerCase() === alias); };
+  const vacio = () => _filasInforme().length === 0 && /no hay|sin resultados|no se encontr|sin datos|no data/i.test(normalizeText((document.querySelector('table') || document.body).innerText || ''));
+  const ok = await _esperarQue(() => (soloEse() && _filasInforme().map(f => f.fecha + f.alias + f.cantidad).join('|') !== antes) || soloEse() || vacio(), 10000);
+  if (!ok) return { ok: false, message: 'El informe no mostró el resultado del filtro por alias.' };
+  await delay(400);
+  return { ok: true, vacio: vacio() && !soloEse() };
 }
 
 async function leerWhatsappOficina(args = {}) { return _enPersonalizarPagina(_leerWhatsappEnPantalla, args); }
