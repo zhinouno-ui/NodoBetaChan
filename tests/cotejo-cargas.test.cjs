@@ -172,6 +172,11 @@ test('el cartel: la casilla Lo vi va a la izquierda (a la derecha se cortaba) y 
   assert.ok(fuente.includes('"*,notas.ilike.*" + MARCA_CHUNIOR + "*"'), 'la consulta de avisos trae lo de Chunior');
 });
 
+// 19/11 · Juan: "los carteles de aviso estaban todos rotos". La regla del panel para todos los input
+// (width:100%, padding:11px, márgenes) estiraba la casilla y "Lo vi" quedaba encima del título ("LDepósitos").
+// Medido con el CSS real en Chrome: antes "Lo vi" terminaba 27px adentro del título; ahora termina 12px antes.
+// (La casilla "Lo vi" la prueba tests/cotejo-avisos-casilla.test.cjs, de la 2.1.9.)
+
 // 18/11: "que no haya dos revisiones separadas esperando a que no haya ninguna solicitud".
 test('cotejo con Agentes y pasada por Chunior van en UNA fila, detrás del watchdog y nunca encimados', () => {
   const chu = fs.readFileSync(path.join(ROOT, 'renderer', 'core', 'cotejo-chunior.js'), 'utf8');
@@ -188,4 +193,23 @@ test('cotejo con Agentes y pasada por Chunior van en UNA fila, detrás del watch
   // El watchdog no lee mientras corre la fila, y al terminar le pasa la posta.
   assert.match(wd, /if\(window\._revisionFondoCorriendo\)\{ _watchdogTrigger\(15000\); return; \}/);
   assert.match(wd, /_revisarFichasRetirosTrasWatchdog\(\); \}catch\(_e\)\{\}\s+\/\/[^\n]*\n\s+try\{ if\(window\._revisionesFondo\)/);
+});
+
+// 21/11, P4: con tope de 400 filas de la más vieja a la más nueva, las cargas de la última hora quedaban afuera;
+// NODO creaba una fila COTEJO repetida por cada una y marcaba la de verdad "sin carga en Agentes" (142 de golpe).
+test('P4: lee NODO de la más nueva, no crea filas repetidas y no marca de a montones', () => {
+  assert.match(fuente, /\.order\("created_at", \{ ascending: false \}\)\.limit\(TOPE_FILAS_NODO\)/);
+  assert.match(fuente, /if\(filas\.length >= TOPE_FILAS_NODO\) throw/);
+  assert.match(fuente, /await _chuniorYaEnNodo\(v\.movimientoId\)\)\{ resumen\.dudas\+\+; return; \}/, 'si el N° de Chunior ya es de una fila de NODO, no se crea otra');
+  assert.match(fuente, /if\(r\.sobrantes\.length > TOPE_SIN_AGENTES\)/);
+  assert.match(fuente, /var cubreDesde = lectura\.completo \? desde : NaN;/, '"sin carga en Agentes" sólo con la lectura completa');
+});
+
+test('cada vuelta mira desde la anterior (con margen), no 6 horas: Agentes no queda ocupado leyendo páginas', () => {
+  assert.match(fuente, /var desde = Math\.max\(empezo - MIRAR_ATRAS_MS, hasta \? hasta - MARGEN_MS : empezo - PRIMERA_VEZ_MS\)/);
+  assert.match(fuente, /if\(lectura\.completo\)\{ try\{ localStorage\.setItem\(CLAVE_HASTA/);
+});
+
+test('con muchos avisos se muestran 5 y cuántos más hay', () => {
+  assert.match(fuente, /var resto = lista\.length > 5 \? lista\.length - 5 : 0;/);
 });

@@ -25,7 +25,14 @@
 
   var VENTANA_NODO_MS    = 3 * 60000;      // Agentes ↔ NODO: la misma carga, a menos de 3 minutos
   var VENTANA_CHUNIOR_MS = 15 * 60000;     // Chunior se anota a mano y puede ir unos minutos después
-  var MIRAR_ATRAS_MS     = 6 * 3600000;    // se revisan las últimas 6 horas
+  var MIRAR_ATRAS_MS     = 6 * 3600000;    // nunca más atrás que esto
+  // Cada vuelta mira sólo desde la anterior (con un margen), no las últimas 6 horas: en una oficina con
+  // movimiento (P4, 21/11) leer 6 horas eran 15 páginas de Agentes cada 10 minutos, con Agentes ocupado.
+  var PRIMERA_VEZ_MS     = 60 * 60000;     // la primera vuelta del día mira la última hora
+  var MARGEN_MS          = 15 * 60000;     // y cada vuelta repite los últimos 15 minutos de la anterior
+  var CLAVE_HASTA        = "nodoCotejoCargasHasta";
+  var TOPE_FILAS_NODO    = 1500;           // si NODO trae más que esto, la lectura no es completa: no se decide
+  var TOPE_SIN_AGENTES   = 3;              // más de esto en una vuelta = algo anda mal (relojes, lectura): no se marca
   var GRACIA_SIN_AGENTES = 10 * 60000;     // una fila de NODO más nueva que esto todavía no se juzga
   var DUDA_MS            = 60 * 60000;     // una fila igual suelta a menos de una hora: no se decide
   var CADA_CUANTO_MS     = 10 * 60000;
@@ -140,15 +147,30 @@
     if(typeof window._drexEncolar === "function") return window._drexEncolar("leerMovimientosCredito", llamar, { silencioso: true });
     return llamar();
   }
+  // Todas las filas de NODO del período, de la más nueva a la más vieja. Antes: de la más vieja, con tope de 400:
+  // en P4 (21/11) las de la última hora quedaban afuera, NODO no las encontraba, creaba una fila COTEJO repetida
+  // por cada carga y después marcaba la carga de verdad como "sin carga en Agentes". Si se llega al tope, la
+  // lectura no es completa y no se decide nada.
   async function _leerNodo(desdeMs){
     var r = await supabaseClient.from("historial_ops")
       .select("id,created_at,usuario,monto,tipo,estado,origen,notas,solicitud_id,chunior_movimiento_id,billetera_id")
       .in("tipo", ["CARGA", "RETIRO"]).eq("pc_codigo", _pc())
       .gte("created_at", new Date(desdeMs).toISOString())
-      .order("created_at", { ascending: true }).limit(400);
+      .order("created_at", { ascending: false }).limit(TOPE_FILAS_NODO);
     if(r.error) throw r.error;
-    return r.data || [];
+    var filas = r.data || [];
+    if(filas.length >= TOPE_FILAS_NODO) throw new Error("demasiados movimientos en NODO para cotejar de una vez");
+    return filas.reverse();
   }
+  // ¿Ese N° de Chunior ya es de alguna fila de NODO (de cualquier PC)? Si lo es, NODO hizo esa operación y el
+  // cotejo no la emparejó: no se crea otra fila. Es la red de seguridad contra filas repetidas.
+  async function _chuniorYaEnNodo(id){
+    if(!id) return false;
+    var r = await supabaseClient.from("historial_ops").select("id").eq("chunior_movimiento_id", String(id)).limit(1);
+    if(r.error) throw r.error;
+    return !!(r.data && r.data.length);
+  }
+  function _hastaGuardado(){ try{ return Number(localStorage.getItem(CLAVE_HASTA)) || 0; }catch(_e){ return 0; } }
   async function _anotarNotas(fila, extra){
     var notas = (fila.notas ? fila.notas + " · " : "") + extra;
     var r = await supabaseClient.from("historial_ops").update({ notas: notas }).eq("id", fila.id).select("id");
@@ -173,6 +195,7 @@
     if(!v || v.ok === false){ resumen.dudas++; return; }                  // "no pude mirar" no es "no está"
     if(v.vinculadoAOtro){ resumen.dudas++; return; }                       // hay una, pero ya es de otra fila
     var cuando = new Date(mov.ms).toISOString();
+    if((v.existe || v.encontrado) && await _chuniorYaEnNodo(v.movimientoId)){ resumen.dudas++; return; }
     if(v.existe || v.encontrado){
       // Agentes + Chunior: se enlaza y se dibuja. No hace falta avisar a nadie.
       await registrarEnHistorial({ usuario: usuario, tipo: tipo, monto: monto, origen: "COTEJO", estado: "OK",
@@ -235,7 +258,8 @@
     CORRIENDO = true; ULTIMA = Date.now();
     var resumen = { enlazadas: 0, subidas: 0, fuera: 0, sinAgentes: 0, dudas: 0, leidas: 0 };
     try{
-      var desde = Date.now() - MIRAR_ATRAS_MS;
+      var empezo = Date.now(), hasta = _hastaGuardado();
+      var desde = Math.max(empezo - MIRAR_ATRAS_MS, hasta ? hasta - MARGEN_MS : empezo - PRIMERA_VEZ_MS);
       var lectura = await _leerAgentes(desde);
       if(!lectura || !lectura.ok) return { ok: false, motivo: (lectura && lectura.message) || "no se pudo leer Agentes" };
       var movs = lectura.filas || [];
@@ -243,7 +267,9 @@
       // NODO desde un poco antes: la fila puede ir unos segundos antes que el movimiento.
       var filas = await _leerNodo(desde - VENTANA_NODO_MS);
       var masViejo = movs.reduce(function(a, m){ return Math.min(a, m.ms); }, Infinity);
-      var cubreDesde = lectura.completo ? desde : (Number.isFinite(masViejo) ? masViejo : NaN);
+      // "Sin carga en Agentes" sólo con una lectura completa del período: si Agentes cortó antes (páginas, tope),
+      // no se puede decir que algo no está.
+      var cubreDesde = lectura.completo ? desde : NaN;
       var r = emparejar(movs, filas, { desdeLeidoMs: cubreDesde,
         esNuestra: function(h){ return String(h.origen || "") !== "COTEJO"; } });
       for(var i = 0; i < r.pares.length; i++){
@@ -258,6 +284,13 @@
         }catch(e){ resumen.dudas++; console.warn("[cotejo-cargas]", p.caso, e && e.message); }
         if(resumen.dudas > antes) _anotarDuda(p.mov);
       }
+      // Muchas de golpe no son errores de los operadores: es que el cotejo no está viendo bien (relojes, lectura).
+      // No se marca ninguna y queda para revisar (P4, 21/11: 142 cargas marcadas de una).
+      if(r.sobrantes.length > TOPE_SIN_AGENTES){
+        console.warn("[cotejo-cargas] " + r.sobrantes.length + " filas sin carga en Agentes en una vuelta: no se marca ninguna");
+        resumen.dudas += r.sobrantes.length;
+        r.sobrantes = [];
+      }
       for(var j = 0; j < r.sobrantes.length; j++){
         var h = r.sobrantes[j];
         var esRetiro = _tipoFila(h) === "RETIRO";
@@ -271,6 +304,8 @@
       if(resumen.fuera) _toast("⚠️ Hay " + resumen.fuera + " carga(s) o retiro(s) hechos fuera de NODO. Revisalos en el historial y avisale a tu superior.", "red");
       if(resumen.sinAgentes) _toast("⚠️ Hay " + resumen.sinAgentes + " movimiento(s) anotados que no aparecen en Agentes. Revisalos en el historial.", "red");
       await pintarAvisos();
+      // La próxima vuelta arranca desde acá (menos el margen). Sólo si se pudo leer todo el período.
+      if(lectura.completo){ try{ localStorage.setItem(CLAVE_HASTA, String(empezo)); }catch(_e){} }
       return { ok: true, resumen: resumen };
     }catch(e){
       console.warn("[cotejo-cargas] vuelta", e && e.message);
@@ -303,6 +338,8 @@
     var lista = [];
     try{ lista = await _leerAvisos(); }catch(_e){}
     if(!lista.length){ box.innerHTML = ""; return; }
+    var resto = lista.length > 5 ? lista.length - 5 : 0;
+    if(resto) lista = lista.slice(0, 5);
     box.innerHTML = lista.map(function(h){
       var fuera = String(h.notas || "").indexOf(MARCA_FUERA) >= 0;
       var hora = new Date(h.created_at).toLocaleString("es-AR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
@@ -330,7 +367,7 @@
         + '<label style="flex:none;white-space:nowrap;cursor:pointer;font-weight:700"><input type="checkbox" style="width:auto;height:auto;padding:0;margin:0 4px 0 0;vertical-align:middle;flex:none" onchange="nodoCotejoReconocer(\'' + _esc(h.id) + '\', this)">Lo vi</label>'
         + '<div style="min-width:0;overflow-wrap:anywhere"><b>' + _esc(titulo) + '</b><br><span class="small">' + _esc(detalle) + '</span></div>'
         + '</div>';
-    }).join("");
+    }).join("") + (resto ? '<div class="small" style="color:#94a3b8;margin:2px 0 8px 4px">y ' + resto + ' aviso(s) más: marcá estos como vistos para ver los siguientes.</div>' : "");
   }
   window.nodoCotejoReconocer = async function(id, casilla){
     if(casilla) casilla.disabled = true;
