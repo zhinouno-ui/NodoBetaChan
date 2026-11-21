@@ -377,9 +377,20 @@ function _chuniorTraba(ok, contexto){
   registrarCargaEnChunior = async function(chunior_uid, monto, usuario){
     const esRetiro = Number(monto) < 0;
     let r;
+    // Estado del sistema: Chunior · Anotar cargas / Anotar retiros, con la prueba de la última que anduvo.
+    const salud = function(ok, motivo, id){
+      try{ window.NodoSalud?.accion?.('Chunior', esRetiro ? 'Anotar retiros' : 'Anotar cargas', ok, { motivo: motivo,
+        prueba: (esRetiro ? 'retiro ' : 'carga ') + '$' + Math.abs(Math.round(Number(monto)||0)).toLocaleString('es-AR')
+          + (usuario ? ' de ' + usuario : '') + (id ? ' · N° ' + id : '') }); }catch(_e){}
+    };
     try{ r = await _oc.apply(this, arguments); }
-    catch(e){ _chuniorTraba(false, (esRetiro?'retiro:':'carga:')+(e.message||'')); throw e; }
+    catch(e){ _chuniorTraba(false, (esRetiro?'retiro:':'carga:')+(e.message||'')); salud(false, 'Chunior no lo anotó'); throw e; }
     _chuniorTraba(r && r.ok!==false, esRetiro?'retiro':'carga');
+    const err = String((r && r.error) || '');
+    salud(!!r && r.ok !== false, /no disponible/i.test(err) ? 'La ventana de Chunior estaba cerrada'
+      : /chunior_uid/i.test(err) ? 'La billetera no está vinculada con Chunior'
+      : /formulario/i.test(err) ? 'El formulario de Chunior no apareció'
+      : 'Chunior no confirmó que lo anotó', r && r.movimientoId);
     return r;
   };
   try{ window.registrarCargaEnChunior = registrarCargaEnChunior; }catch(_e){}

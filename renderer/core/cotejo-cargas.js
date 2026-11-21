@@ -146,8 +146,28 @@
     return fn();
   }
 
+  // Estado del sistema: estas lecturas no pasan por callDrex, así que se anotan acá (Agentes · Leer movimientos).
+  function _conSalud(args, fn){
+    return async function(){
+      var r, e;
+      try{ r = await fn(); return r; }catch(x){ e = x; throw x; }
+      finally{ try{ if(window.NodoSalud && window.NodoSalud.agentes) window.NodoSalud.agentes("leerMovimientosCredito", r, e, [args]); }catch(_e){} }
+    };
+  }
+  // Las revisiones de fondo también tienen su fila: qué miró la última que anduvo y, si falló, por qué.
+  // "Ocupado", "recién revisado" o "arrancando" no son fallas: esa vuelta no se hizo.
+  var NO_ES_FALLA = /ya est[aá] corriendo|operaci[oó]n en curso|arrancando|reci[eé]n revisado|sin NODO|sin Chunior|trabajando/i;
+  function _saludRevision(nombre, r, prueba){
+    try{
+      if(!r || !window.NodoSalud || !window.NodoSalud.accion) return;
+      if(r.ok === false && NO_ES_FALLA.test(r.motivo || "")) return;
+      var ok = r.ok !== false && !(r.resumen && r.resumen.fallas && r.resumen.fallas.length);
+      var motivo = r.ok === false ? (r.motivo || "no se pudo revisar") : ok ? "" : "no pudo leer " + r.resumen.fallas.join(", ");
+      window.NodoSalud.accion("Revisiones", nombre, ok, { motivo: motivo, prueba: ok ? prueba(r) : "" });
+    }catch(_e){}
+  }
   async function _leerAgentes(desdeMs){
-    var llamar = function(){ return window.ctrlElectron.drexAutomation("leerMovimientosCredito", { desdeMs: desdeMs }); };
+    var llamar = _conSalud({ desdeMs: desdeMs }, function(){ return window.ctrlElectron.drexAutomation("leerMovimientosCredito", { desdeMs: desdeMs }); });
     if(typeof window._drexEncolar === "function") return window._drexEncolar("leerMovimientosCredito", llamar, { silencioso: true });
     return llamar();
   }
@@ -177,8 +197,8 @@
   // ¿Ese movimiento de NODO está en Agentes? Busca al jugador con el filtro del informe. true = confirmado que NO
   // está; false = está (o hay uno igual cerca); null = no se puede afirmar (sin filtro, lectura cortada, error).
   async function _confirmarSinAgentes(h){
-    var llamar = function(){ return window.ctrlElectron.drexAutomation("leerMovimientosCredito",
-      { alias: h.usuario, filtrarAlias: true, desdeMs: _ms(h) - DUDA_MS, maxPaginas: 3 }); };
+    var args = { alias: h.usuario, filtrarAlias: true, desdeMs: _ms(h) - DUDA_MS, maxPaginas: 3 };
+    var llamar = _conSalud(args, function(){ return window.ctrlElectron.drexAutomation("leerMovimientosCredito", args); });
     var r = (typeof window._drexEncolar === "function")
       ? await window._drexEncolar("leerMovimientosCredito", llamar, { silencioso: true }) : await llamar();
     if(!r || !r.ok || r.filtradoPorAlias !== true) return null;
@@ -472,10 +492,19 @@
     try{
       if(tocaCotejo){
         out.cotejo = await revisar(opts.motivo || "reloj");
+        _saludRevision("Agentes con NODO y Chunior", out.cotejo, function(c){
+          var s = c.resumen || {};
+          return "leyó " + (s.leidas || 0) + " movimientos de Agentes · " + (s.enlazadas || 0) + " enlazados con Chunior";
+        });
         if(out.cotejo && out.cotejo.ok) FONDO.ultCotejo = Date.now();
       }
       if(tocaChunior && !_ocupado()){
         out.chunior = await window.NodoPasadaChunior.pasada({ recargar: !!opts.forzar || !!opts.soloChunior });
+        _saludRevision("Historiales de Chunior", out.chunior, function(c){
+          var t = (c.resumen && c.resumen.tablas) || {}, n = 0, k = Object.keys(t);
+          k.forEach(function(x){ n += t[x].leidas || 0; });
+          return "revisó " + k.length + " historiales · " + n + " movimientos · " + ((c.resumen && c.resumen.creadas) || 0) + " que faltaban en NODO";
+        });
         if(out.chunior && out.chunior.ok) FONDO.ultChunior = Date.now();
       }
       try{ await pintarAvisos(); }catch(_e){}

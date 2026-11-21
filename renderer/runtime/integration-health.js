@@ -177,10 +177,51 @@
   // "Tareas de fondo · No respondió bien", y nadie sabía qué era (Juan, 16/11: "si falla el retiro de
   // fichas y no la carga, el operador debe saber que el retiro no anda pero la carga sí"). Se anota en
   // esta PC (agentes()) y no viaja: el servidor sigue recibiendo WORKERS como antes.
-  const AGENTES=[['cargarSaldo','Cargar fichas en Agentes'],['retirarSaldo','Retirar fichas en Agentes'],
-    ['crearUsuario','Crear usuarios en Agentes'],['cambiarClave','Cambiar claves en Agentes'],
-    ['buscarUsuario','Buscar usuarios en Agentes'],['obtenerSaldoAgente','Saldo de la cuenta de Agentes']];
-  const agentesUltimo=new Map();
+  // 21/11 (Juan): "cada preload es distinto y puede fallar distinto": las filas van por sistema (Agentes con el
+  // nombre del backoffice en uso, Chunior, Revisiones) y por acción, y cada una guarda la PRUEBA de lo último que
+  // anduvo ("14:32 · cargó $5.000 a pruebasan"), que se ve al pasar el mouse. Como Airbyte (estado = el último
+  // intento, con el error a la vista) y Zapier (se marca el paso que falló, no la corrida entera). Las pruebas
+  // tienen usuarios y montos: quedan en esta PC, no viajan al servidor.
+  const AGENTES=[['cargarSaldo','Cargar fichas'],['retirarSaldo','Retirar fichas'],
+    ['crearUsuario','Crear usuarios'],['cambiarClave','Cambiar claves'],
+    ['buscarUsuario','Buscar usuarios'],['obtenerSaldoAgente','Saldo de la cuenta'],
+    ['leerMovimientosCredito','Leer movimientos'],['leerWhatsappOficina','Leer el WhatsApp de la oficina'],
+    ['guardarWhatsappOficina','Guardar el WhatsApp de la oficina']];
+  const acciones=new Map();   // "sistema|acción" → {sistema,accion,ok,at,motivo,prueba,bien:{at,prueba}}
+  let ultimoAlias='';
+  const hora=t=>{const d=new Date(t);return String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0');};
+  const pesos=n=>'$'+Math.abs(Math.round(Number(n)||0)).toLocaleString('es-AR');
+  function sistemaAgentes(){
+    const label=String(root._agentBackendState?.label||'').trim();
+    return label?'Agentes · '+label:'Agentes';
+  }
+  function accion(sistema,nombre,ok,info){
+    if(!sistema||!nombre)return false;
+    info=info||{};
+    const clave=sistema+'|'+nombre,antes=acciones.get(clave),at=Date.now();
+    const prueba=String(info.prueba||'').slice(0,140);
+    const fila={sistema,accion:nombre,ok:!!ok,at,motivo:ok?'':String(info.motivo||'No respondió bien').slice(0,140),prueba,
+      bien:ok?{at,prueba}:(antes?.bien||null)};
+    acciones.delete(clave);acciones.set(clave,fila);
+    while(acciones.size>60)acciones.delete(acciones.keys().next().value);
+    return true;
+  }
+  function pruebaAgentes(method,args,r){
+    const a=args||[],quien=ultimoAlias?(' a '+ultimoAlias):'';
+    if(method==='buscarUsuario')return 'buscó a '+String(a[0]||'')+(r&&r.exists===false?' (no existe)':'');
+    if(method==='cargarSaldo')return 'cargó '+pesos(a[0])+quien;
+    if(method==='retirarSaldo')return 'retiró '+pesos(a[0])+(ultimoAlias?' de '+ultimoAlias:'');
+    if(method==='crearUsuario')return 'creó a '+String(a[0]||'');
+    if(method==='cambiarClave')return 'cambió la clave'+(ultimoAlias?' de '+ultimoAlias:'');
+    if(method==='obtenerSaldoAgente')return 'leyó el saldo de la cuenta';
+    if(method==='leerMovimientosCredito'){
+      const n=Array.isArray(r?.filas)?r.filas.length:0,al=a[0]&&a[0].alias;
+      return 'leyó '+n+' movimiento'+(n===1?'':'s')+(al?' de '+al:'');
+    }
+    if(method==='leerWhatsappOficina')return 'leyó el WhatsApp de la oficina';
+    if(method==='guardarWhatsappOficina')return 'guardó el WhatsApp de la oficina';
+    return '';
+  }
   function motivoAgentes(r,err){
     const t=String((err&&(err.message||err))||(r&&(r.message||r.error||r.motivo))||'');
     if((r&&r.needsLogin)||/login|inici(ar|o) sesi|ingres(ar|o) de nuevo/i.test(t))return 'Agentes pidió volver a iniciar sesión';
@@ -191,20 +232,28 @@
     if(/duplicado|ya existe/i.test(t))return 'Ese usuario ya existía';
     return 'Agentes no confirmó que se hizo';
   }
-  function agentes(method,r,err){
-    if(!AGENTES.some(a=>a[0]===method))return false;
+  function agentes(method,r,err,args){
+    const def=AGENTES.find(a=>a[0]===method);
+    if(!def)return false;
     const ok=!err&&!!r&&r.ok!==false;
-    agentesUltimo.set(method,{ok,at:Date.now(),motivo:ok?'':motivoAgentes(r,err)});
-    return true;
+    if(method==='buscarUsuario'&&args&&typeof args[0]==='string')ultimoAlias=String(args[0]).trim();
+    return accion(sistemaAgentes(),def[1],ok,{motivo:ok?'':motivoAgentes(r,err),prueba:ok?pruebaAgentes(method,args,r):''});
   }
-  function partesAgentes(ahora){
-    const vistas=AGENTES.filter(a=>agentesUltimo.has(a[0]));
-    if(!vistas.length)return [{nombre:'Operaciones en Agentes',estado:'sin_actividad',detalle:''}];
-    return vistas.map(([method,nombre])=>{
-      const u=agentesUltimo.get(method),edad=ahora-u.at;
-      if(!u.ok)return {nombre,estado:'falla',detalle:u.motivo+(edad>FRESH_MS?' · '+hace(edad):''),...(edad>FRESH_MS?{hace:hace(edad)}:{})};
-      return edad<=FRESH_MS?{nombre,estado:'anda',detalle:''}:{nombre,estado:'anduvo',detalle:'',hace:hace(edad)};
+  // Lo que se ve al pasar el mouse: lo último que anduvo, con hora y qué fue; si falló, cuándo y por qué.
+  function titulo(u){
+    const bien=u.bien?('Último que anduvo: '+hora(u.bien.at)+(u.bien.prueba?' · '+u.bien.prueba:'')):'No anduvo desde que se abrió NODO';
+    return u.ok?bien:('Falló a las '+hora(u.at)+' · '+u.motivo+'\n'+bien);
+  }
+  const ORDEN_SISTEMA=s=>/^Agentes/.test(s)?0:s==='Chunior'?1:2;
+  function partesAcciones(ahora){
+    const vistas=[...acciones.values()].sort((a,b)=>ORDEN_SISTEMA(a.sistema)-ORDEN_SISTEMA(b.sistema)||a.sistema.localeCompare(b.sistema));
+    const partes=vistas.map(u=>{
+      const edad=ahora-u.at,nombre=u.accion,base={nombre,grupo:u.sistema,prueba:titulo(u)};
+      if(!u.ok)return {...base,estado:'falla',detalle:u.motivo+(edad>FRESH_MS?' · '+hace(edad):''),...(edad>FRESH_MS?{hace:hace(edad)}:{})};
+      return edad<=FRESH_MS?{...base,estado:'anda',detalle:''}:{...base,estado:'anduvo',detalle:'',hace:hace(edad)};
     });
+    if(!vistas.some(u=>/^Agentes/.test(u.sistema)))partes.unshift({nombre:'Operaciones',grupo:sistemaAgentes(),estado:'sin_actividad',detalle:''});
+    return partes;
   }
   // Lo que se le dice cuando el servidor tiene algo más nuevo que el panel y no termina de llegar.
   const NO_LLEGA={BANDEJA:'No están llegando las solicitudes nuevas',CHAT:'No están llegando los mensajes nuevos',
@@ -249,9 +298,11 @@
       }
       return parte;
     });
-    // "Tareas de fondo" se reemplaza por una fila por operación de Agentes (ver AGENTES).
+    // "Tareas de fondo" se reemplaza por una fila por sistema y acción (Agentes, Chunior, Revisiones).
     const iw=partes.findIndex(p=>p.nombre===NOMBRES.WORKERS);
-    if(iw>=0)partes.splice(iw,1,...partesAgentes(ahora));
+    // Van al final, agrupadas, para que debajo de cada título sólo queden sus acciones.
+    if(iw>=0)partes.splice(iw,1);
+    partes.push(...partesAcciones(ahora));
     if(s.transport==='ERROR')partes.unshift({nombre:'Aviso al servidor',estado:'falla',detalle:'No se pudo enviar el estado'});
     return {oficina:s.pc,partes};
   }
@@ -270,5 +321,5 @@
   async function refresh(){
     context();lastFlush=0;await flush();return show();
   }
-  return Object.freeze({record,begin,errorCode,flush,snapshot,show,refresh,resumen,motivo,lectura,agentes});
+  return Object.freeze({record,begin,errorCode,flush,snapshot,show,refresh,resumen,motivo,lectura,agentes,accion});
 });

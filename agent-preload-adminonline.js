@@ -739,21 +739,55 @@ async function cambiarClave(password, options = {}) {
 
   const modal = await waitFor(findActiveModal, options.timeout || DEFAULT_TIMEOUT);
   await delay(300);
-  const campo = firstVisible('input[type="text"], input[type="password"], input:not([type])', modal);
-  if (!campo) throw new Error('No apareció el campo de nueva contraseña.');
-  if (!(await setFieldAndVerify(campo, clave, 5))) throw new Error('No se pudo escribir la nueva contraseña.');
+  const campo = campoClaveDelModal(modal);
+  if (!campo) { await cerrarModalActual(); throw new Error('No apareció el campo de nueva contraseña.'); }
+  if (!(await setFieldAndVerify(campo, clave, 5))) { await cerrarModalActual(); throw new Error('No se pudo escribir la nueva contraseña.'); }
 
   const guardar = botonConfirmar(modal);
-  if (!guardar) throw new Error('No se encontró el botón de guardar la contraseña.');
+  if (!guardar) { await cerrarModalActual(); throw new Error('No se encontró el botón de guardar la contraseña.'); }
   const capt = observarToast();
   clickElement(guardar);
-  const toast = await esperarToastCapturado(capt, 8000);
-  // "Hecho" sólo si AdminOnline lo confirma: un aviso de éxito, o el modal se cerró sin error. Antes, sin
-  // aviso se daba por bueno y al jugador le llegaba "Tu clave fue actualizada" con el modal abierto
-  // diciendo que no (16/11).
+
+  // Paso del medio (Juan, 21/11): "Cambiar contraseña · ¿Estás seguro de guardar esta nueva contraseña?",
+  // con "Alias: … Contraseña: …" y Aceptar. NODO no lo apretaba: esperaba un aviso que no llega, cerraba y
+  // decía "no confirmó". Se aprieta Aceptar SÓLO si la contraseña que muestra es la que NODO escribió: si
+  // muestra otra o ninguna (en la captura del 21/11 salía vacía), la página no tomó la clave y confirmar
+  // dejaría al jugador con una clave que nadie conoce → se cancela y no se cambia nada.
+  const textoDe = d => normalizeText(d.innerText || d.textContent);
+  const dialogos = () => visibleElements('[role="dialog"]');
+  const cartelSeguro = () => dialogos().find(d => /est[aá]s segur|guardar esta nueva contrase/i.test(textoDe(d))) || null;
+  let toast = null, aceptado = false, mostrada = null;
+  const limite = now() + 12000;
+  while (now() < limite) {
+    if (capt.resultado && capt.resultado.tipo === 'ok' && !/contrase|clave|password/i.test(capt.resultado.texto || '')) capt.resultado = null;
+    if (capt.resultado) { toast = capt.resultado; break; }
+    const v = cartelSeguro();
+    if (v && !aceptado) {
+      const m = textoDe(v).match(/contrase[ñn]a:\s*([^\s]*)/i);
+      mostrada = m ? m[1] : '';
+      if (/^(cancelar|aceptar|cancel)$/i.test(mostrada)) mostrada = '';   // vacía: lo que sigue son los botones
+      if (mostrada !== clave) {
+        const cancelar = findByText(/^(cancelar|cancel)$/i, 'button', v);
+        if (cancelar) { clickElement(cancelar); await delay(300); }
+        for (let i = 0; i < 2 && findActiveModal(); i++) await cerrarModalActual();
+        try { capt.obs && capt.obs.disconnect(); } catch (_e) {}
+        return { ok: false, motivo: 'NO_TOMO_LA_CLAVE', password: clave,
+          message: 'la página de Agentes no tomó la clave nueva (' + (mostrada ? 'mostraba otra' : 'el cartel la mostraba vacía') + '): no se cambió nada' };
+      }
+      const aceptar = findByText(/^aceptar$/i, 'button', v);
+      if (aceptar) { clickElement(aceptar); aceptado = true; await delay(300); continue; }
+    }
+    // Sin cartel ni aviso, con todos los diálogos cerrados: terminó (se mira después del Aceptar).
+    if (aceptado && !dialogos().length) { await delay(500); if (capt.resultado) toast = capt.resultado; break; }
+    await delay(150);
+  }
+  try { capt.obs && capt.obs.disconnect(); } catch (_e) {}
+
+  // "Hecho" sólo si Agentes lo confirma: un aviso de éxito, o todo se cerró sin error. Antes, sin aviso se
+  // daba por bueno y al jugador le llegaba "Tu clave fue actualizada" con el modal abierto diciendo que no (16/11).
   const abierto = findActiveModal();
   const errorCampo = abierto ? errorDelModal(abierto) : '';
-  if (abierto) await cerrarModalActual();
+  for (let i = 0; i < 3 && findActiveModal(); i++) await cerrarModalActual();
   if (toast && toast.tipo === 'error') {
     return { ok: false, motivo: 'RECHAZADA', password: clave, message: 'el sistema de juego no la aceptó (' + toast.texto + ')' };
   }
@@ -763,7 +797,21 @@ async function cambiarClave(password, options = {}) {
   if ((toast && toast.tipo === 'ok') || !abierto) {
     return { ok: true, action: 'cambio_clave', password: clave, message: toast ? toast.texto : 'Clave cambiada.' };
   }
-  return { ok: false, motivo: 'SIN_CONFIRMAR', password: clave, message: 'AdminOnline no confirmó el cambio de clave' };
+  return { ok: false, motivo: 'SIN_CONFIRMAR', password: clave, message: 'Agentes no confirmó el cambio de clave' };
+}
+// El campo de la contraseña nueva del modal: el que dice contraseña/clave (etiqueta, placeholder, nombre) o es de
+// tipo password, y se puede escribir. Antes se tomaba el primer input visible: si el modal muestra el alias en
+// un campo de sólo lectura, la clave iba a parar ahí y la contraseña quedaba vacía (cartel del 21/11).
+function campoClaveDelModal(modal) {
+  const editables = visibleElements('input', modal).filter(i =>
+    !i.readOnly && !i.disabled && !/^(hidden|checkbox|radio|submit|button)$/i.test(i.type || ''));
+  const dice = i => {
+    const lab = (i.id && modal.querySelector('label[for="' + CSS.escape(i.id) + '"]')) || i.closest('label');
+    const t = [i.placeholder, i.name, i.getAttribute('aria-label'), i.autocomplete, lab && lab.textContent].join(' ');
+    return /contrase|clave|password/i.test(t);
+  };
+  return editables.find(dice) || editables.find(i => i.type === 'password')
+    || (editables.length === 1 ? editables[0] : null);
 }
 
 // ── Crear jugador (botón "Nuevo jugador" → modal: Alias · Contraseña · Moneda) ──

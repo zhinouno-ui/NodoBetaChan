@@ -203,18 +203,31 @@ function nodoPintarEstadoSistema(probando){
     const color = p.estado === "falla" ? "#f87171" : p.estado === "probada" || p.estado === "al_dia" ? "#22c55e" : p.estado === "anda" ? "#94a3b8" : "#64748b";
     const texto = p.estado === "falla" ? p.detalle : p.estado === "probada" ? "Funciona · recién probado" : p.estado === "al_dia" ? "Al día"
       : p.estado === "anda" ? "Sin fallas" : p.estado === "anduvo" ? "Anduvo " + (p.hace || "hace un rato") : "Sin actividad todavía";
-    return '<div style="display:flex;justify-content:space-between;gap:10px;padding:3px 0">'
+    // Al pasar el mouse: lo último que anduvo de esa acción, con hora y qué fue (21/11).
+    return '<div style="display:flex;justify-content:space-between;gap:10px;padding:3px 0' + (p.prueba ? ';cursor:help' : '') + '"'
+      + (p.prueba ? ' title="' + escapeHtml(p.prueba) + '"' : '') + '>'
       + '<span style="color:#cbd5e1">' + escapeHtml(p.nombre) + '</span>'
       + '<span style="color:' + color + '">' + escapeHtml(texto) + '</span></div>';
   };
+  // Las acciones van agrupadas por sistema (Agentes · el backoffice en uso, Chunior, Revisiones).
+  const conGrupos = function(lista, conNombreDeGrupo){
+    let grupo = null;
+    return lista.map(function(p){
+      if(conNombreDeGrupo && p.grupo) return fila(Object.assign({}, p, { nombre: p.grupo + " · " + p.nombre }));
+      const cab = (p.grupo || null) !== grupo && p.grupo
+        ? '<div style="margin-top:8px;font-weight:800;color:#e2e8f0">' + escapeHtml(p.grupo) + '</div>' : '';
+      grupo = p.grupo || null;
+      return cab + fila(p);
+    }).join("");
+  };
   const titulo = fallas.length
     ? '<div style="font-size:12px;font-weight:800;color:#f87171">Hay ' + fallas.length + (fallas.length === 1 ? ' parte con problemas' : ' partes con problemas') + '</div>'
-      + fallas.map(fila).join("")
+      + conGrupos(fallas, true)
     : '<div style="font-size:12px;font-weight:800;color:' + (probadas.length ? '#22c55e' : '#94a3b8') + '">'
       + (probadas.length ? 'Las pruebas dieron bien' : andan.length ? 'Sin fallas registradas' : 'Todavía no hay actividad para revisar') + '</div>';
   box.innerHTML = titulo
     + '<details style="margin-top:6px"' + (abierto ? ' open' : '') + '><summary class="small" style="cursor:pointer;color:#94a3b8">Ver detalle</summary>'
-    + '<div class="small" style="margin-top:6px">' + r.partes.map(fila).join("") + '</div></details>'
+    + '<div class="small" style="margin-top:6px">' + conGrupos(r.partes, false) + '</div></details>'
     + '<button class="mini-btn blue" style="margin-top:10px;width:100%;padding:9px"' + (probando ? ' disabled' : '') + ' onclick="nodoProbarSistema()">'
     + (probando ? 'Probando ' + escapeHtml(probando.toLowerCase()) + '…' : '▶ Probar ahora') + '</button>';
 }

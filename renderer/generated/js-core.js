@@ -9894,18 +9894,20 @@ function nodoPintarEstadoSistema(probando){
     const color = p.estado === "falla" ? "#f87171" : p.estado === "probada" || p.estado === "al_dia" ? "#22c55e" : p.estado === "anda" ? "#94a3b8" : "#64748b";
     const texto = p.estado === "falla" ? p.detalle : p.estado === "probada" ? "Funciona · recién probado" : p.estado === "al_dia" ? "Al día"
       : p.estado === "anda" ? "Sin fallas" : p.estado === "anduvo" ? "Anduvo " + (p.hace || "hace un rato") : "Sin actividad todavía";
-    return '<div style="display:flex;justify-content:space-between;gap:10px;padding:3px 0">'
+    // Al pasar el mouse: lo último que anduvo de esa acción, con hora y qué fue (21/11).
+    return '<div style="display:flex;justify-content:space-between;gap:10px;padding:3px 0' + (p.prueba ? ';cursor:help' : '') + '"'
+      + (p.prueba ? ' title="' + escapeHtml(p.prueba) + '"' : '') + '>'
       + '<span style="color:#cbd5e1">' + escapeHtml(p.nombre) + '</span>'
       + '<span style="color:' + color + '">' + escapeHtml(texto) + '</span></div>';
   };
   const titulo = fallas.length
     ? '<div style="font-size:12px;font-weight:800;color:#f87171">Hay ' + fallas.length + (fallas.length === 1 ? ' parte con problemas' : ' partes con problemas') + '</div>'
-      + fallas.map(fila).join("")
+      + conGrupos(fallas, true)
     : '<div style="font-size:12px;font-weight:800;color:' + (probadas.length ? '#22c55e' : '#94a3b8') + '">'
       + (probadas.length ? 'Las pruebas dieron bien' : andan.length ? 'Sin fallas registradas' : 'Todavía no hay actividad para revisar') + '</div>';
   box.innerHTML = titulo
     + '<details style="margin-top:6px"' + (abierto ? ' open' : '') + '><summary class="small" style="cursor:pointer;color:#94a3b8">Ver detalle</summary>'
-    + '<div class="small" style="margin-top:6px">' + r.partes.map(fila).join("") + '</div></details>'
+    + '<div class="small" style="margin-top:6px">' + conGrupos(r.partes, false) + '</div></details>'
     + '<button class="mini-btn blue" style="margin-top:10px;width:100%;padding:9px"' + (probando ? ' disabled' : '') + ' onclick="nodoProbarSistema()">'
     + (probando ? 'Probando ' + escapeHtml(probando.toLowerCase()) + '…' : '▶ Probar ahora') + '</button>';
 }
@@ -10069,6 +10071,17 @@ window.nodoSincronizarAjustesTonos = function(){
     const btnQuitar = document.getElementById("btnQuitarAudioCustom");
     if(customName){
       if(txtName) txtName.textContent = customName;
+  // Las acciones van agrupadas por sistema (Agentes · el backoffice en uso, Chunior, Revisiones).
+  const conGrupos = function(lista, conNombreDeGrupo){
+    let grupo = null;
+    return lista.map(function(p){
+      if(conNombreDeGrupo && p.grupo) return fila(Object.assign({}, p, { nombre: p.grupo + " · " + p.nombre }));
+      const cab = (p.grupo || null) !== grupo && p.grupo
+        ? '<div style="margin-top:8px;font-weight:800;color:#e2e8f0">' + escapeHtml(p.grupo) + '</div>' : '';
+      grupo = p.grupo || null;
+      return cab + fila(p);
+    }).join("");
+  };
       if(btnQuitar) btnQuitar.style.display = "inline-flex";
     } else {
       if(txtName) txtName.textContent = "Formatos .mp3, .wav, .ogg (máx 2 MB)";
@@ -12263,7 +12276,7 @@ async function callDrex(method, ...args){
     }catch(_cnE){
       _wHealth?.reply(_cnE);
       // Estado del sistema: cuál operación falló (cargar, retirar, crear…), no "tareas de fondo".
-      try{ window.NodoSalud?.agentes?.(method, null, _cnE); }catch(_e){}
+      try{ window.NodoSalud?.agentes?.(method, null, _cnE, args); }catch(_e){}
       // El corte puede venir de main (timeout, recarga, ventana cerrada) o del preload. De quién
       // fue lo deduce la caja negra por la firma del mensaje: lo que no reconoce queda
       // 'desconocida' en vez de colgárselo a alguien.
@@ -12277,7 +12290,7 @@ async function callDrex(method, ...args){
       // es una falla (mismo criterio que _esChequeo, unas líneas más abajo).
       const _cnChequeo = (method==='estadoPagina' || method==='iniciarSesion');
       _wHealth?.record('EFFECT', (_r && _r.ok === false && !_cnChequeo) ? 'ERROR' : 'OK', (_r && _r.ok === false && !_cnChequeo) ? 'WORKER_DREX_FAILED' : 'WORKER_DREX_OK');
-      if(!_cnChequeo) window.NodoSalud?.agentes?.(method, _r, null);
+      if(!_cnChequeo) window.NodoSalud?.agentes?.(method, _r, null, args);
       if(_r && _r.ok === false && !_cnChequeo){
         if(window._cnFalla) window._cnFalla(method, _r.message || 'devolvió ok:false', { ms:_cnMs, pantalla:_cnPant, capa:'preload' });
       } else if(window._cnPaso){
@@ -15338,7 +15351,7 @@ function _chuniorTraba(ok, contexto){
     const esRetiro = Number(monto) < 0;
     let r;
     try{ r = await _oc.apply(this, arguments); }
-    catch(e){ _chuniorTraba(false, (esRetiro?'retiro:':'carga:')+(e.message||'')); throw e; }
+    catch(e){ _chuniorTraba(false, (esRetiro?'retiro:':'carga:')+(e.message||'')); salud(false, 'Chunior no lo anotó'); throw e; }
     _chuniorTraba(r && r.ok!==false, esRetiro?'retiro':'carga');
     return r;
   };
@@ -15516,9 +15529,20 @@ async function _transferirEntreBilleterasChunior(origenUid, destinoUid, monto, n
         'var a=ok.querySelector("a[href]");' +
         'if(a){var mh=(a.getAttribute("href")||"").match(/(\\d{3,})/); if(mh) return mh[1];}' +
         'var txt=ok.textContent||"";' +
+    // Estado del sistema: Chunior · Anotar cargas / Anotar retiros, con la prueba de la última que anduvo.
+    const salud = function(ok, motivo, id){
+      try{ window.NodoSalud?.accion?.('Chunior', esRetiro ? 'Anotar retiros' : 'Anotar cargas', ok, { motivo: motivo,
+        prueba: (esRetiro ? 'retiro ' : 'carga ') + '$' + Math.abs(Math.round(Number(monto)||0)).toLocaleString('es-AR')
+          + (usuario ? ' de ' + usuario : '') + (id ? ' · N° ' + id : '') }); }catch(_e){}
+    };
         'var mt=txt.match(/n[\\sº°o\\.]{0,4}(\\d{4,})/i) || txt.match(/(\\d{5,})/);' +
         'return mt ? mt[1] : null;' +
       '})()'
+    const err = String((r && r.error) || '');
+    salud(!!r && r.ok !== false, /no disponible/i.test(err) ? 'La ventana de Chunior estaba cerrada'
+      : /chunior_uid/i.test(err) ? 'La billetera no está vinculada con Chunior'
+      : /formulario/i.test(err) ? 'El formulario de Chunior no apareció'
+      : 'Chunior no confirmó que lo anotó', r && r.movimientoId);
     ).catch(function(){ return null; });
   } catch(_){}
 
@@ -16448,7 +16472,7 @@ window._retiroSaldoCheck = window._retiroSaldoCheck || {};
   }
 
   async function _leerAgentes(desdeMs){
-    var llamar = function(){ return window.ctrlElectron.drexAutomation("leerMovimientosCredito", { desdeMs: desdeMs }); };
+    var llamar = _conSalud({ desdeMs: desdeMs }, function(){ return window.ctrlElectron.drexAutomation("leerMovimientosCredito", { desdeMs: desdeMs }); });
     if(typeof window._drexEncolar === "function") return window._drexEncolar("leerMovimientosCredito", llamar, { silencioso: true });
     return llamar();
   }
@@ -16478,8 +16502,8 @@ window._retiroSaldoCheck = window._retiroSaldoCheck || {};
   // ¿Ese movimiento de NODO está en Agentes? Busca al jugador con el filtro del informe. true = confirmado que NO
   // está; false = está (o hay uno igual cerca); null = no se puede afirmar (sin filtro, lectura cortada, error).
   async function _confirmarSinAgentes(h){
-    var llamar = function(){ return window.ctrlElectron.drexAutomation("leerMovimientosCredito",
-      { alias: h.usuario, filtrarAlias: true, desdeMs: _ms(h) - DUDA_MS, maxPaginas: 3 }); };
+    var args = { alias: h.usuario, filtrarAlias: true, desdeMs: _ms(h) - DUDA_MS, maxPaginas: 3 };
+    var llamar = _conSalud(args, function(){ return window.ctrlElectron.drexAutomation("leerMovimientosCredito", args); });
     var r = (typeof window._drexEncolar === "function")
       ? await window._drexEncolar("leerMovimientosCredito", llamar, { silencioso: true }) : await llamar();
     if(!r || !r.ok || r.filtradoPorAlias !== true) return null;
@@ -16626,6 +16650,26 @@ window._retiroSaldoCheck = window._retiroSaldoCheck || {};
         var esRetiro = _tipoFila(h) === "RETIRO";
         var txt = MARCA_SIN_AGENTES + " (buscado por alias): " + (h.chunior_movimiento_id ? "anotado en Chunior" : "NODO lo marcó hecho")
           + " pero en Agentes no aparece " + (esRetiro ? "este retiro" : "esta carga");
+  // Estado del sistema: estas lecturas no pasan por callDrex, así que se anotan acá (Agentes · Leer movimientos).
+  function _conSalud(args, fn){
+    return async function(){
+      var r, e;
+      try{ r = await fn(); return r; }catch(x){ e = x; throw x; }
+      finally{ try{ if(window.NodoSalud && window.NodoSalud.agentes) window.NodoSalud.agentes("leerMovimientosCredito", r, e, [args]); }catch(_e){} }
+    };
+  }
+  // Las revisiones de fondo también tienen su fila: qué miró la última que anduvo y, si falló, por qué.
+  // "Ocupado", "recién revisado" o "arrancando" no son fallas: esa vuelta no se hizo.
+  var NO_ES_FALLA = /ya est[aá] corriendo|operaci[oó]n en curso|arrancando|reci[eé]n revisado|sin NODO|sin Chunior|trabajando/i;
+  function _saludRevision(nombre, r, prueba){
+    try{
+      if(!r || !window.NodoSalud || !window.NodoSalud.accion) return;
+      if(r.ok === false && NO_ES_FALLA.test(r.motivo || "")) return;
+      var ok = r.ok !== false && !(r.resumen && r.resumen.fallas && r.resumen.fallas.length);
+      var motivo = r.ok === false ? (r.motivo || "no se pudo revisar") : ok ? "" : "no pudo leer " + r.resumen.fallas.join(", ");
+      window.NodoSalud.accion("Revisiones", nombre, ok, { motivo: motivo, prueba: ok ? prueba(r) : "" });
+    }catch(_e){}
+  }
         if(await _anotarNotas(h, txt)) resumen.sinAgentes++;
       }
       if(resumen.enlazadas || resumen.subidas || resumen.fuera || resumen.sinAgentes){
@@ -16952,10 +16996,19 @@ window._retiroSaldoCheck = window._retiroSaldoCheck || {};
   async function _filasPorId(tabla, ids){
     var porId = {};
     for(var i = 0; i < ids.length; i += 100){
+        _saludRevision("Agentes con NODO y Chunior", out.cotejo, function(c){
+          var s = c.resumen || {};
+          return "leyó " + (s.leidas || 0) + " movimientos de Agentes · " + (s.enlazadas || 0) + " enlazados con Chunior";
+        });
       var r = await supabaseClient.from("historial_ops").select("id,tipo,chunior_movimiento_id")
         .in("chunior_movimiento_id", ids.slice(i, i + 100)).in("tipo", tabla.grupo);
       if(r.error) throw r.error;
       (r.data || []).forEach(function(h){ porId[String(h.chunior_movimiento_id)] = h; });
+        _saludRevision("Historiales de Chunior", out.chunior, function(c){
+          var t = (c.resumen && c.resumen.tablas) || {}, n = 0, k = Object.keys(t);
+          k.forEach(function(x){ n += t[x].leidas || 0; });
+          return "revisó " + k.length + " historiales · " + n + " movimientos · " + ((c.resumen && c.resumen.creadas) || 0) + " que faltaban en NODO";
+        });
     }
     return porId;
   }

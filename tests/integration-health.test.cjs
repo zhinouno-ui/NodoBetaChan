@@ -225,20 +225,47 @@ test('salud: toda rama del panel la acepta el servidor (si no, se pierde el lote
 // Juan, 16/11: "si falla el retiro de fichas y no falla la carga, debe de saber el operador que el retiro
 // no anda pero la carga sí". Antes las dos caían en una sola fila, "Tareas de fondo · No respondió bien".
 test('salud: cada operación de Agentes es su propia fila, en castellano, sin "tareas de fondo"',()=>{
-  const {api}=harness();
-  const vacio=api.resumen().partes.map(p=>p.nombre);
-  assert.ok(!vacio.includes('Tareas de fondo'));assert.ok(vacio.includes('Operaciones en Agentes'));
+  const {api,root}=harness();
+  root._agentBackendState={ok:true,backend:'adminonline',label:'AdminOnline (adminonline.me)'};
+  const vacio=api.resumen().partes;
+  assert.ok(!vacio.some(p=>p.nombre==='Tareas de fondo'));
+  assert.ok(vacio.some(p=>p.nombre==='Operaciones'&&p.grupo==='Agentes · AdminOnline (adminonline.me)'&&p.estado==='sin_actividad'));
   api.record('WORKERS','EFFECT','ERROR',{code:'WORKER_DREX_FAILED'});
-  api.agentes('cargarSaldo',{ok:true},null);
-  api.agentes('retirarSaldo',{ok:false,message:'Timeout esperando el botón Retirar'},null);
-  api.agentes('cambiarClave',null,new Error('Agentes pidió ingresar de nuevo'));
-  const partes=api.resumen().partes;
+  api.agentes('buscarUsuario',{ok:true,exists:true},null,['pruebasan']);
+  api.agentes('cargarSaldo',{ok:true},null,[5000]);
+  api.agentes('retirarSaldo',{ok:false,message:'Timeout esperando el botón Retirar'},null,[3000]);
+  api.agentes('cambiarClave',null,new Error('Agentes pidió ingresar de nuevo'),['1a2b3c4d']);
+  const partes=api.resumen().partes,de=n=>partes.find(p=>p.nombre===n);
   assert.ok(!partes.some(p=>p.nombre==='Tareas de fondo'),'la fila que nadie entendía no vuelve');
-  assert.deepEqual(partes.find(p=>p.nombre==='Cargar fichas en Agentes'),{nombre:'Cargar fichas en Agentes',estado:'anda',detalle:''});
-  assert.deepEqual(partes.find(p=>p.nombre==='Retirar fichas en Agentes'),{nombre:'Retirar fichas en Agentes',estado:'falla',detalle:'Agentes tardó demasiado en contestar'});
-  assert.equal(partes.find(p=>p.nombre==='Cambiar claves en Agentes').detalle,'Agentes pidió volver a iniciar sesión');
+  assert.equal(de('Cargar fichas').estado,'anda');
+  assert.equal(de('Cargar fichas').grupo,'Agentes · AdminOnline (adminonline.me)','el backoffice en uso, por nombre');
+  assert.match(de('Cargar fichas').prueba,/^Último que anduvo: \d\d:\d\d · cargó \$5\.000 a pruebasan$/);
+  assert.equal(de('Retirar fichas').estado,'falla');assert.equal(de('Retirar fichas').detalle,'Agentes tardó demasiado en contestar');
+  assert.match(de('Retirar fichas').prueba,/^Falló a las \d\d:\d\d · Agentes tardó demasiado en contestar\nNo anduvo desde que se abrió NODO$/);
+  assert.equal(de('Cambiar claves').detalle,'Agentes pidió volver a iniciar sesión');
+  assert.ok(!JSON.stringify(partes).includes('1a2b3c4d'),'la clave no se muestra');
   for(const p of partes)assert.doesNotMatch(p.nombre+' '+p.detalle,/[A-Z]{3,}_[A-Z]/,'sin códigos a la vista: '+p.nombre);
-  api.agentes('retirarSaldo',{ok:true},null);
-  assert.equal(api.resumen().partes.find(p=>p.nombre==='Retirar fichas en Agentes').estado,'anda','vuelve a andar: se ve');
+  api.agentes('retirarSaldo',{ok:true},null,[3000]);
+  assert.equal(api.resumen().partes.find(p=>p.nombre==='Retirar fichas').estado,'anda','vuelve a andar: se ve');
   assert.equal(api.agentes('metodoInventado',{ok:true},null),false);
+});
+// Juan, 21/11: "cada preload es distinto y puede fallar distinto ... saber donde cae el error", y al pasar el
+// mouse, lo último que anduvo de cada cosa.
+test('salud: otro backoffice es otra fila; Chunior y las revisiones tienen las suyas; una falla no borra lo último que anduvo',()=>{
+  const {api,root}=harness();
+  root._agentBackendState={label:'Casinodrex'};
+  api.agentes('cargarSaldo',{ok:true},null,[1000]);
+  root._agentBackendState={label:'BET300 (agentesbet.io)'};
+  api.agentes('cargarSaldo',{ok:false,message:'no confirmó'},null,[2000]);
+  api.accion('Chunior','Anotar cargas',true,{prueba:'carga $1.000 de pepe · N° 55'});
+  api.accion('Chunior','Anotar cargas',false,{motivo:'El formulario de Chunior no apareció'});
+  api.accion('Revisiones','Historiales de Chunior',true,{prueba:'revisó 7 historiales'});
+  const partes=api.resumen().partes,grupos=partes.filter(p=>p.grupo).map(p=>p.grupo+' / '+p.nombre);
+  assert.deepEqual(grupos,['Agentes · BET300 (agentesbet.io) / Cargar fichas','Agentes · Casinodrex / Cargar fichas',
+    'Chunior / Anotar cargas','Revisiones / Historiales de Chunior']);
+  const chu=partes.find(p=>p.grupo==='Chunior');
+  assert.equal(chu.estado,'falla');
+  assert.match(chu.prueba,/El formulario de Chunior no apareció\nÚltimo que anduvo: \d\d:\d\d · carga \$1\.000 de pepe · N° 55$/);
+  const sinGrupoDespues=partes.findIndex(p=>p.grupo);
+  assert.ok(partes.slice(sinGrupoDespues).every(p=>p.grupo),'las agrupadas van al final, sin filas sueltas debajo de un título');
 });
