@@ -232,3 +232,10 @@ test('la marca vieja de la 2.1.9 ("sin carga en Agentes") no se muestra ni se vu
   const avisos = fuente.slice(fuente.indexOf('async function _leerAvisos'), fuente.indexOf('function _esc('));
   assert.doesNotMatch(avisos, /MARCA_SIN_AGENTES_VIEJA/, 'el cartel sólo trae la marca confirmada');
 });
+
+// De la 2.1.10 (encargada, 21/11): los bonos no se cotejan y la gracia es de 15 minutos.
+test('los bonos (PROMO_BONO) no se cotejan y la gracia es de 15 minutos', () => {
+  const src = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'renderer', 'core', 'cotejo-cargas.js'), 'utf8');
+  assert.match(src, /var GRACIA_SIN_AGENTES = 15 \* 60000;/);
+  assert.match(src, /return o !== "COTEJO" && o !== "PROMO_BONO";/);
+});

@@ -16375,7 +16375,7 @@ window._retiroSaldoCheck = window._retiroSaldoCheck || {};
   var CLAVE_HASTA        = "nodoCotejoCargasHasta";
   var TOPE_FILAS_NODO    = 1500;           // si NODO trae más que esto, la lectura no es completa: no se decide
   var TOPE_SIN_AGENTES   = 3;              // más de esto en una vuelta = algo anda mal (relojes, lectura): no se marca
-  var GRACIA_SIN_AGENTES = 10 * 60000;     // una fila de NODO más nueva que esto todavía no se juzga
+  var GRACIA_SIN_AGENTES = 15 * 60000;     // una fila de NODO más nueva que esto todavía no se juzga (era 10; 2.1.10, 21/11)
   var DUDA_MS            = 60 * 60000;     // una fila igual suelta a menos de una hora: no se decide
   var CADA_CUANTO_MS     = 10 * 60000;
   var MARCA_FUERA        = "fuera de NODO";
@@ -16652,7 +16652,8 @@ window._retiroSaldoCheck = window._retiroSaldoCheck || {};
       // buscando a ese jugador con el filtro del informe (abajo), no por no haberla visto en las páginas.
       var cubreDesde = desde;
       var r = emparejar(movs, filas, { desdeLeidoMs: cubreDesde,
-        esNuestra: function(h){ return String(h.origen || "") !== "COTEJO"; } });
+        // Los bonos (PROMO_BONO) no figuran como "Depósito de un jugador" en Agentes: no se cotejan (de la 2.1.10).
+        esNuestra: function(h){ var o = String(h.origen || ""); return o !== "COTEJO" && o !== "PROMO_BONO"; } });
       for(var i = 0; i < r.pares.length; i++){
         if(_ocupado()) break;                                           // el operador arrancó algo: se sigue después
         var p = r.pares[i];
