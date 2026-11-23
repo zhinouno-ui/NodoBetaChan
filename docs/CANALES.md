@@ -353,3 +353,30 @@ Juan, 15/11 y 23/11: "por encima de la 2.1.5 TODAS USAN LO NUEVO", sin copiar ar
 - Con la oficina activa, el bot de palabras deja de contestar ahí (`_soporte_bot_apagado`).
 - Las 2.1.6 a 2.1.10 que ya están en las oficinas no tienen ese código: pasan cuando se actualizan a 2.2.0.
 - Vuelta atrás: `servidor/beta-alta-por-version.vuelta-atras.sql` (apaga las claves dadas por versión; la de P1, no).
+
+## 14 · La bandeja por cambios (23/11)
+
+Juan, 23/11: "¿con qué necesidad va a traer todo? Es la base de los nuevos canales que el servidor pueda filtrar".
+En los canales nuevos NODO seguía bajando la bandeja entera en cada aviso: en P4, 138 solicitudes y 270 kB por vez.
+
+- **Cómo es ahora** (`servidor/beta-bandeja-v1.sql`, `portal/requests.js`). NODO le manda al servidor qué tiene: el
+  número y la firma de cada solicitud. El servidor contesta sólo las nuevas o cambiadas, con su firma nueva, y los
+  números que NODO tiene y ya no están en la bandeja. Entera sólo al arrancar y al cambiar de oficina.
+- **Por qué firma y no hora de cambio.** Seis funciones escriben la solicitud sin tocar `updated_at`: el comprobante
+  que adjunta el jugador, el hilo del chat viejo, la respuesta automática, los toques repetidos y el `chat_master_id`.
+  Además el Portal tiene permiso de escribir la tabla directo. La firma sale de la fila entera tal como se manda
+  (md5), así que cuenta cualquier cambio, lo haga quien lo haga, sin tocar la tabla ni agregarle disparadores.
+- **Medido el 23/11 contra el servidor, con la clave de P4:**
+
+| | Antes (entera) | Ahora, sin cambios |
+|---|---|---|
+| Baja | 270 kB | 0,2 kB |
+| Tarda | 0,66 a 0,85 s | 0,24 a 0,28 s |
+| Sube | 0,1 kB | 3,3 kB (la lista de firmas) |
+
+- Lo juntado da idéntico a una lectura entera (las 138 filas, byte por byte). Firmar las 138 filas le lleva 18 ms al
+  servidor. Si lo juntado no da lo que el servidor cuenta, la vuelta siguiente se pide entera.
+- Cada vuelta le da a la pantalla copias nuevas, como cuando venía entera: lo que se le cuelga a una solicitud en
+  pantalla no queda pegado a la copia guardada.
+- Lo usan sólo las oficinas en los canales nuevos (`bandeja.queue.v1` en `nodo_beta_capacidades_v1`). Las demás
+  siguen con `panel_v15_5_listar_solicitudes_portal`. Vuelta atrás: `servidor/beta-bandeja-v1.vuelta-atras.sql`.

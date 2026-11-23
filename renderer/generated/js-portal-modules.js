@@ -1159,12 +1159,40 @@ async function cargarSolicitudesPortal(silencioso=false){
         }catch(_e){ _useBetaBandeja = false; }
       }
       if(_useBetaBandeja){
-        const _br = await _pApi.rpc('nodo_beta_bandeja_v1', { p_pc_codigo: String(canal).trim().toUpperCase(), p_filtros: {}, p_limit: 100, p_cursor: null });
+        // POR CAMBIOS (Juan, 23/11: "¿con qué necesidad va a traer todo?"). NODO le dice al servidor qué tiene
+        // —el número y la firma de cada solicitud— y el servidor devuelve sólo las nuevas o cambiadas, y cuáles
+        // ya no están en la bandeja. La firma la saca el servidor de la fila entera, así que cuenta cualquier
+        // cambio: de NODO, del Portal, del chat o de un disparador. Por hora de cambio no alcanza: seis funciones
+        // escriben la solicitud sin tocar updated_at (entre ellas, el comprobante que adjunta el jugador).
+        // Medido en P4: entera son 138 solicitudes y 270 kB; sin cambios, 0,1 kB. Entera sólo al arrancar y al
+        // cambiar de oficina (servidor/beta-bandeja-v1.sql).
+        const _pcB = String(canal).trim().toUpperCase();
+        const _cache = (deps.V154P._bandejaPc === _pcB && deps.V154P._bandejaCache instanceof Map) ? deps.V154P._bandejaCache : null;
+        const _tengo = {};
+        if(_cache) _cache.forEach((v, id) => { _tengo[id] = v.firma; });
+        const _br = await _pApi.rpc('nodo_beta_bandeja_v1', { p_pc_codigo: _pcB, p_filtros: {}, p_limit: 300, p_cursor: _cache ? { tengo: _tengo } : null });
         if(_br && !_br.error && _br.data && _br.data.ok === true && Array.isArray(_br.data.operativas)){
+          const _completa = _br.data.completa !== false || !_cache;   // si no dice, se toma como entera
+          const _junta = _completa ? new Map() : new Map(_cache);
+          const _quitar = Array.isArray(_br.data.quitar) ? _br.data.quitar : [];
+          _quitar.forEach(id => _junta.delete(String(id)));
+          _br.data.operativas.forEach(x => {
+            _junta.set(String(x.id), { firma: String(x._firma || ''), creada: String(x.created_at || ''), json: JSON.stringify(x) });
+          });
+          // Si lo juntado no da lo que el servidor cuenta, la próxima vuelta se pide entera.
+          const _cuadra = !Number.isFinite(Number(_br.data.total)) || Number(_br.data.total) === _junta.size;
+          deps.V154P._bandejaCache = _cuadra ? _junta : null;
+          deps.V154P._bandejaPc = _pcB;
+          deps.V154P.bandejaCambios = { at: Date.now(), completa: _completa, llegaron: _br.data.operativas.length, quitadas: _quitar.length, total: _junta.size, cuadra: _cuadra };
+          // Copias nuevas en cada vuelta, como cuando venía entera: lo que se le cuelgue a una solicitud en
+          // pantalla no queda pegado a la copia guardada.
+          const _filas = Array.from(_junta.values())
+            .sort((a, b) => b.creada.localeCompare(a.creada))
+            .map(v => JSON.parse(v.json));
           deps.V154P.bandejaTotales = _br.data.totales || null;
           deps.V154P.bandejaHasMore = !!_br.data.has_more;
           deps.V154P.bandejaNextCursor = _br.data.next_cursor || null;
-          r = { data: _br.data.operativas, error: null };
+          r = { data: _filas, error: null };
           health?.reply(null);
         } else if(_br && _br.error && (_br.error.code === 'PGRST202' || _br.error.code === '42883')){
           _useBetaBandeja = false;
