@@ -2976,13 +2976,27 @@
     if(existing?.metadata || incoming?.metadata) result.metadata = Object.assign({}, metadata(existing), metadata(incoming));
     return result;
   }
+  // Lo que el Portal convierte en botones o en negrita se le muestra al operador en palabras: la marca ⟦INGRESAR:…⟧ y
+  // los *asteriscos* salían tal cual en la conversación (Juan, 23/11: "ni se muestra bien").
   function visibleText(message){
     const text = String(message?.mensaje ?? message?.MENSAJE ?? '');
     if(role(message) === 'USUARIO') return text;
     return text.replace(/⟦AYUDA:inicio⟧/g, '[Botón: Ver opciones de ayuda]')
-      .replace(/⟦AYUDA:revisar_envio⟧/g, '[Botón: Revisar una transferencia enviada]');
+      .replace(/⟦AYUDA:revisar_envio⟧/g, '[Botón: Revisar una transferencia enviada]')
+      .replace(/⟦INGRESAR:[^⟧]*⟧/g, '[Botón: Ingresar al portal]')
+      .replace(/⟦[A-Z_]+(?::[^⟧]*)?⟧/g, '')
+      .replace(/\*([^*\n]+)\*/g, '$1');
   }
-  return Object.freeze({ role, normalize, author, className, key, isFiller, sinCopias, chatVigente, escritor, chatsDeLaConsulta, merge, visibleText });
+  // El adelanto de la lista: una línea, sin marcas, y de quién es si no es del jugador (el asistente, los avisos de
+  // NODO o un operador). Así se distingue de un vistazo lo que espera respuesta de lo que ya se contestó solo.
+  function preview(message){
+    const quien = role(message);
+    const texto = visibleText(message).replace(/\[Botón: [^\]]*\]/g, '').replace(/\s+/g, ' ').trim();
+    if(quien === 'BOT') return '🤖 ' + texto;
+    if(quien === 'OPERADOR' || quien === 'SISTEMA') return '↩ ' + texto;
+    return texto;
+  }
+  return Object.freeze({ role, normalize, author, className, key, isFiller, sinCopias, chatVigente, escritor, chatsDeLaConsulta, merge, visibleText, preview });
 });
 (function(root, factory){
   if(typeof module === 'object' && module.exports) module.exports = factory();

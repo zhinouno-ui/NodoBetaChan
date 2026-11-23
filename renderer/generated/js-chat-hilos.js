@@ -730,7 +730,7 @@
           <div class="wq2-avatar" style="background:${avatarColor(t.usuario)}">${iniciales(t.usuario)}</div>
           <div style="min-width:0">
             <div class="wq2-name">${E(t.usuario)}</div>
-            <div class="wq2-msg">${E(t.mensaje||"")}</div>
+            <div class="wq2-msg">${E(t.last&&window.NodoChatMessage?.preview?NodoChatMessage.preview(t.last):(t.mensaje||""))}</div>
           </div>
           <div>
             <div class="wq2-meta">${hora(t.fecha)}</div>

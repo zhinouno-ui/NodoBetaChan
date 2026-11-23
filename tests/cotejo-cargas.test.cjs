@@ -43,10 +43,44 @@ test('el signo menos es retiro; los movimientos con agentes y lo que no está DO
   assert.equal(r.pares.map(p => p.tipo + ' ' + p.mov.alias).join(','), 'RETIRO pruebaxx');
 });
 
-test('dos cargas iguales en NODO para un movimiento: no se elige, queda en duda', () => {
+// Juan, 23/11: "hice 1 2 3, la página debe decir 1 2 3". Un movimiento y dos filas iguales: el movimiento se queda
+// con la primera; la segunda queda sin su movimiento (después se busca por jugador). Antes las dos quedaban "en duda".
+test('dos cargas iguales en NODO para un movimiento: el movimiento se queda con la primera, la otra queda sin pareja', () => {
   const r = emparejar([mov('18/11/2026 13:33:38', 'pruebaxx', 10000)],
     [fila(1, '18/11/2026 13:32:50', 'pruebaxx', 10000), fila(2, '18/11/2026 13:34:30', 'pruebaxx', 10000)]);
-  assert.equal(r.pares[0].caso, 'ambiguo');
+  assert.equal(r.pares[0].caso, 'nodo_sin_chunior');
+  assert.equal(r.pares[0].fila.id, 1);
+});
+
+test('hice 1 2 3, la página dice 1 2 3: dos cargas iguales seguidas se emparejan de a una, en orden', () => {
+  const r = emparejar([mov('23/11/2026 10:20:05', 'pepe', 5000), mov('23/11/2026 10:21:02', 'pepe', 5000)],
+    [fila(1, '23/11/2026 10:20:06', 'pepe', 5000, { chunior_movimiento_id: '1' }), fila(2, '23/11/2026 10:21:03', 'pepe', 5000, { chunior_movimiento_id: '2' })]);
+  const casos = Array.from(r.pares, p => p.caso + ':' + p.fila.id).sort();
+  assert.deepEqual(casos, ['enlazada:1', 'enlazada:2']);
+});
+
+// 23/11, P4: NODO cargó a julju31 una vez ($3.000 + bono $900) y en Agentes quedó dos veces, con un segundo de
+// diferencia. El cotejo no dijo nada (lo tomaba como duda). Ahora: lo de más en Agentes, al lado de su gemela, es duplicado.
+test('julju31: la carga y el bono duplicados en Agentes se detectan; lo que hizo NODO queda enlazado', () => {
+  const bono = (fecha, alias, cantidad) => ({ ...mov(fecha, alias, cantidad), tipo: 'Bono jugador' });
+  const r = emparejar([
+    mov('23/11/2026 10:10:01', 'julju31', 3000), bono('23/11/2026 10:10:01', 'julju31', 900),
+    mov('23/11/2026 10:10:00', 'julju31', 3000), bono('23/11/2026 10:10:00', 'julju31', 900)
+  ], [
+    fila(563440, '23/11/2026 10:10:01', 'Julju31', 3000, { origen: 'LANDING', chunior_movimiento_id: '10221312' }),
+    fila(563441, '23/11/2026 10:10:02', 'Julju31', 900, { tipo: 'CARGA', origen: 'PROMO_BONO', chunior_movimiento_id: '10221313' })
+  ]);
+  const casos = Array.from(r.pares, p => p.tipo + ':' + p.caso).sort();
+  assert.deepEqual(casos, ['BONO:duplicada', 'BONO:enlazada', 'CARGA:duplicada', 'CARGA:enlazada']);
+  const dup = Array.from(r.pares).find(p => p.tipo === 'CARGA' && p.caso === 'duplicada');
+  assert.equal(dup.gemela.fecha, '23/11/2026 10:10:00', 'la gemela es la que quedó con la fila de NODO');
+});
+
+test('NODO la marcó con error pero en Agentes se hizo: se avisa, no se toma como hecha afuera', () => {
+  const r = emparejar([mov('21/11/2026 23:59:19', 'agustinc33', -7000)],
+    [fila(9, '21/11/2026 23:58:25', 'agustinc33', 7000, { tipo: 'RETIRO', estado: 'ERROR', origen: 'MANUAL' })]);
+  assert.equal(r.pares[0].caso, 'con_error');
+  assert.equal(r.pares[0].fila.id, 9);
 });
 
 test('la fila que ya lleva la fecha del movimiento en las notas es esa, aunque el horario no cierre', () => {
@@ -169,7 +203,8 @@ test('el cartel: la casilla Lo vi va a la izquierda (a la derecha se cortaba) y 
   assert.ok(cartel.indexOf('Lo vi</label>') < cartel.indexOf('<b>'), 'la casilla antes que el texto');
   assert.match(cartel, /overflow-wrap:anywhere/);
   assert.match(fuente, /MARCA_CHUNIOR      = "no estaba en NODO"/);
-  assert.ok(fuente.includes('"*,notas.ilike.*" + MARCA_CHUNIOR + "*"'), 'la consulta de avisos trae lo de Chunior');
+  assert.match(fuente, /"\*,notas\.ilike\.\*" \+ MARCA_CHUNIOR \+ "\*/, 'la consulta de avisos trae lo de Chunior');
+  assert.match(fuente, /\+ MARCA_DUPLICADA \+ "\*/, 'y las duplicadas');
 });
 
 // 19/11 · Juan: "los carteles de aviso estaban todos rotos". La regla del panel para todos los input

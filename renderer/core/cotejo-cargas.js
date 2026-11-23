@@ -54,6 +54,15 @@
   var MARCA_SIN_AGENTES_VIEJA = "sin carga en Agentes";
   var MARCA_RECONOCIDA   = "reconocida por";
   var MARCA_CHUNIOR      = "no estaba en NODO";               // la pone la pasada por Chunior (cotejo-chunior.js)
+  // Juan, 23/11: "hice 1 2 3, la página debe decir 1 2 3". NODO cargó una vez a julju31 ($3.000 + bono $900) y en
+  // Agentes quedó dos veces, con un segundo de diferencia; el cotejo lo tomó como "duda" y no dijo nada. Ahora la fila
+  // de NODO y la de Agentes se emparejan de a una, en orden, y lo que sobra en Agentes al lado de su gemela es una
+  // carga duplicada. La corrección que se hace después en Agentes (sacar lo duplicado) no se anota en Chunior: Chunior
+  // nunca tuvo la duplicada.
+  var MARCA_DUPLICADA    = "duplicada en Agentes";
+  var MARCA_CON_ERROR    = "NODO la marcó con error pero en Agentes se hizo";
+  var MARCA_CORRECCION   = "corrección de la duplicada";
+  var COPIA_AGENTES_MS   = 3 * 60000;
 
   function _norm(u){ return String(u || "").trim().toLowerCase(); }
   function _monto(n){ return Math.round(Math.abs(Number(n) || 0)); }
@@ -62,11 +71,15 @@
   // CARGA / RETIRO de un movimiento de Agentes (null = no es con un jugador, o no terminó).
   function _tipoMov(m){
     if(!m || !/DONE/i.test(m.estado || "") || !Number.isFinite(m.ms) || !Number(m.cantidad)) return null;
+    if(/bono/i.test(m.tipo || "")) return "BONO";            // "Bono jugador": el bono del primer ingreso
     if(/retiro de un jugador/i.test(m.tipo || "")) return "RETIRO";
     if(!/dep[oó]sito de un jugador/i.test(m.tipo || "")) return null;
     return Number(m.cantidad) > 0 ? "CARGA" : "RETIRO";
   }
-  function _tipoFila(h){ return String((h && h.tipo) || "CARGA").toUpperCase(); }
+  function _tipoFila(h){
+    var t = String((h && h.tipo) || "CARGA").toUpperCase();
+    return (t === "CARGA" && String((h && h.origen) || "").toUpperCase() === "PROMO_BONO") ? "BONO" : t;
+  }
   // Mismo usuario, mismo monto y misma clase de operación.
   function _igual(m, h){ return _norm(h.usuario) === _norm(m.alias) && _monto(h.monto) === _monto(m.cantidad) && _tipoFila(h) === m._tipo; }
 
@@ -80,6 +93,8 @@
     var ahora = Number(opts.ahora) || Date.now();
     var cargas = (movs || []).filter(function(m){ m._tipo = _tipoMov(m); return !!m._tipo; });
     var libres = (filas || []).filter(function(h){ return h && String(h.estado || "OK") === "OK"; }).slice();
+    var conError = (filas || []).filter(function(h){ return h && String(h.estado || "").toUpperCase() === "ERROR"
+      && (String(h.tipo || "").toUpperCase() === "CARGA" || String(h.tipo || "").toUpperCase() === "RETIRO"); });
     var usadas = {};
     var pares = [];
     // 1) Las filas que ya llevan la fecha del movimiento en las notas: esas son, sin discusión.
@@ -88,15 +103,16 @@
       var f = libres.find(function(h){ return !usadas[h.id] && String(h.notas || "").indexOf(et) >= 0 && _igual(m, h); });
       if(f){ usadas[f.id] = true; m._fila = f; }
     });
-    // 2) El resto, por usuario + monto + horario. Si hay más de una candidata, no se elige.
-    cargas.forEach(function(m){
+    // 2) El resto, por usuario + monto + tipo + horario, DE A UNA Y EN ORDEN (Juan: "hice 1 2 3, la página debe decir
+    //    1 2 3"): el movimiento más viejo de Agentes se queda con la fila más vieja de NODO que le corresponde, el que
+    //    sigue con la que sigue. Dos cargas iguales seguidas ya no son "duda": cada una tiene la suya.
+    cargas.slice().sort(function(a, b){ return a.ms - b.ms; }).forEach(function(m){
       if(m._fila) return;
       var cand = libres.filter(function(h){
         return !usadas[h.id] && !/Agentes \d{2}\/\d{2}\/\d{4}/.test(String(h.notas || ""))
           && _igual(m, h) && Math.abs(_ms(h) - m.ms) <= VENTANA_NODO_MS;
-      });
-      if(cand.length > 1){ m._ambiguo = cand; return; }
-      if(cand.length === 1){ usadas[cand[0].id] = true; m._fila = cand[0]; }
+      }).sort(function(a, b){ return _ms(a) - _ms(b); });
+      if(cand.length){ usadas[cand[0].id] = true; m._fila = cand[0]; }
     });
     // Reloj corrido: si el reloj de Agentes y el de la PC difieren más que la ventana, la misma carga
     // quedaría como "sin NODO" y como "sin Agentes" a la vez, y se anotaría dos veces en Chunior. Por eso,
@@ -107,13 +123,26 @@
       var sueltas = libres.filter(function(h){ return !usadas[h.id] && parecida(m, h); });
       if(sueltas.length){ m._ambiguo = sueltas; sueltas.forEach(function(h){ h._enDuda = true; }); }
     });
+    // 3) Lo que sobra en Agentes: ¿NODO lo intentó y lo dio por fallado? ¿o es la misma carga hecha dos veces?
+    var usadasErr = {};
+    cargas.forEach(function(m){
+      if(m._fila || m._ambiguo) return;
+      var err = conError.filter(function(h){ return !usadasErr[h.id] && _igual(m, h) && Math.abs(_ms(h) - m.ms) <= VENTANA_NODO_MS; })
+        .sort(function(a, b){ return Math.abs(_ms(a) - m.ms) - Math.abs(_ms(b) - m.ms); })[0];
+      if(err){ usadasErr[err.id] = true; m._conError = err; return; }
+      var gemela = cargas.filter(function(o){ return o !== m && o._fila && o._tipo === m._tipo && _norm(o.alias) === _norm(m.alias)
+        && _monto(o.cantidad) === _monto(m.cantidad) && Math.abs(o.ms - m.ms) <= COPIA_AGENTES_MS; })[0];
+      if(gemela) m._gemela = gemela;
+    });
     cargas.forEach(function(m){
       var f = m._fila || null, caso;
       if(m._ambiguo) caso = "ambiguo";
+      else if(m._conError) caso = "con_error";
+      else if(m._gemela) caso = "duplicada";
       else if(!f) caso = "sin_nodo";
-      else caso = f.chunior_movimiento_id ? "enlazada" : "nodo_sin_chunior";
-      pares.push({ mov: m, tipo: m._tipo, fila: f, caso: caso, candidatas: m._ambiguo || null });
-      delete m._fila; delete m._ambiguo;
+      else caso = (f.chunior_movimiento_id || m._tipo === "BONO") ? "enlazada" : "nodo_sin_chunior";
+      pares.push({ mov: m, tipo: m._tipo, fila: f || m._conError || null, caso: caso, candidatas: m._ambiguo || null, gemela: m._gemela || null });
+      delete m._fila; delete m._ambiguo; delete m._conError; delete m._gemela;
     });
     // 3) Filas de NODO sin carga en Agentes: sólo si la lectura cubre su horario y ya pasó la gracia.
     var desdeLeido = Number(opts.desdeLeidoMs);
@@ -211,7 +240,8 @@
   }
   // ¿Ese movimiento de NODO está en Agentes? Busca al jugador con el filtro del informe. true = confirmado que NO
   // está; false = está (o hay uno igual cerca); null = no se puede afirmar (sin filtro, lectura cortada, error).
-  async function _confirmarSinAgentes(h){
+  async function _confirmarSinAgentes(h, usados){
+    usados = usados || {};
     var args = { alias: h.usuario, filtrarAlias: true, desdeMs: _ms(h) - DUDA_MS, maxPaginas: 3 };
     var llamar = _conSalud(args, function(){ return window.ctrlElectron.drexAutomation("leerMovimientosCredito", args); });
     var r = (typeof window._drexEncolar === "function")
@@ -220,7 +250,8 @@
     var tipo = _tipoFila(h), t = _ms(h);
     // Está: se devuelve el movimiento (el más cercano en hora) para engancharlo con la carga.
     var esta = (r.filas || []).filter(function(m){
-      return _tipoMov(m) === tipo && _monto(m.cantidad) === _monto(h.monto) && Math.abs(m.ms - t) <= DUDA_MS;
+      return _tipoMov(m) === tipo && _monto(m.cantidad) === _monto(h.monto) && Math.abs(m.ms - t) <= DUDA_MS
+        && !usados[_etiqueta(m) + "|" + _monto(m.cantidad)];
     }).sort(function(a, b){ return Math.abs(a.ms - t) - Math.abs(b.ms - t); })[0];
     if(esta) return { mov: esta };
     return r.completo ? true : null;
@@ -284,6 +315,48 @@
     resumen.fuera++;
   }
 
+  // ¿Ya hay un aviso de NODO para ese movimiento de Agentes? (la hora con segundos es su identidad)
+  async function _yaHayAviso(mov, marca){
+    // La carga y su bono pueden tener la misma hora de Agentes: el monto también cuenta.
+    var r = await supabaseClient.from("historial_ops").select("id").eq("pc_codigo", _pc()).eq("tipo", "ALERTA").eq("monto", _monto(mov.cantidad))
+      .ilike("notas", "%" + _etiqueta(mov) + "%").ilike("notas", "%" + marca + "%").limit(1);
+    return !!(r && !r.error && r.data && r.data.length);
+  }
+  // Una fila ALERTA en el historial: la ve el operador en el cartel (con "Lo vi") y el admin en los errores.
+  async function _avisarDeAgentes(p){
+    var m = p.mov, nombre = p.tipo === "BONO" ? "bono" : p.tipo === "RETIRO" ? "retiro" : "carga";
+    var marca = p.caso === "duplicada" ? MARCA_DUPLICADA : MARCA_CON_ERROR;
+    if(await _yaHayAviso(m, marca)) return false;
+    var hm = function(ms){ var x = new Date(ms); return (x.getHours() < 10 ? "0" : "") + x.getHours() + ":" + (x.getMinutes() < 10 ? "0" : "") + x.getMinutes() + ":" + (x.getSeconds() < 10 ? "0" : "") + x.getSeconds(); };
+    var texto = p.caso === "duplicada"
+      ? marca + ": el " + nombre + " de $" + _monto(m.cantidad).toLocaleString("es-AR") + " aparece dos veces en Agentes (" + hm(p.gemela.ms) + " y " + hm(m.ms)
+        + ") y NODO lo hizo una vez. Hay que sacar el de más en Agentes."
+      : marca + ": el " + nombre + " de $" + _monto(m.cantidad).toLocaleString("es-AR") + " figura con error en NODO (fila " + p.fila.id + ") pero en Agentes está hecho a las " + hm(m.ms)
+        + ". Revisá antes de volver a hacerlo.";
+    var r = await supabaseClient.from("historial_ops").insert({ usuario: m.alias, tipo: "ALERTA", monto: _monto(m.cantidad), origen: "COTEJO", estado: "ERROR",
+      operador: _operador(), pc_codigo: _pc(), created_at: new Date(m.ms).toISOString(), notas: texto + " · " + _etiqueta(m) }).select("id");
+    return !!(r && !r.error);
+  }
+  // ¿Ese retiro hecho directo en Agentes saca lo que se duplicó? (carga, bono o los dos, del mismo jugador, después)
+  async function _esCorreccion(mov, duplicadasRun){
+    var monto = _monto(mov.cantidad), u = _norm(mov.alias);
+    var dups = (duplicadasRun || []).filter(function(p){ return _norm(p.mov.alias) === u && p.mov.ms <= mov.ms && mov.ms - p.mov.ms <= 2 * 3600000; })
+      .map(function(p){ return _monto(p.mov.cantidad); });
+    if(!dups.length){
+      var r = await supabaseClient.from("historial_ops").select("monto,usuario,created_at").eq("pc_codigo", _pc()).eq("tipo", "ALERTA")
+        .ilike("notas", "%" + MARCA_DUPLICADA + "%").gte("created_at", new Date(mov.ms - 2 * 3600000).toISOString()).lte("created_at", new Date(mov.ms).toISOString()).limit(20);
+      if(r && !r.error) dups = (r.data || []).filter(function(h){ return _norm(h.usuario) === u; }).map(function(h){ return _monto(h.monto); });
+    }
+    if(!dups.length) return false;
+    var suma = dups.reduce(function(a, b){ return a + b; }, 0);
+    if(dups.indexOf(monto) < 0 && suma !== monto) return false;
+    if(await _yaHayAviso(mov, MARCA_CORRECCION)) return true;
+    var r2 = await supabaseClient.from("historial_ops").insert({ usuario: mov.alias, tipo: "ALERTA", monto: monto, origen: "COTEJO", estado: "OK",
+      operador: _operador(), pc_codigo: _pc(), created_at: new Date(mov.ms).toISOString(),
+      notas: MARCA_CORRECCION + ": se sacaron $" + monto.toLocaleString("es-AR") + " en Agentes por lo que había quedado duplicado. En Chunior no se anota nada: nunca tuvo la duplicada. · "
+        + _etiqueta(mov) + " · " + MARCA_RECONOCIDA + " NODO" }).select("id");
+    return !!(r2 && !r2.error);
+  }
   async function _nodoSinChunior(mov, tipo, fila, filas, resumen){
     var usuario = fila.usuario || mov.alias, monto = _monto(fila.monto);
     // La billetera de esa carga: si no usa Chunior, no hay nada que subir (y no se le mueve la ventana).
@@ -363,9 +436,27 @@
         if(pe.caso !== "enlazada" && pe.caso !== "nodo_sin_chunior") continue;
         try{ if(await _anotarNotas(pe.fila, _etiqueta(pe.mov))){ pe.fila.notas = (pe.fila.notas ? pe.fila.notas + " · " : "") + _etiqueta(pe.mov); resumen.enganchadas = (resumen.enganchadas || 0) + 1; } }catch(_e){}
       }
+      // Duplicadas y "con error": se avisan (una vez por movimiento) y no se anotan en Chunior.
+      var duplicadasRun = [];
+      for(var d = 0; d < r.pares.length; d++){
+        var pd = r.pares[d];
+        if(pd.caso !== "duplicada" && pd.caso !== "con_error") continue;
+        if(pd.caso === "duplicada") duplicadasRun.push(pd);
+        try{ if(await _avisarDeAgentes(pd)) resumen[pd.caso === "duplicada" ? "duplicadas" : "conError"] = (resumen[pd.caso === "duplicada" ? "duplicadas" : "conError"] || 0) + 1; }
+        catch(e){ console.warn("[cotejo-cargas] aviso", pd.caso, e && e.message); }
+      }
       for(var i = 0; i < r.pares.length; i++){
         if(_ocupado()) break;                                           // el operador arrancó algo: se sigue después
         var p = r.pares[i];
+        if(p.caso === "duplicada" || p.caso === "con_error") continue;
+        // Un bono suelto (sin su fila de NODO) no se anota solo en Chunior: va a PROMOS y lo decide el operador.
+        if(p.tipo === "BONO" && p.caso !== "enlazada"){ resumen.dudas++; continue; }
+        // Un retiro hecho directo en Agentes por lo mismo que se duplicó (la carga, el bono, o los dos) es la
+        // corrección: se deja anotado y NO se anota en Chunior.
+        if(p.caso === "sin_nodo" && p.tipo === "RETIRO"){
+          try{ if(await _esCorreccion(p.mov, duplicadasRun)){ resumen.correcciones = (resumen.correcciones || 0) + 1; continue; } }
+          catch(e){ console.warn("[cotejo-cargas] corrección", e && e.message); }
+        }
         if(p.caso !== "enlazada" && _enDudaReciente(p.mov)) continue;
         var antes = resumen.dudas;
         try{
@@ -393,11 +484,15 @@
         var vivos = {}; filas.forEach(function(h){ vivos[h.id] = h; });
         _guardarPendientes(pend.filter(function(id){ var h = vivos[id]; return h && String(h.notas || "").indexOf("Agentes ") < 0 && String(h.notas || "").indexOf(MARCA_SIN_AGENTES) < 0; }));
       }
+      // Los movimientos de Agentes que ya son de una fila de NODO (por su hora en las notas o por esta vuelta).
+      var usadosAg = {};
+      filas.forEach(function(h){ var et = (String(h.notas || "").match(ETIQUETA_AG) || [])[0]; if(et) usadosAg[et + "|" + _monto(h.monto)] = true; });
+      r.pares.forEach(function(p){ if(p.fila) usadosAg[_etiqueta(p.mov) + "|" + _monto(p.mov.cantidad)] = true; });
       var confirmadas = [];
       for(var k = 0; k < aConfirmar.length; k++){
         if(_ocupado()) break;
         var cand = aConfirmar[k], conf = null;
-        try{ conf = await _confirmarSinAgentes(cand); }catch(_e){ conf = null; }
+        try{ conf = await _confirmarSinAgentes(cand, usadosAg); }catch(_e){ conf = null; }
         if(conf && conf.mov){
           try{ if(await _anotarNotas(cand, _etiqueta(conf.mov))) resumen.enganchadas = (resumen.enganchadas || 0) + 1; }catch(_e){}
           _guardarPendientes(_pendientes().filter(function(id){ return id !== cand.id; }));
@@ -415,9 +510,11 @@
           + " pero en Agentes no aparece " + (esRetiro ? "este retiro" : "esta carga");
         if(await _anotarNotas(h, txt)) resumen.sinAgentes++;
       }
-      if(resumen.enlazadas || resumen.subidas || resumen.fuera || resumen.sinAgentes){
+      if(resumen.enlazadas || resumen.subidas || resumen.fuera || resumen.sinAgentes || resumen.duplicadas || resumen.conError || resumen.correcciones){
         try{ if(typeof cargarHistorial === "function") await cargarHistorial(true); }catch(_e){}
       }
+      if(resumen.duplicadas) _toast("⚠️ Hay " + resumen.duplicadas + " carga(s) o bono(s) duplicados en Agentes: NODO los hizo una vez y en Agentes figuran dos. Revisalos en el historial.", "red");
+      if(resumen.conError) _toast("⚠️ Hay " + resumen.conError + " operación(es) que NODO marcó con error pero en Agentes se hicieron. Revisalas antes de repetirlas.", "red");
       if(resumen.fuera) _toast("⚠️ Hay " + resumen.fuera + " carga(s) o retiro(s) hechos fuera de NODO. Revisalos en el historial y avisale a tu superior.", "red");
       if(resumen.sinAgentes) _toast("⚠️ Hay " + resumen.sinAgentes + " movimiento(s) anotados que no aparecen en Agentes. Revisalos en el historial.", "red");
       await pintarAvisos();
@@ -476,7 +573,7 @@
       .select("id,created_at,usuario,monto,tipo,notas,estado,operador,chunior_movimiento_id")
       .eq("pc_codigo", _pc())
       .gte("created_at", new Date(Date.now() - 7 * 86400000).toISOString())
-      .or("notas.ilike.*" + MARCA_FUERA + "*,notas.ilike.*" + MARCA_SIN_AGENTES + "*,notas.ilike.*" + MARCA_CHUNIOR + "*")
+      .or("notas.ilike.*" + MARCA_FUERA + "*,notas.ilike.*" + MARCA_SIN_AGENTES + "*,notas.ilike.*" + MARCA_CHUNIOR + "*,notas.ilike.*" + MARCA_DUPLICADA + "*,notas.ilike.*" + MARCA_CON_ERROR + "*")
       .order("created_at", { ascending: false }).limit(80);
     if(r.error) return [];
     return avisosParaMostrar(r.data || []);
@@ -494,7 +591,7 @@
   // Las otras filas del mismo movimiento que todavía no se vieron (la base no).
   async function _hermanasNoVistas(base){
     var t = Date.parse(base.created_at), out = [];
-    var marcas = [MARCA_FUERA, MARCA_SIN_AGENTES, MARCA_SIN_AGENTES_VIEJA, MARCA_CHUNIOR];
+    var marcas = [MARCA_FUERA, MARCA_SIN_AGENTES, MARCA_SIN_AGENTES_VIEJA, MARCA_CHUNIOR, MARCA_DUPLICADA, MARCA_CON_ERROR];
     var cerca = await supabaseClient.from("historial_ops").select("id,created_at,usuario,monto,tipo,notas,chunior_movimiento_id")
       .eq("pc_codigo", _pc())
       .gte("created_at", new Date(t - 86400000).toISOString()).lte("created_at", new Date(t + 86400000).toISOString())
@@ -539,7 +636,11 @@
       var notas = String(h.notas || "");
       var deChunior = !fuera && notas.indexOf(MARCA_SIN_AGENTES) < 0 && notas.indexOf(MARCA_CHUNIOR) >= 0;
       var titulo, detalle;
-      if(deChunior){
+      if(notas.indexOf(MARCA_DUPLICADA) >= 0 || notas.indexOf(MARCA_CON_ERROR) >= 0){
+        // El texto del aviso ya dice qué pasó y qué hacer: se muestra tal cual, sin la hora técnica de Agentes.
+        titulo = notas.replace(/\s*·\s*Agentes \d{2}\/\d{2}\/\d{4} \d{2}:\d{2}:\d{2}.*$/, "").replace(MARCA_DUPLICADA + ":", "Duplicada en Agentes:").replace(MARCA_CON_ERROR + ":", "Con error en NODO, hecha en Agentes:");
+        detalle = h.usuario + " · $" + Number(h.monto || 0).toLocaleString("es-AR") + " · " + hora;
+      }else if(deChunior){
         // "Anotado directo en Chunior por xprueba, no estaba en NODO · Propinas N° 10184376 · a 882 - PROMOS"
         var que = (notas.match(/·\s*([^·]+?)\s+N°/) || [])[1] || "Movimiento";
         titulo = que + ": anotado directo en Chunior" + (h.operador ? " por " + h.operador : "") + ", no estaba en NODO.";

@@ -624,6 +624,7 @@ async function aplicarMonto(tipo, amount, options = {}) {
 
   let m = leerModalMontos();
   const preJugador = m.jugador || { raw: '', value: 0, unchanged: true };
+  const preAgente = m.agente && m.agente.value > 0 ? m.agente.value : null;   // "Balance agente" del modal
 
   if (tipo === 'retiro' && preJugador && preJugador.value > 0 && preJugador.value < monto) {
     await cerrarModalActual();
@@ -677,6 +678,8 @@ async function aplicarMonto(tipo, amount, options = {}) {
 
   const toast = await esperarToastCapturado(capt, 9000);
   const exito = toast ? (toast.tipo === 'ok') : null;
+  // El saldo del agente después de esta operación (la carga y el bono salen del agente; el retiro vuelve).
+  if (exito !== false && preAgente !== null) _anotarSaldo(tipo === 'carga' ? preAgente - monto - bonoAplicado : preAgente + monto, now(), 'ultima-carga');
   if (findActiveModal()) await cerrarModalActual();
 
   // Saldo POST: se relee de la fila y se espera a que cambie respecto del pre (nunca se inventa sin marcarlo).
@@ -949,11 +952,28 @@ function readAgentBalance() {
 function findMenuItem(re) {
   return visibleElements('a, button, [role="menuitem"]').find(el => re.test(normalizeText(el.textContent))) || null;
 }
+// El saldo del agente, como lo dejó el último movimiento (Juan, 23/11: "el cotejo de fichas, como en el preload del
+// anterior agentes, debe extraerse desde la última carga porque puede no dibujarse arriba"). La cabecera de AdminOnline
+// no se actualiza sola: el 23/11 decía 22.219.275 mientras el informe ya iba por 22.076.776, y NODO avisaba diferencias
+// de fichas que no existían. Se guarda el que sea más nuevo de: la columna Balance de la primera fila del informe de
+// movimientos (lo lee el cotejo después de cada carga) y el saldo que dejó la última carga o retiro hecho por NODO.
+let _saldoUltimo = null;   // { raw, value, ms, fuente }
+function _anotarSaldo(value, ms, fuente) {
+  if (!Number.isFinite(value) || value <= 0 || !Number.isFinite(ms)) return;
+  if (_saldoUltimo && _saldoUltimo.ms > ms) return;
+  _saldoUltimo = { raw: Math.round(value).toLocaleString('es-AR') + ' ARS', value, ms, fuente };
+}
 async function obtenerSaldoAgente(options = {}) {
   if (pageNeedsLogin()) return { ok: false, needsLogin: true };
-  // Con un modal abierto (alguien en medio de una operación) no se mueve nada: se lee el campo del modal o la cabecera.
+  // Con un modal abierto (alguien en medio de una operación) no se mueve nada: se lee el campo del modal.
   const mm = leerModalMontos();
   if (mm.modal && mm.agente && mm.agente.value > 0) return { ok: true, balance: mm.agente, fuente: 'modal' };
+  // En el informe de movimientos, la primera fila manda.
+  if (_rutaActual() === TOKENS_REPORT_PATH) {
+    const p = _filasInforme();
+    if (p.length && p[0].balance) _anotarSaldo(parseMoney(p[0].balance), p[0].ms, 'informe');
+  }
+  if (_saldoUltimo) return { ok: true, balance: { raw: _saldoUltimo.raw, value: _saldoUltimo.value }, fuente: _saldoUltimo.fuente, ms: _saldoUltimo.ms };
   await waitFor(() => readAgentBalance().value > 0, options.timeout || 4000).catch(() => {});
   return { ok: true, balance: readAgentBalance(), fuente: 'header' };
 }
@@ -1279,6 +1299,7 @@ async function leerMovimientosCredito(args = {}) {
       if (!listo) break;
       await delay(400);
       const pagina = _filasInforme();
+      if (paginas === 0 && !filtrado && pagina.length && pagina[0].balance) _anotarSaldo(parseMoney(pagina[0].balance), pagina[0].ms, 'informe');
       const firma = pagina.map(f => f.fecha + f.alias + f.cantidad).join('|');
       if (firma === firmaAnterior) break;            // la página no cambió: no hay más
       firmaAnterior = firma; paginas++;

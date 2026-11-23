@@ -129,3 +129,15 @@ test('Inicio envía su borrador aun cuando existe otro borrador en el chat princ
   assert.equal(elements.get('chatInput').value,'Borrador principal');
   assert.ok(saved.chat_thread.some(m=>m.mensaje==='Respuesta desde Inicio ⟦AYUDA:inicio⟧'));
 });
+
+// Juan, 23/11 (P4 en los canales nuevos): "no hay buena detección ni se muestra bien". La conversación mostraba la marca
+// ⟦INGRESAR:…⟧ y los *asteriscos* tal cual, y en la lista no se distinguía un aviso automático de un mensaje del jugador.
+test('lo que el Portal convierte en botón o negrita se muestra en palabras; el adelanto dice de quién es', () => {
+  const op = { tipo_emisor: 'OPERADOR', emisor: 'juancarlos', mensaje: '✅ ¡Listo!\nTocá el botón *Ingresar* acá abajo 👇\n⟦INGRESAR:Julju31|+54 9 280 503-9517⟧' };
+  assert.equal(Message.visibleText(op), '✅ ¡Listo!\nTocá el botón Ingresar acá abajo 👇\n[Botón: Ingresar al portal]');
+  assert.equal(Message.preview(op), '↩ ✅ ¡Listo! Tocá el botón Ingresar acá abajo 👇');
+  const auto = { origen: 'OPERADOR', auto: true, operador: 'NODO', mensaje: 'Tu carga de $1.000 ya fue acreditada hace 2 minutos. ¡Buena suerte!' };
+  assert.equal(Message.preview(auto), '🤖 Tu carga de $1.000 ya fue acreditada hace 2 minutos. ¡Buena suerte!');
+  const jugador = { origen: 'USUARIO', mensaje: 'No me llega la *carga*' };
+  assert.equal(Message.preview(jugador), 'No me llega la *carga*', 'lo del jugador no se toca');
+});

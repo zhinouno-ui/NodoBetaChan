@@ -53,3 +53,12 @@ test('el informe de movimientos corta si la fila más nueva figura en el futuro 
   assert.match(src, /paginas === 1 && pagina\[0\]\.ms > now\(\) \+ 10 \* 60000/);
   assert.match(src, /motivo: 'HORA_DESFASADA'/);
 });
+
+// Juan, 23/11: la cabecera de AdminOnline no se actualiza sola (decía 22.219.275 con el informe en 22.076.776) y NODO
+// avisaba diferencias de fichas que no existían. El saldo sale del último movimiento.
+test('el saldo del agente sale del último movimiento (informe o última carga), no de la cabecera', () => {
+  const f = src.slice(src.indexOf('let _saldoUltimo'), src.indexOf('function irABusquedaUsuarios'));
+  assert.ok(f.indexOf('if (_saldoUltimo) return') < f.indexOf("fuente: 'header'"), 'la cabecera queda como último recurso');
+  assert.match(src, /if \(paginas === 0 && !filtrado && pagina\.length && pagina\[0\]\.balance\) _anotarSaldo\(/);
+  assert.match(src, /_anotarSaldo\(tipo === 'carga' \? preAgente - monto - bonoAplicado : preAgente \+ monto, now\(\), 'ultima-carga'\)/);
+});
