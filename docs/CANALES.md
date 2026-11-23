@@ -340,3 +340,16 @@ Juan notó demora al recibir el mensaje del jugador y al llegarle la respuesta. 
   validen o escribió hace menos de 2 minutos) se lee en cada vuelta de 5 s; fuera de eso sigue cada 15 s.
 - **Lo que queda.** La respuesta del cajero tarda hasta 5 s por el reloj del Portal. Bajarlo sin gastar más
   necesita un aviso del servidor al Portal (como `nodo:chat`), que hoy no existe.
+
+## 13 · Canales nuevos según la versión de NODO (23/11)
+
+Juan, 15/11 y 23/11: "por encima de la 2.1.5 TODAS USAN LO NUEVO", sin copiar archivos a mano.
+
+- NODO 2.2.0, al elegir la oficina, pide su clave con `panel_beta_alta_v1` (secreto del panel y versión). El servidor
+  sólo da clave a versiones mayores a 2.1.5 y guarda el hash en `nodo_beta.beta_clientes`. NODO la guarda en
+  `%LOCALAPPDATA%NODOetaconnection.json`, el mismo archivo que antes se copiaba a mano (`main/beta-alta.js`).
+- El puente lee ese archivo en cada llamada y el chat vuelve a mirar cada 30 s: cambia sin reiniciar. Medido el 23/11
+  con P4: la clave se pidió a las 09:56:32 y el chat quedó en el canal nuevo a las 09:56:53.
+- Con la oficina activa, el bot de palabras deja de contestar ahí (`_soporte_bot_apagado`).
+- Las 2.1.6 a 2.1.10 que ya están en las oficinas no tienen ese código: pasan cuando se actualizan a 2.2.0.
+- Vuelta atrás: `servidor/beta-alta-por-version.vuelta-atras.sql` (apaga las claves dadas por versión; la de P1, no).
