@@ -347,7 +347,7 @@ Juan, 15/11 y 23/11: "por encima de la 2.1.5 TODAS USAN LO NUEVO", sin copiar ar
 
 - NODO 2.2.0, al elegir la oficina, pide su clave con `panel_beta_alta_v1` (secreto del panel y versión). El servidor
   sólo da clave a versiones mayores a 2.1.5 y guarda el hash en `nodo_beta.beta_clientes`. NODO la guarda en
-  `%LOCALAPPDATA%NODOetaconnection.json`, el mismo archivo que antes se copiaba a mano (`main/beta-alta.js`).
+  `%LOCALAPPDATA%/NODO/beta/connection.json`, el mismo archivo que antes se copiaba a mano (`main/beta-alta.js`).
 - El puente lee ese archivo en cada llamada y el chat vuelve a mirar cada 30 s: cambia sin reiniciar. Medido el 23/11
   con P4: la clave se pidió a las 09:56:32 y el chat quedó en el canal nuevo a las 09:56:53.
 - Con la oficina activa, el bot de palabras deja de contestar ahí (`_soporte_bot_apagado`).
