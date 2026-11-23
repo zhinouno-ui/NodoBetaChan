@@ -926,7 +926,8 @@ function toggleWidget(open){
     if(state.usuario)startPortalThreadPoll();
     if(tieneSolicitudPendiente())startEstadoPoll();
   }else{
-    stopChatPoll();stopPortalThreadPoll();stopEstadoPoll();
+    stopChatPoll();stopPortalThreadPoll();
+    if(!tieneSolicitudPendiente()) stopEstadoPoll();
   }
 }
 
@@ -2353,8 +2354,10 @@ async function consultarEstadoSolicitud(mostrarMensaje=true){
     return estado;
   }
   if(esEstadoFinalRechazado(estado)){
+    // Se confirma con una segunda lectura enseguida (1,5 s), no esperando tres vueltas de 6 s: el rechazo tardaba hasta
+    // 18 s en verse y el jugador recargaba la página para enterarse (Juan, 23/11).
     rechazadoStreak++;
-    if(rechazadoStreak < 3){setEstadoLive("⏳ En verificación");return "PENDIENTE";}
+    if(rechazadoStreak < 2){setEstadoLive("⏳ En verificación");setTimeout(()=>{ if(tieneSolicitudPendiente()) consultarEstadoSolicitud(false); },1500);return "PENDIENTE";}
     stopEstadoPoll();
     rechazadoStreak=0;
     const eraRetiro = String(state.pendingTipo||"").toUpperCase()==="RETIRO";
@@ -2377,6 +2380,7 @@ async function consultarEstadoSolicitud(mostrarMensaje=true){
       if(actions)actions.innerHTML='<button class="action-btn" onclick="corregirDatosRetiroDesdeEstado()">Corregir datos de cobro</button><button class="action-btn secondary-btn" onclick="goChat()">Chat</button>';
     }
     try{ pintarHistorialUsuario(); }catch(_e){}   // el rechazo (con su motivo) ya figura en el historial
+    try{ notificarLocal("BET300 · Tu solicitud no pudo procesarse", obs || "Escribinos por el chat y tu cajero te ayuda.", "/", eraRetiro ? "bet300-retiro" : "bet300-acreditada"); }catch(_e){}
     renderHome();
     if($("widget")?.classList.contains("open"))showScreen("estado");
     return estado;

@@ -2996,7 +2996,34 @@
     if(quien === 'OPERADOR' || quien === 'SISTEMA') return '↩ ' + texto;
     return texto;
   }
-  return Object.freeze({ role, normalize, author, className, key, isFiller, sinCopias, chatVigente, escritor, chatsDeLaConsulta, merge, visibleText, preview });
+  // El pedido a una persona que arma el asistente del Portal ("Pido hablar con mi cajero. Tema: … Resumen del
+  // asistente: · Última carga: $2.000 · 23/11 10:27 · no aprobada · pedido 520466 …") se lee como una ficha (Juan,
+  // 23/11: "hay que mejorar estos mensajes"). Devuelve null si el mensaje no es eso.
+  function resumenAsistente(message){
+    const text = String(message?.mensaje ?? message?.MENSAJE ?? '');
+    if(!/^\s*Pido hablar con mi cajero/i.test(text)) return null;
+    const tema = ((text.match(/Tema:\s*([^\n]+?)\.?\s*(?:\n|$)/i) || [])[1] || '').trim();
+    const out = { tema, eligio: '', operaciones: [], enCurso: '', resto: '' };
+    const resto = [];
+    text.split(/\n/).slice(1).forEach(linea => {
+      const l = linea.trim();
+      if(!l || /^Tema:/i.test(l) || /^Resumen del asistente:?$/i.test(l)) return;
+      let m;
+      if((m = l.match(/^·\s*Eligió:\s*(.+)$/i))) { out.eligio = m[1].trim(); return; }
+      if((m = l.match(/^·\s*En curso:\s*(.+)$/i))) { out.enCurso = m[1].trim(); return; }
+      if((m = l.match(/^·\s*(Última carga|Último retiro):\s*(.+)$/i))){
+        const partes = m[2].split('·').map(x => x.trim()).filter(Boolean);
+        const pedido = ((partes.find(p => /^pedido\s+\d+/i.test(p)) || '').match(/\d+/) || [''])[0];
+        out.operaciones.push({ tipo: /retiro/i.test(m[1]) ? 'RETIRO' : 'CARGA', monto: partes[0] || '', fecha: partes[1] || '',
+          estado: partes.find((p, i) => i >= 2 && !/^pedido/i.test(p)) || '', pedido });
+        return;
+      }
+      resto.push(l);
+    });
+    out.resto = resto.join(' ');
+    return out;
+  }
+  return Object.freeze({ role, normalize, author, className, key, isFiller, sinCopias, chatVigente, escritor, chatsDeLaConsulta, merge, visibleText, preview, resumenAsistente });
 });
 (function(root, factory){
   if(typeof module === 'object' && module.exports) module.exports = factory();

@@ -1,4 +1,7 @@
 -- Asocia el comprobante enviado desde el chat con la solicitud de CARGA existente.
+-- 23/11: publicado. landing_solicitudes no tiene columna comprobante_url: va sólo en metadata (de ahí lo leen la bandeja,
+-- la tarjeta del chat y el modal de aprobar). Sin esta función el Portal mandaba el comprobante por el chat y la
+-- tarjeta de NODO decía "Sin comprobante adjunto" (Juan, 23/11: "no parece detectar el comprobante en el chat").
 -- No permite crear solicitudes ni modificar estados: sólo el jugador dueño puede
 -- adjuntar una imagen a su propia solicitud pendiente.
 
@@ -31,8 +34,7 @@ begin
   end if;
 
   update public.landing_solicitudes
-     set comprobante_url = v_url,
-         metadata = coalesce(metadata, '{}'::jsonb)
+     set metadata = coalesce(metadata, '{}'::jsonb)
            || jsonb_build_object(
                 'comprobante_url', v_url,
                 'comprobante_origen', 'PORTAL_CHAT',

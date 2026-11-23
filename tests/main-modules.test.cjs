@@ -807,7 +807,8 @@ test('Ctrl+R reinicia NODO entero si cambió el código del proceso principal, y
   const espera = f.indexOf('automationRequests.pending.size');
   const reinicio = f.indexOf('_huellaProcesoPrincipal() > HUELLA_AL_ABRIR');
   assert.ok(espera > 0 && reinicio > espera, 'primero termina la operación en curso, después se reinicia');
-  assert.match(f.slice(reinicio, reinicio + 400), /app\.relaunch\(\)[\s\S]*app\.quit\(\)[\s\S]*return;/);
+  assert.match(f.slice(reinicio, reinicio + 1100), /app\.relaunch\(\{ args \}\)[\s\S]*app\.quit\(\)[\s\S]*return;/);
+  assert.match(f, /app\.commandLine\.getSwitchValue\('remote-debugging-port'\)/, 'el NODO reiniciado conserva el puerto de depuración');
   assert.match(src, /for \(const dir of \['main', 'services'\]\)/, 'mira main.js, main/ y services/');
   assert.match(src, /\/\\\.\(c\?js\|html\)\$\/i/, 'los archivos de código, no cualquier cosa');
 });

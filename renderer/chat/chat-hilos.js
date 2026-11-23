@@ -741,7 +741,7 @@
       // asistente no los contesta: lo tiene que ver una persona, y acá se le dice al operador en palabras.
       const delicado=NodoChatMessage.role(m)==="USUARIO"&&String(m.auto_caso||"").toUpperCase()==="DERIVAR_HUMANO"
         ?`<div class="wq2-delicado" style="margin-top:6px;padding:6px 8px;border-radius:8px;background:rgba(248,113,113,.14);border:1px solid rgba(248,113,113,.45);color:#fecaca;font-size:11.5px;line-height:1.35">⚠️ <b>Mensaje delicado.</b> Habla de angustia o de no poder parar de jugar. El asistente no contesta estos mensajes: respondé vos, con calma.</div>`:"";
-      html+=`<div${receipt} class="wq2-row ${NodoChatMessage.className(m)}"><div class="wq2-bubble"><div class="wq2-author">${E(NodoChatMessage.author(m,fresh.usuario))}</div>${E(NodoChatMessage.visibleText(m)).replace(/\n/g,"<br>")}${delicado}${imgHtml}<div class="wq2-time" title="${E(m.fecha)}">${hora(m.fecha)}${editedTag}${editBtn}${retryBtn}</div></div></div>`;
+      html+=`<div${receipt} class="wq2-row ${NodoChatMessage.className(m)}"><div class="wq2-bubble"><div class="wq2-author">${E(NodoChatMessage.author(m,fresh.usuario))}</div>${fichaResumenAsistente(m)||E(NodoChatMessage.visibleText(m)).replace(/\n/g,"<br>")}${delicado}${imgHtml}<div class="wq2-time" title="${E(m.fecha)}">${hora(m.fecha)}${editedTag}${editBtn}${retryBtn}</div></div></div>`;
     });
     html+=`</div>`;
     bodies.forEach((box,i)=>{
@@ -971,6 +971,23 @@
     betaRetries.set(key,pending);return pending;
   };
 
+  // El pedido a una persona que arma el asistente del Portal, como ficha (Juan, 23/11: "hay que mejorar estos
+  // mensajes"): qué quiere, qué eligió, y su última carga y último retiro con el estado a la vista.
+  function fichaResumenAsistente(m){
+    const r=window.NodoChatMessage&&NodoChatMessage.resumenAsistente?NodoChatMessage.resumenAsistente(m):null;
+    if(!r)return "";
+    const color=e=>/no aprobad|rechaz|cancel/i.test(e)?"#fca5a5":/pagad|acreditad|aprobad/i.test(e)?"#86efac":"#fde68a";
+    const ops=r.operaciones.map(o=>'<div style="display:flex;gap:8px;align-items:baseline;flex-wrap:wrap;margin-top:4px">'
+      +'<b style="color:'+(o.tipo==="RETIRO"?"#fb923c":"#22c55e")+'">'+(o.tipo==="RETIRO"?"⬇️ Último retiro":"⬆️ Última carga")+'</b>'
+      +'<span>'+E(o.monto)+'</span><span style="color:#94a3b8">'+E(o.fecha)+'</span>'
+      +(o.estado?'<span style="color:'+color(o.estado)+';font-weight:700">'+E(o.estado)+'</span>':'')
+      +(o.pedido?'<span style="color:#94a3b8">#'+E(o.pedido)+'</span>':'')+'</div>').join("");
+    return '<div style="font-weight:800">🙋 Pide hablar con su cajero'+(r.tema?' · <span style="font-weight:600">'+E(r.tema)+'</span>':'')+'</div>'
+      +(r.eligio?'<div style="color:#94a3b8;font-size:12px;margin-top:3px">Eligió: '+E(r.eligio)+'</div>':'')
+      +ops
+      +(r.enCurso?'<div style="margin-top:4px;color:#fde68a">⏳ En curso: '+E(r.enCurso)+'</div>':'')
+      +(r.resto?'<div style="margin-top:4px">'+E(r.resto)+'</div>':'');
+  }
   // Envía un mensaje del operador al thread del portal para un usuario dado, SIN depender del input
   // ni de tener el chat abierto. Lo usa el flujo de vinculación para avisar "ya podés ingresar" con
   // la info de acceso + la marca ⟦INGRESAR⟧ (el portal la convierte en un botón "Ingresar").

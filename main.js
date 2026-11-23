@@ -146,7 +146,14 @@ function atarVentanasAlPanel() {
     }
     if (_huellaProcesoPrincipal() > HUELLA_AL_ABRIR) {
       console.log('[main] panel recargado y cambió el código del proceso principal: se reinicia NODO entero');
-      try { app.relaunch(); } catch (_e) {}
+      // Electron no deja --remote-debugging-port en process.argv: sin pasarlo de nuevo, el NODO reiniciado quedaba sin
+      // el puerto de depuración (23/11: después del reinicio no se lo podía mirar).
+      try {
+        const args = process.argv.slice(1);
+        const puerto = app.commandLine.getSwitchValue('remote-debugging-port');
+        if (puerto && !args.some(a => /^--remote-debugging-port/.test(a))) args.push('--remote-debugging-port=' + puerto);
+        app.relaunch({ args });
+      } catch (_e) { try { app.relaunch(); } catch (_e2) {} }
       app.quit();
       setTimeout(() => { try { app.exit(0); } catch (_e) {} }, 4000).unref?.();
       return;

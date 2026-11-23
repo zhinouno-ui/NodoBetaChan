@@ -107,13 +107,8 @@
     }
 
     // Prioridad 3: Si el ticket actual de chat tiene una imagen reciente enviada por el usuario
-    if(window.__nodoChatCurrentTicket && Array.isArray(window.__nodoChatCurrentTicket.thread)){
-      const hace2hs = Date.now() - (2 * 3600 * 1000);
-      const imgReciente = window.__nodoChatCurrentTicket.thread.find(m => {
-        const rol = String(m.origen || m.remitente || m.role || '').toUpperCase();
-        const mFechaMs = m.fecha ? new Date(m.fecha).getTime() : 0;
-        return rol !== 'OPERADOR' && rol !== 'SISTEMA' && Boolean(m.imagen_url) && (!isNaN(mFechaMs) ? mFechaMs >= hace2hs : true);
-      });
+    if(window.__nodoChatCurrentTicket){
+      const imgReciente = fotosDelJugadorEnElChat()[0] || null;
       if(imgReciente){
         return {
           ID: window.__nodoChatCurrentTicket.masterId || window.__nodoChatCurrentTicket.solicitudId || 'CHAT',
@@ -362,6 +357,38 @@ Responde ÚNICAMENTE un JSON válido (sin markdown, sin bloques de código, sin 
   }
 
   // ── 6. Renderizado del banner desplegable ────────────────────────────────────
+  // Las fotos que mandó el jugador en la conversación abierta (las últimas 2 horas), de la más nueva a la más vieja.
+  // Con el canal nuevo la conversación NO está en ticket.thread (ahí va sólo el último mensaje de la lista): está en
+  // la página que trajo el canal nuevo al abrirla. Por eso el comprobante que el jugador mandaba desde el asistente
+  // del Portal ("Comprobante de mi transferencia · pedido 520551") no aparecía en la tarjeta (Juan, 23/11).
+  function fotosDelJugadorEnElChat(){
+    const t = window.__nodoChatCurrentTicket;
+    if(!t) return [];
+    let msgs = Array.isArray(t.thread) ? t.thread.slice() : [];
+    try{
+      const pag = t._chatId && window._chatCanalNuevo && typeof window._chatCanalNuevo.paginaMensajes === 'function'
+        ? window._chatCanalNuevo.paginaMensajes(t._chatId) : null;
+      if(pag && Array.isArray(pag.rows)) msgs = msgs.concat(pag.rows.map(m => ({ origen: m.tipo_emisor, imagen_url: m.imagen_url,
+        fecha: m.created_at, mensaje: m.mensaje, solicitud_id: m.solicitud_id })));
+    }catch(_e){}
+    const hace2hs = Date.now() - (2 * 3600 * 1000);
+    return msgs.filter(m => {
+      const rol = String(m.origen || m.remitente || m.role || '').toUpperCase();
+      const mFechaMs = m.fecha ? new Date(m.fecha).getTime() : 0;
+      return rol !== 'OPERADOR' && rol !== 'SISTEMA' && rol !== 'BOT' && Boolean(m.imagen_url) && (!isNaN(mFechaMs) ? mFechaMs >= hace2hs : true);
+    }).sort((a, b) => (new Date(b.fecha).getTime() || 0) - (new Date(a.fecha).getTime() || 0));
+  }
+  // La foto de ESE pedido si el jugador la mandó diciendo "pedido N" (o atada a la solicitud); si no, la más nueva.
+  function fotoDelPedidoEnElChat(pedido){
+    const fotos = fotosDelJugadorEnElChat(), id = String(pedido || '').trim();
+    if(id && /^\d+$/.test(id)){
+      const re = new RegExp('pedido\\s*#?\\s*' + id + '(?!\\d)', 'i');
+      const delPedido = fotos.find(m => String(m.solicitud_id || '') === id || re.test(String(m.mensaje || '')));
+      if(delPedido) return delPedido;
+    }
+    return fotos[0] || null;
+  }
+  try{ window._nodoFotoDelPedidoEnElChat = fotoDelPedidoEnElChat; }catch(_e){}
   async function renderBannerSolicitud(contenedorId, usuarioActual){
     const container = document.getElementById(contenedorId);
     if(!container) return;
@@ -389,16 +416,9 @@ Responde ÚNICAMENTE un JSON válido (sin markdown, sin bloques de código, sin 
     const esCarga = tipo === 'CARGA';
     const solMeta = (sol.metadata && typeof sol.metadata === 'object') ? sol.metadata : ((sol.METADATA && typeof sol.METADATA === 'object') ? sol.METADATA : {});
     let comprobanteUrl = esCarga ? (sol.COMPROBANTE_URL || sol.comprobante_url || sol.IMAGEN_URL || sol.imagen_url || solMeta.comprobante_url || solMeta.imagen_url || null) : null;
-    if(esCarga && !comprobanteUrl && window.__nodoChatCurrentTicket && Array.isArray(window.__nodoChatCurrentTicket.thread)){
-      const hace2hs = Date.now() - (2 * 3600 * 1000);
-      const userImgs = window.__nodoChatCurrentTicket.thread.filter(m => {
-        const rol = String(m.origen || m.remitente || m.role || '').toUpperCase();
-        const mFechaMs = m.fecha ? new Date(m.fecha).getTime() : 0;
-        return rol !== 'OPERADOR' && rol !== 'SISTEMA' && Boolean(m.imagen_url) && (!isNaN(mFechaMs) ? mFechaMs >= hace2hs : true);
-      });
-      if(userImgs.length){
-        comprobanteUrl = userImgs[userImgs.length - 1].imagen_url;
-      }
+    if(esCarga && !comprobanteUrl && window.__nodoChatCurrentTicket){
+      const foto = fotoDelPedidoEnElChat(sol.ID || sol.SOLICITUD_ID || sol.id);
+      if(foto) comprobanteUrl = foto.imagen_url;
     }
 
     // Análisis de comprobante (en memoria o dispara consulta). Sólo cargas.
