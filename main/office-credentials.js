@@ -1,6 +1,16 @@
 'use strict';
 
-function registerOfficeCredentialsIpc({ ipcMain, automation, proxy, env = process.env, fetch = globalThis.fetch }) {
+const { asegurarCanalesNuevos } = require('./beta-alta');
+
+function registerOfficeCredentialsIpc({ ipcMain, automation, proxy, env = process.env, fetch = globalThis.fetch, version = '', canales = asegurarCanalesNuevos }) {
+  // Canales nuevos según la versión (main/beta-alta.js). Nunca frena la elección de la oficina: corre aparte y, si
+  // falla, la oficina sigue por los canales viejos.
+  function canalesNuevosParaOficina(pcCodigo) {
+    return Promise.resolve()
+      .then(() => canales({ pcCodigo: String(pcCodigo || env.PC_CODIGO || '').trim(), version, env, fetch }))
+      .then((r) => { if (r && r.nuevos && !r.ya) console.log('[canales nuevos]', r.ok ? 'clave guardada para la oficina' : 'la clave no quedó bien guardada'); return r; })
+      .catch((e) => { console.warn('[canales nuevos]', (e && e.message) || e); return { ok: false, motivo: 'error' }; });
+  }
   async function applyProxyForOffice(pcCodigo, { resetOnMissing = true, timeoutMs = 0 } = {}) {
     const controller = timeoutMs > 0 ? new AbortController() : null;
     const timeout = controller ? setTimeout(() => controller.abort(), timeoutMs) : null;
@@ -66,9 +76,12 @@ function registerOfficeCredentialsIpc({ ipcMain, automation, proxy, env = proces
 
   // Aplica el proxy de la oficina. La config (incluida la clave) se trae acá, en el main,
   // vía RPC con el secret del panel. NUNCA pasa por el renderer.
-  ipcMain.handle('proxy:apply', async (_event, { pcCodigo } = {}) => applyProxyForOffice(pcCodigo));
+  ipcMain.handle('proxy:apply', async (_event, { pcCodigo } = {}) => {
+    canalesNuevosParaOficina(pcCodigo);
+    return applyProxyForOffice(pcCodigo);
+  });
 
-  return { applyProxyForOffice };
+  return { applyProxyForOffice, canalesNuevosParaOficina };
 }
 
 module.exports = { registerOfficeCredentialsIpc };

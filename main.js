@@ -83,7 +83,7 @@ registerNexoIpc({ ipcMain, app });
 registerUpdaterIpc({ ipcMain, app, BrowserWindow, shell, panel });
 registerExternalLinksIpc({ ipcMain, shell });
 registerAgentIpc({ ipcMain, agents, automation, verification, backends, automationRequests, verificationRequests });
-const officeCredentials = registerOfficeCredentialsIpc({ ipcMain, automation, proxy });
+const officeCredentials = registerOfficeCredentialsIpc({ ipcMain, automation, proxy, version: (function(){ try { return app.getVersion(); } catch (_e) { return ''; } })() });
 // El panel manda lo que hay que mostrar; decidir QUE mostrar es del panel, no de main.
 ipcMain.handle('nodo:discord', (_e, estado) => {
   try { discord.actualizar(estado); } catch (_err) {}
@@ -171,6 +171,8 @@ app.whenReady().then(async () => {
     process.env.PANEL_DATA_SECRET &&
     process.env.SUPABASE_URL &&
     (process.env.SUPABASE_ANON_KEY || process.env.SUPABASE_KEY);
+  // Canales nuevos según la versión (main/beta-alta.js): con la oficina del .env, apenas arranca.
+  if (pcCodigoInicial) officeCredentials.canalesNuevosParaOficina(pcCodigoInicial);
   if (proxyOficinaConfigurable) {
     officeCredentials.applyProxyForOffice(pcCodigoInicial, { resetOnMissing: false, timeoutMs: 8000 }).then(function (resultado) {
       if (!resultado.ok) console.warn('[proxy] no se pudo resolver el proxy de oficina para Agentes:', resultado.reason || 'ERROR');
