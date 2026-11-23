@@ -44,8 +44,9 @@ test('el signo menos es retiro; los movimientos con agentes y lo que no está DO
 });
 
 // Juan, 23/11: "hice 1 2 3, la página debe decir 1 2 3". Un movimiento y dos filas iguales: el movimiento se queda
-// con la primera; la segunda queda sin su movimiento (después se busca por jugador). Antes las dos quedaban "en duda".
-test('dos cargas iguales en NODO para un movimiento: el movimiento se queda con la primera, la otra queda sin pareja', () => {
+// con la de horario más parecido; la otra queda sin su movimiento (después se busca por jugador). Antes las dos
+// quedaban "en duda".
+test('dos cargas iguales en NODO para un movimiento: se queda con la de horario más parecido, la otra queda sin pareja', () => {
   const r = emparejar([mov('18/11/2026 13:33:38', 'pruebaxx', 10000)],
     [fila(1, '18/11/2026 13:32:50', 'pruebaxx', 10000), fila(2, '18/11/2026 13:34:30', 'pruebaxx', 10000)]);
   assert.equal(r.pares[0].caso, 'nodo_sin_chunior');
@@ -74,6 +75,48 @@ test('julju31: la carga y el bono duplicados en Agentes se detectan; lo que hizo
   assert.deepEqual(casos, ['BONO:duplicada', 'BONO:enlazada', 'CARGA:duplicada', 'CARGA:enlazada']);
   const dup = Array.from(r.pares).find(p => p.tipo === 'CARGA' && p.caso === 'duplicada');
   assert.equal(dup.gemela.fecha, '23/11/2026 10:10:00', 'la gemela es la que quedó con la fila de NODO');
+});
+
+// P4, 23/11 (12:38-12:39): una carga de $5.000 se hizo, se revirtió desde el historial y se volvió a hacer. En
+// Agentes: carga, retiro, carga. En NODO: la carga REVERTIDA, la reversión (retiro) y la carga nueva. El cotejo
+// dejaba afuera la revertida, la carga nueva se quedaba con el movimiento de la revertida (el más viejo dentro de
+// los 3 minutos) y el movimiento de la carga nueva salía como "duplicada en Agentes". Juan: "este cartel no debería
+// de aparecer".
+test('carga revertida y vuelta a hacer: cada movimiento con su fila, sin "duplicada"', () => {
+  const r = emparejar([
+    mov('23/11/2026 12:38:11', 'jugadora52', 5000),
+    mov('23/11/2026 12:38:32', 'jugadora52', -5000),
+    mov('23/11/2026 12:39:50', 'jugadora52', 5000)
+  ], [
+    fila(563730, '23/11/2026 12:38:12', 'jugadora52', 5000, { estado: 'REVERTIDA', origen: 'LANDING', chunior_movimiento_id: '10221784' }),
+    fila(563733, '23/11/2026 12:38:35', 'jugadora52', 5000, { tipo: 'RETIRO', origen: 'MANUAL', notas: 'Reversión de CARGA', chunior_movimiento_id: '10221788' }),
+    fila(563736, '23/11/2026 12:39:51', 'jugadora52', 5000, { origen: 'LANDING', chunior_movimiento_id: '10221795' })
+  ]);
+  const pares = Array.from(r.pares, p => p.mov.fecha.slice(11) + ' ' + p.caso + ' ' + (p.fila && p.fila.id)).sort();
+  assert.deepEqual(pares, ['12:38:11 enlazada 563730', '12:38:32 enlazada 563733', '12:39:50 enlazada 563736']);
+});
+
+test('el primero que no es de NODO no le saca la fila al que sí: la fila va con el movimiento de su horario', () => {
+  const r = emparejar([mov('23/11/2026 12:00:00', 'pepe', 5000), mov('23/11/2026 12:02:29', 'pepe', 5000)],
+    [fila(1, '23/11/2026 12:02:30', 'pepe', 5000, { chunior_movimiento_id: '1' })]);
+  const enlazada = Array.from(r.pares).find(p => p.caso === 'enlazada');
+  assert.equal(enlazada.mov.fecha, '23/11/2026 12:02:29', 'la fila de las 12:02:30 es del movimiento de las 12:02:29');
+  const otra = Array.from(r.pares).find(p => p.caso !== 'enlazada');
+  assert.equal(otra.mov.fecha, '23/11/2026 12:00:00');
+  assert.equal(otra.caso, 'duplicada', 'dos en Agentes y una en NODO: hay una de más');
+});
+
+test('pepe 1, 2 y 3 en Agentes y NODO sin la del medio: la 1 y la 3 quedan con la suya, sin cruzarse', () => {
+  const r = emparejar([mov('23/11/2026 10:00:00', 'pepe', 5000), mov('23/11/2026 10:01:00', 'pepe', 5000), mov('23/11/2026 10:02:00', 'pepe', 5000)],
+    [fila(1, '23/11/2026 10:00:01', 'pepe', 5000, { chunior_movimiento_id: '1' }), fila(3, '23/11/2026 10:02:01', 'pepe', 5000, { chunior_movimiento_id: '3' })]);
+  const de = (hora) => Array.from(r.pares).find(p => p.mov.fecha.endsWith(hora));
+  assert.equal(de('10:00:00').fila.id, 1);
+  assert.equal(de('10:02:00').fila.id, 3);
+  assert.notEqual(de('10:01:00').caso, 'enlazada');
+});
+
+test('una alerta anulada no cuenta para tomar un retiro como corrección de una duplicada', () => {
+  assert.match(fuente, /\.eq\("tipo", "ALERTA"\)\.neq\("estado", "REVERTIDA"\)\s+\.ilike\("notas", "%" \+ MARCA_DUPLICADA/);
 });
 
 test('NODO la marcó con error pero en Agentes se hizo: se avisa, no se toma como hecha afuera', () => {

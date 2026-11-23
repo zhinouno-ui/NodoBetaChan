@@ -24,6 +24,9 @@
   "use strict";
 
   var VENTANA_NODO_MS    = 3 * 60000;      // Agentes ↔ NODO: la misma carga, a menos de 3 minutos
+  // La fila de NODO se escribe después del movimiento de Agentes: en P4 (23/11), 400 de 400 a 0-2 s, y la mediana de
+  // las enganchadas da 1,3 s. Entre dos parejas posibles gana la de horario más parecido a esto.
+  var DESFASAJE_MS       = 1000;
   var VENTANA_CHUNIOR_MS = 15 * 60000;     // Chunior se anota a mano y puede ir unos minutos después
   var MIRAR_ATRAS_MS     = 6 * 3600000;    // nunca más atrás que esto
   // Cada vuelta mira sólo desde la anterior (con un margen), no las últimas 6 horas: en una oficina con
@@ -82,17 +85,55 @@
   }
   // Mismo usuario, mismo monto y misma clase de operación.
   function _igual(m, h){ return _norm(h.usuario) === _norm(m.alias) && _monto(h.monto) === _monto(m.cantidad) && _tipoFila(h) === m._tipo; }
+  // Alinea los movimientos de Agentes y las filas de NODO de un mismo jugador, tipo y monto SIN CRUZARLOS (el 1.º con
+  // el 1.º, el 2.º con el 2.º...), salteando los que no tienen pareja a menos de VENTANA_NODO_MS. Gana la alineación
+  // con más parejas y, entre esas, la de horarios más parecidos (fila DESFASAJE_MS después del movimiento).
+  function _alinear(movs, filas){
+    movs = movs.slice().sort(function(a, b){ return a.ms - b.ms; });
+    filas = filas.slice().sort(function(a, b){ return _ms(a) - _ms(b); });
+    var n = movs.length, k = filas.length, t = [], i, j;
+    if(!n || !k) return [];
+    for(i = 0; i <= n; i++){
+      t.push([]);
+      for(j = 0; j <= k; j++){
+        if(!i || !j){ t[i][j] = { p: 0, c: 0, de: "" }; continue; }
+        var arriba = t[i - 1][j], izq = t[i][j - 1];
+        var mejor = (arriba.p > izq.p || (arriba.p === izq.p && arriba.c <= izq.c))
+          ? { p: arriba.p, c: arriba.c, de: "m" } : { p: izq.p, c: izq.c, de: "f" };
+        var d = _ms(filas[j - 1]) - movs[i - 1].ms;
+        if(Math.abs(d) <= VENTANA_NODO_MS){
+          var par = { p: t[i - 1][j - 1].p + 1, c: t[i - 1][j - 1].c + Math.abs(d - DESFASAJE_MS), de: "par" };
+          if(par.p > mejor.p || (par.p === mejor.p && par.c < mejor.c)) mejor = par;
+        }
+        t[i][j] = mejor;
+      }
+    }
+    var pares = [];
+    for(i = n, j = k; i > 0 && j > 0; ){
+      var x = t[i][j];
+      if(x.de === "par"){ pares.unshift({ mov: movs[i - 1], fila: filas[j - 1] }); i--; j--; }
+      else if(x.de === "m") i--;
+      else j--;
+    }
+    return pares;
+  }
 
   // ── Núcleo (sin pantalla ni red): empareja Agentes con el historial de NODO ────────────────
   // movs:  [{ fecha, ms, tipo, estado, cantidad, alias }] tal cual los devuelve leerMovimientosCredito.
-  // filas: historial_ops (CARGA, OK) de la oficina, desde antes del primer movimiento.
+  // filas: historial_ops (CARGA y RETIRO) de la oficina, desde antes del primer movimiento. Se emparejan las OK y las
+  //        REVERTIDA; las ERROR, sólo para avisar que NODO la dio por fallada y en Agentes se hizo.
   // Devuelve { pares:[{ mov, fila|null, caso }], sobrantes:[fila] }.
   //   caso: "enlazada" (fila con Chunior) · "nodo_sin_chunior" · "sin_nodo" · "ambiguo"
   function emparejar(movs, filas, opts){
     opts = opts || {};
     var ahora = Number(opts.ahora) || Date.now();
     var cargas = (movs || []).filter(function(m){ m._tipo = _tipoMov(m); return !!m._tipo; });
-    var libres = (filas || []).filter(function(h){ return h && String(h.estado || "OK") === "OK"; }).slice();
+    // Una carga REVERTIDA se hizo en Agentes: la reversión es otro movimiento, con su propia fila. Sin contarla, la
+    // carga que se volvía a hacer se quedaba con el movimiento de la revertida (P4, 23/11).
+    var libres = (filas || []).filter(function(h){
+      var e = String((h && h.estado) || "OK").toUpperCase();
+      return h && (e === "OK" || e === "REVERTIDA");
+    }).slice();
     var conError = (filas || []).filter(function(h){ return h && String(h.estado || "").toUpperCase() === "ERROR"
       && (String(h.tipo || "").toUpperCase() === "CARGA" || String(h.tipo || "").toUpperCase() === "RETIRO"); });
     var usadas = {};
@@ -103,16 +144,26 @@
       var f = libres.find(function(h){ return !usadas[h.id] && String(h.notas || "").indexOf(et) >= 0 && _igual(m, h); });
       if(f){ usadas[f.id] = true; m._fila = f; }
     });
-    // 2) El resto, por usuario + monto + tipo + horario, DE A UNA Y EN ORDEN (Juan: "hice 1 2 3, la página debe decir
-    //    1 2 3"): el movimiento más viejo de Agentes se queda con la fila más vieja de NODO que le corresponde, el que
-    //    sigue con la que sigue. Dos cargas iguales seguidas ya no son "duda": cada una tiene la suya.
-    cargas.slice().sort(function(a, b){ return a.ms - b.ms; }).forEach(function(m){
+    // 2) El resto, DE A UNA Y EN ORDEN (Juan: "hice 1 2 3, la página debe decir 1 2 3"): por jugador, tipo y monto,
+    //    los movimientos de Agentes y las filas de NODO se alinean sin cruzarse, con la mayor cantidad de parejas y,
+    //    entre esas, los horarios más parecidos. Antes el movimiento más viejo se quedaba con la fila más vieja
+    //    dentro de los 3 minutos, y eso falla cuando el primero no es de esa fila: en P4 (23/11) una carga se
+    //    revirtió y se volvió a hacer, la de las 12:39:51 se ató al movimiento de las 12:38:11 (el de la revertida)
+    //    y el de las 12:39:50 salió como "duplicada".
+    var grupos = {};
+    var claveDe = function(alias, tipo, monto){ return _norm(alias) + "|" + tipo + "|" + _monto(monto); };
+    cargas.forEach(function(m){
       if(m._fila) return;
-      var cand = libres.filter(function(h){
-        return !usadas[h.id] && !/Agentes \d{2}\/\d{2}\/\d{4}/.test(String(h.notas || ""))
-          && _igual(m, h) && Math.abs(_ms(h) - m.ms) <= VENTANA_NODO_MS;
-      }).sort(function(a, b){ return _ms(a) - _ms(b); });
-      if(cand.length){ usadas[cand[0].id] = true; m._fila = cand[0]; }
+      var kg = claveDe(m.alias, m._tipo, m.cantidad);
+      (grupos[kg] = grupos[kg] || { movs: [], filas: [] }).movs.push(m);
+    });
+    libres.forEach(function(h){
+      if(usadas[h.id] || /Agentes \d{2}\/\d{2}\/\d{4}/.test(String(h.notas || ""))) return;
+      var g = grupos[claveDe(h.usuario, _tipoFila(h), h.monto)];
+      if(g) g.filas.push(h);
+    });
+    Object.keys(grupos).forEach(function(kg){
+      _alinear(grupos[kg].movs, grupos[kg].filas).forEach(function(par){ usadas[par.fila.id] = true; par.mov._fila = par.fila; });
     });
     // Reloj corrido: si el reloj de Agentes y el de la PC difieren más que la ventana, la misma carga
     // quedaría como "sin NODO" y como "sin Agentes" a la vez, y se anotaría dos veces en Chunior. Por eso,
@@ -343,7 +394,7 @@
     var dups = (duplicadasRun || []).filter(function(p){ return _norm(p.mov.alias) === u && p.mov.ms <= mov.ms && mov.ms - p.mov.ms <= 2 * 3600000; })
       .map(function(p){ return _monto(p.mov.cantidad); });
     if(!dups.length){
-      var r = await supabaseClient.from("historial_ops").select("monto,usuario,created_at").eq("pc_codigo", _pc()).eq("tipo", "ALERTA")
+      var r = await supabaseClient.from("historial_ops").select("monto,usuario,created_at").eq("pc_codigo", _pc()).eq("tipo", "ALERTA").neq("estado", "REVERTIDA")
         .ilike("notas", "%" + MARCA_DUPLICADA + "%").gte("created_at", new Date(mov.ms - 2 * 3600000).toISOString()).lte("created_at", new Date(mov.ms).toISOString()).limit(20);
       if(r && !r.error) dups = (r.data || []).filter(function(h){ return _norm(h.usuario) === u; }).map(function(h){ return _monto(h.monto); });
     }
