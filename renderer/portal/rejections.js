@@ -203,7 +203,7 @@ const api = {};
       h += '<div style="margin:2px 0 4px 18px;color:#c9d1d9">'+c.candidatos.map(function(x){ return E(x.fecha || hora(x.created_at)); }).join(' · ')+'</div>';
       h += '<div style="color:#fde68a">No se ata ninguna: si la cerrás, queda "sin comprobar" con estas horas anotadas.</div>';
     }
-    if(c.decision === 'sin_rastro') h += linea(false, 'No está en NODO ni en AdminOnline desde 2 h antes del pedido. Si la cerrás, queda "sin comprobar".');
+    if(c.decision === 'sin_rastro') h += linea(false, 'No está en NODO ni en los últimos movimientos de AdminOnline. Si la cerrás, queda "sin comprobar".');
     if(c.decision === 'sin_informacion') h += linea(null, 'No se pudo extraer más información: '+E(c.motivo || agTxt[c.agentesEstado] || 'sin datos')+'. Si la cerrás, queda "sin comprobar".');
     if(c.yaUsados && c.yaUsados.length) h += '<div style="color:#8b949e;font-size:11px">Ya usadas para cerrar otro pedido: '+c.yaUsados.map(function(x){ return E(x.fecha); }).join(' · ')+'</div>';
     return h;

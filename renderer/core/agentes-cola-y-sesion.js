@@ -273,6 +273,9 @@ async function callDrex(method, ...args){
       const _cnChequeo = (method==='estadoPagina' || method==='iniciarSesion');
       _wHealth?.record('EFFECT', (_r && _r.ok === false && !_cnChequeo) ? 'ERROR' : 'OK', (_r && _r.ok === false && !_cnChequeo) ? 'WORKER_DREX_FAILED' : 'WORKER_DREX_OK');
       if(!_cnChequeo) window.NodoSalud?.agentes?.(method, _r, null, args);
+      if((method === 'cargarSaldo' || method === 'retirarSaldo') && _r && _r.ok !== false){
+        try{ if(typeof window.nodoCotejoTrasOperacion === 'function') window.nodoCotejoTrasOperacion(); }catch(_e){}
+      }
       if(_r && _r.ok === false && !_cnChequeo){
         if(window._cnFalla) window._cnFalla(method, _r.message || 'devolvió ok:false', { ms:_cnMs, pantalla:_cnPant, capa:'preload' });
       } else if(window._cnPaso){

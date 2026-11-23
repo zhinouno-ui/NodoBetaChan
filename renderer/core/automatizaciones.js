@@ -307,8 +307,13 @@ window._estadoYaCerrado = _estadoYaCerrado;
 // peor caso es que quede en la bandeja — no que se le cambie la clave setenta veces.
 window._clavesHechas = window._clavesHechas || {};
 
+// Modo "sólo mirar" (Juan, 23/11: NODO en dev en Sanchez mientras la oficina trabaja con el suyo): esta sesión no
+// hace nada sola. Se prende por sesión (sessionStorage), así no queda prendido en el NODO de todos los días.
+function nodoSoloMirar(){ try{ return sessionStorage.getItem('nodo_solo_mirar') === '1'; }catch(_e){ return false; } }
+window.nodoSoloMirar = nodoSoloMirar;
 async function _claveAutoTick(){
   if(_claveAutoCorriendo) return;
+  if(nodoSoloMirar()) return;   // dos NODO en la misma oficina le cambiarían la clave dos veces al mismo jugador
   if(!window.ctrlElectron) return;                       // sólo en la app de escritorio
   let lista = [];
   try{

@@ -311,7 +311,7 @@ window.verDetalleError = function(histId){
     ['Operador',     h.operador || (ctx&&ctx.op) || '—'],
     ['PC',           h.pc_codigo || (ctx&&ctx.pc) || '—'],
     ['Solicitud',    h.solicitud_id ? ('#'+h.solicitud_id) : '—'],
-    ['Mov. Chunior', h.chunior_movimiento_id ? ('N° '+h.chunior_movimiento_id) : '— (no se anotó)'],
+    ['Mov. Chunior', h.chunior_movimiento_id ? ('N° '+h.chunior_movimiento_id) : (ctx && /^\d+$/.test(String(ctx.n||'')) ? ('N° '+ctx.n+(ctx.tabla ? ' · '+ctx.tabla : '')) : '— (no se anotó)')],
     ['ID historial', h.id||'—']
   ];
   if(ctx && ctx.ms!=null)      campos.push(['Duró', (ctx.ms/1000).toFixed(1)+'s hasta fallar']);

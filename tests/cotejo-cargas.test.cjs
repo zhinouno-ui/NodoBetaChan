@@ -203,7 +203,8 @@ test('P4: lee NODO de la más nueva, no crea filas repetidas y no marca de a mon
   assert.match(fuente, /await _chuniorYaEnNodo\(v\.movimientoId\)\)\{ resumen\.dudas\+\+; return; \}/, 'si el N° de Chunior ya es de una fila de NODO, no se crea otra');
   // "Sin carga en Agentes" se confirma de a una buscando al jugador con el filtro del informe, como mucho 3 por vuelta.
   assert.match(fuente, /\.slice\(0, TOPE_SIN_AGENTES\)/);
-  assert.match(fuente, /if\(conf === true\) confirmadas\.push\(cand\)/);
+  assert.match(fuente, /if\(conf === true\)\{ confirmadas\.push\(cand\);/);
+  assert.match(fuente, /if\(conf && conf\.mov\)\{/, 'si la búsqueda por jugador la encuentra, queda enganchada');
   assert.match(fuente, /\{ alias: h\.usuario, filtrarAlias: true, desdeMs: _ms\(h\) - DUDA_MS, maxPaginas: 3 \}/);
   assert.match(fuente, /if\(!r \|\| !r\.ok \|\| r\.filtradoPorAlias !== true\) return null;/, 'sin filtro por alias no se afirma nada');
 });
@@ -217,9 +218,19 @@ test('AdminOnline: busca a un jugador con Filtros → Buscar por alias → Aplic
   assert.match(pre, /filtradoPorAlias: filtrado/);
 });
 
-test('cada vuelta mira desde la anterior (con margen), no 6 horas: Agentes no queda ocupado leyendo páginas', () => {
-  assert.match(fuente, /var desde = Math\.max\(empezo - MIRAR_ATRAS_MS, hasta \? hasta - MARGEN_MS : empezo - PRIMERA_VEZ_MS\)/);
-  assert.match(fuente, /if\(lectura\.completo\)\{ try\{ localStorage\.setItem\(CLAVE_HASTA/);
+// Juan, 23/11: "si ya sabés que estaban en la página 5, no te sirve revisar antes de las 12 ni después de esa página";
+// "90 segundos de revisión es una bestialidad para una pc en la cual una propia página ocupa 11 minutos".
+test('cada vuelta lee sólo hasta el ancla (el último movimiento revisado), con tope de páginas', () => {
+  assert.match(fuente, /var desde = ancla \? ancla\.ms - ANCLA_MARGEN_MS : \(hasta \? hasta - MARGEN_MS : empezo - PRIMERA_VEZ_MS\);/);
+  assert.match(fuente, /var TOPE_PAGINAS\s+= 4;/);
+  assert.match(fuente, /await _leerAgentes\(desde, TOPE_PAGINAS\)/);
+  assert.match(fuente, /_guardarAncla\(nuevo\)/);
+  assert.match(fuente, /var cubreDesde = lectura\.completo \? desde : /, 'sin llegar al ancla se juzga sólo lo leído');
+  assert.match(fuente, /_guardarPendientes\(/, 'lo que quedó en el medio se busca por jugador');
+});
+test('cada carga que encuentra su movimiento queda enganchada con la hora de Agentes, como el N° de Chunior', () => {
+  assert.match(fuente, /if\(pe\.caso !== "enlazada" && pe\.caso !== "nodo_sin_chunior"\) continue;/);
+  assert.match(fuente, /await _anotarNotas\(pe\.fila, _etiqueta\(pe\.mov\)\)/);
 });
 
 test('con muchos avisos se muestran 5 y cuántos más hay', () => {
@@ -229,7 +240,7 @@ test('con muchos avisos se muestran 5 y cuántos más hay', () => {
 test('la marca vieja de la 2.1.9 ("sin carga en Agentes") no se muestra ni se vuelve a juzgar', () => {
   assert.match(fuente, /var MARCA_SIN_AGENTES  = "no aparece en Agentes";/);
   assert.match(fuente, /indexOf\(MARCA_SIN_AGENTES_VIEJA\) < 0/);
-  const avisos = fuente.slice(fuente.indexOf('async function _leerAvisos'), fuente.indexOf('function _esc('));
+  const avisos = fuente.slice(fuente.indexOf('async function _leerAvisos'), fuente.indexOf('async function _hermanasConVista'));
   assert.doesNotMatch(avisos, /MARCA_SIN_AGENTES_VIEJA/, 'el cartel sólo trae la marca confirmada');
 });
 
@@ -238,4 +249,23 @@ test('los bonos (PROMO_BONO) no se cotejan y la gracia es de 15 minutos', () => 
   const src = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'renderer', 'core', 'cotejo-cargas.js'), 'utf8');
   assert.match(src, /var GRACIA_SIN_AGENTES = 15 \* 60000;/);
   assert.match(src, /return o !== "COTEJO" && o !== "PROMO_BONO";/);
+});
+
+// Juan, 23/11: "que estos 'lo vi' se enlacen también al movimiento, así por lo menos no se repiten".
+test('"Lo vi" va por movimiento: las copias y lo ya visto no vuelven a salir en el cartel', () => {
+  const { avisosParaMostrar, mismoMovimiento } = win.NodoCotejoCargas;
+  const t = (hhmmss) => new Date('2026-11-22T' + hhmmss + '-03:00').toISOString();
+  const marca = 'no aparece en Agentes (buscado por alias): anotado en Chunior';
+  const a = { id: 1, created_at: t('19:26:09'), usuario: 'Rafaeelwas', monto: 20000, tipo: 'CARGA', notas: marca };
+  const copia = { id: 2, created_at: t('19:27:40'), usuario: 'rafaeelwas', monto: 20000, tipo: 'CARGA', notas: marca };
+  const otra = { id: 3, created_at: t('19:40:00'), usuario: 'rafaeelwas', monto: 20000, tipo: 'CARGA', notas: marca };
+  const vista = { id: 4, created_at: t('19:30:06'), usuario: '(sin usuario)', monto: 0, tipo: 'CARGA', chunior_movimiento_id: '10217140',
+    notas: 'Anotado directo en Chunior por lautaroo, no estaba en NODO · reconocida por tomassan' };
+  const alerta = { id: 5, created_at: t('23:59:00'), usuario: '(sin usuario)', monto: 0, tipo: 'ALERTA',
+    notas: 'Revisión de Chunior [ERR]{"m":"ANOTADO_SOLO_EN_CHUNIOR","n":"10217140"}' };
+  assert.equal(mismoMovimiento(a, copia), true, 'mismo jugador, monto y tipo a menos de 3 minutos');
+  assert.equal(mismoMovimiento(a, otra), false, 'a 14 minutos es otra carga');
+  assert.equal(mismoMovimiento(vista, alerta), true, 'la alerta para el admin lleva el N° de Chunior en su detalle');
+  const salen = avisosParaMostrar([a, copia, otra, vista, alerta]);
+  assert.deepEqual(Array.from(salen, h => h.id), [1, 3], 'una por movimiento; la alerta del movimiento ya visto no sale');
 });

@@ -129,7 +129,10 @@
     return r && r.lista ? r : null;
   }
   // Las filas de una tabla desde `desdeMs`, página por página (la lista viene de la más nueva a la más vieja).
-  async function leerTabla(tabla, desdeMs){
+  // Juan, 23/11: "la idea es que no tenga que leer tanto como 7 listas". Con yaConocidos, en cuanto una página tiene
+  // todos sus movimientos ya en NODO (o recién anotados), no se sigue: lo más viejo ya se revisó en vueltas anteriores.
+  async function leerTabla(tabla, desdeMs, opts){
+    opts = opts || {};
     var base = CHUNIOR_BASE + "/transacciones/" + tabla.ruta + "/";
     var url = base, todas = [], paginas = 0, completo = false;
     while(url && paginas < MAX_PAGINAS){
@@ -140,6 +143,7 @@
       if(movs.length && movs.every(function(m){ return !Number.isFinite(m.ms); })) return { ok: false, motivo: "no pude leer las fechas de " + tabla.nombre };
       movs.forEach(function(m){ if(m.ms >= desdeMs) todas.push(m); });
       if(!movs.length || movs[movs.length - 1].ms < desdeMs){ completo = true; break; }
+      if(typeof opts.yaConocidos === "function" && await opts.yaConocidos(movs)){ completo = true; break; }
       var sig = p.links.filter(function(l){ return l.t === String((parseInt(p.pagina, 10) || 1) + 1); })[0];
       if(!sig){ completo = true; break; }
       url = base + sig.h;
@@ -210,7 +214,13 @@
         var tabla = TABLAS[i];
         if(_ocupado()){ todoOk = false; break; }
         var lectura;
-        try{ lectura = await _chuSerializar(function(){ return leerTabla(tabla, desde); }); }
+        var yaConocidos = (function(tab){ return async function(movs){
+          var ids = movs.map(function(m){ return m.id; }).filter(Boolean);
+          if(!ids.length) return false;
+          var porIdPag = await _filasPorId(tab, ids);
+          return movs.every(function(m){ return !m.id || porIdPag[m.id] || (Number.isFinite(m.ms) && Date.now() - m.ms < FRESCO_MS); });
+        }; })(tabla);
+        try{ lectura = await _chuSerializar(function(){ return leerTabla(tabla, desde, { yaConocidos: yaConocidos }); }); }
         catch(e){ lectura = { ok: false, motivo: (e && e.message) || "error" }; }
         if(!lectura || !lectura.ok){ todoOk = false; resumen.fallas.push(tabla.nombre + ": " + ((lectura && lectura.motivo) || "no se pudo leer")); continue; }
         var ids = lectura.movs.map(function(m){ return m.id; }).filter(Boolean);

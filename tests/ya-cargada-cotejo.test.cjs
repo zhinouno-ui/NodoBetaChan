@@ -95,7 +95,7 @@ test('dos cargas iguales en AdminOnline: no se puede saber cuál, queda sin comp
 });
 
 test('ante un error o sin informe: "no se pudo extraer más información", nunca una carga inventada', async () => {
-  for (const caso of [{ adminonline: new Error('se cortó') }, { adminonline: { ok: false, needsLogin: true } }, { sinEscritorio: true }, { adminonline: { ok: true, completo: false, filas: [] } }]) {
+  for (const caso of [{ adminonline: new Error('se cortó') }, { adminonline: { ok: false, needsLogin: true } }, { sinEscritorio: true }]) {
     const h = armar(caso);
     await h.abrir();
     assert.match(h.caja.innerHTML, /No se pudo extraer más información/);
@@ -104,5 +104,11 @@ test('ante un error o sin informe: "no se pudo extraer más información", nunca
   }
   const nada = armar();
   await nada.abrir();
-  assert.match(nada.caja.innerHTML, /No está en NODO ni en AdminOnline/);
+  assert.match(nada.caja.innerHTML, /No está en NODO ni en los últimos movimientos de AdminOnline/);
+  // Juan, 21/11: se mira sólo la página 1. Si ahí no está, se desestima: "no está", no "no se pudo saber".
+  const pagina1 = armar({ adminonline: { ok: true, completo: false, filas: [] } });
+  await pagina1.abrir();
+  assert.match(pagina1.caja.innerHTML, /No está en NODO ni en los últimos movimientos de AdminOnline/);
+  await pagina1.r.modal.guardar();
+  assert.equal(pagina1.r.filas[0].estado, 'SIN_COMPROBAR');
 });

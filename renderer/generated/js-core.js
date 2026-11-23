@@ -2251,7 +2251,7 @@ window.verDetalleError = function(histId){
     ['Operador',     h.operador || (ctx&&ctx.op) || '—'],
     ['PC',           h.pc_codigo || (ctx&&ctx.pc) || '—'],
     ['Solicitud',    h.solicitud_id ? ('#'+h.solicitud_id) : '—'],
-    ['Mov. Chunior', h.chunior_movimiento_id ? ('N° '+h.chunior_movimiento_id) : '— (no se anotó)'],
+    ['Mov. Chunior', h.chunior_movimiento_id ? ('N° '+h.chunior_movimiento_id) : (ctx && /^\d+$/.test(String(ctx.n||'')) ? ('N° '+ctx.n+(ctx.tabla ? ' · '+ctx.tabla : '')) : '— (no se anotó)')],
     ['ID historial', h.id||'—']
   ];
   if(ctx && ctx.ms!=null)      campos.push(['Duró', (ctx.ms/1000).toFixed(1)+'s hasta fallar']);
@@ -6709,6 +6709,139 @@ function filtrarHistorial(){
   renderHistorial(lista);
 }
 
+// ── El movimiento tal cual está en Chunior (Juan, 23/11) ─────────────────────────────────────────
+// "Debería haber un botón que despliegue el movimiento para revisarlo": una alerta de la revisión de Chunior
+// decía "(sin usuario)" y no había forma de ver qué había anotado allá (era un ajuste de un movimiento
+// duplicado, sin usuario). El botón abre la ficha del movimiento en la ventana de Chunior, la lee y la
+// despliega debajo de la fila: lo que Chunior tiene cargado y quién lo cambió. No toca nada en Chunior.
+function _chuRutaDeTipo(tipo){
+  const t = String(tipo || '').toUpperCase();
+  const tablas = (window.NodoPasadaChunior && window.NodoPasadaChunior.TABLAS) || [];
+  const tab = tablas.find(function(x){ return (x.grupo || []).indexOf(t) >= 0; });
+  return tab ? tab.ruta : ((window._CHUNIOR_URL_POR_TIPO || {})[t] || 'movimientoficha');
+}
+// El N° de Chunior de una fila: el suyo, o el de la alerta de la revisión de Chunior (va en el detalle [ERR]).
+function _chuMovDeFila(h){
+  const propio = String(h && h.chunior_movimiento_id || '').trim();
+  if(/^\d+$/.test(propio)) return { n: propio, ruta: _chuRutaDeTipo(h.tipo) };
+  let c = null;
+  try{ c = (typeof _errParse === 'function') ? _errParse(h && h.notas) : null; }catch(_e){ c = null; }
+  if(c && /^\d+$/.test(String(c.n || ''))){
+    const tablas = (window.NodoPasadaChunior && window.NodoPasadaChunior.TABLAS) || [];
+    const tab = tablas.find(function(x){ return x.nombre === c.tabla; });
+    return { n: String(c.n), ruta: tab ? tab.ruta : _chuRutaDeTipo(c.tipo) };
+  }
+  return null;
+}
+// Corre DENTRO de la ventana de Chunior. Ficha del movimiento: cada campo con su rótulo y su valor.
+function _chuLeerFichaEnPagina(){
+  var out = [], vistos = {};
+  var cajas = Array.prototype.slice.call(document.querySelectorAll('.fieldBox'));
+  Array.prototype.slice.call(document.querySelectorAll('.form-row')).forEach(function(r){ if(!r.querySelector('.fieldBox')) cajas.push(r); });
+  cajas.forEach(function(row){
+    var lab = row.querySelector('label'); if(!lab) return;
+    var k = (lab.textContent || '').replace(/:\s*$/, '').replace(/\s+/g, ' ').trim();
+    if(!k || vistos[k]) return;
+    var v = '', sel = row.querySelector('select'), chk = row.querySelector('input[type=checkbox]');
+    var inp = row.querySelector('input:not([type=hidden]):not([type=checkbox]), textarea'), ro = row.querySelector('.readonly');
+    if(sel) v = sel.selectedIndex >= 0 ? (sel.options[sel.selectedIndex].textContent || '') : '';
+    else if(inp) v = inp.value || '';
+    else if(chk) v = chk.checked ? 'Sí' : 'No';
+    else if(ro) v = ro.textContent || '';
+    vistos[k] = 1; out.push({ k: k, v: String(v).replace(/\s+/g, ' ').trim() });
+  });
+  return { ok: out.length > 0, campos: out, lista: !!document.querySelector('#content-main form, form#movimientoficha_form, .submit-row') };
+}
+// Corre DENTRO de la ventana de Chunior. Los últimos cambios del movimiento (historial del admin).
+function _chuLeerCambiosEnPagina(){
+  var filas = Array.prototype.slice.call(document.querySelectorAll('#change-history tbody tr'));
+  return { ok: !!document.getElementById('change-history') || /historial|history/i.test(document.title || ''),
+    cambios: filas.slice(-5).map(function(tr){
+      var c = tr.querySelectorAll('th, td');
+      return { cuando: (c[0] && c[0].textContent || '').trim(), quien: (c[1] && c[1].textContent || '').trim(), que: (c[2] && c[2].textContent || '').replace(/\s+/g, ' ').trim() };
+    }) };
+}
+async function _chuEsperar(script, listo, ms){
+  const t0 = Date.now(); let r = null;
+  while(Date.now() - t0 < ms){
+    r = await window.chunior.exec(script).catch(function(){ return null; });
+    if(r && listo(r)) return r;
+    await new Promise(function(ok){ setTimeout(ok, 300); });
+  }
+  return r;
+}
+async function _chuLeerMovimiento(ruta, n){
+  const base = CHUNIOR_BASE + '/transacciones/' + ruta + '/' + encodeURIComponent(n);
+  await window.chunior.navigate(base + '/change/');
+  const ficha = await _chuEsperar('(' + _chuLeerFichaEnPagina.toString() + ')()', function(r){ return r.ok; }, 10000);
+  if(!ficha || !ficha.ok) return { ok: false, motivo: 'no abrió' };
+  let cambios = [];
+  try{
+    await window.chunior.navigate(base + '/history/');
+    const h = await _chuEsperar('(' + _chuLeerCambiosEnPagina.toString() + ')()', function(r){ return r.ok; }, 6000);
+    cambios = (h && h.cambios) || [];
+  }catch(_e){}
+  return { ok: true, campos: ficha.campos, cambios: cambios, url: base + '/change/' };
+}
+// Los rótulos que Chunior pueda traer en inglés, en castellano. El resto, como viene.
+const _CHU_ROTULOS = { 'creation': 'Fecha', 'created by': 'Anotado por', 'created_by': 'Anotado por', 'notes': 'Notas', 'amount': 'Monto', 'account': 'Billetera' };
+function _chuFichaHtml(n, r){
+  const celda = 'max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
+  const campos = (r.campos || []).map(function(c){
+    const k = _CHU_ROTULOS[String(c.k).toLowerCase()] || c.k;
+    const v = c.v === '' ? '(vacío)' : c.v;
+    return '<div style="color:#8b949e;' + celda + '">' + escapeHtml(k) + '</div>'
+      + '<div style="color:#e6edf3;font-weight:700;' + celda + '" title="' + escapeHtml(v) + '">' + escapeHtml(v) + '</div>';
+  }).join('');
+  const cambios = (r.cambios || []).length
+    ? '<div style="margin-top:8px;color:#8b949e">Cambios en Chunior:</div>' + r.cambios.map(function(x){
+        const t = [x.cuando, x.quien, x.que].filter(Boolean).join(' · ');
+        return '<div style="' + celda + '" title="' + escapeHtml(t) + '">' + escapeHtml(t) + '</div>';
+      }).join('')
+    : '';
+  return '<div style="padding:10px 12px;border:1px solid rgba(216,180,254,.35);border-radius:10px;background:#160f29;max-width:760px">'
+    + '<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:8px">'
+    + '<b style="color:#d8b4fe">Movimiento N° ' + escapeHtml(n) + ' en Chunior</b>'
+    + '<button type="button" class="mini-btn purple" style="font-size:11px" onclick="abrirMovimientoEnChunior(this)" data-url="' + escapeHtml(r.url) + '">Abrir en Chunior</button></div>'
+    + '<div style="display:grid;grid-template-columns:minmax(90px,180px) minmax(0,1fr);gap:4px 14px;font-size:12px">' + campos + '</div>'
+    + cambios + '</div>';
+}
+window.verMovimientoChunior = async function(el){
+  const tr = el && el.closest ? el.closest('tr') : null;
+  const n = el ? el.getAttribute('data-n') : '', ruta = el ? el.getAttribute('data-ruta') : '';
+  if(!tr || !/^\d+$/.test(String(n || ''))) return;
+  // Segundo toque: se pliega.
+  const abierta = tr.nextElementSibling;
+  if(abierta && abierta.classList.contains('hrow-chu-ficha') && abierta.getAttribute('data-n') === n){ abierta.remove(); return; }
+  if(!window.chunior){ toast('La ventana de Chunior no está disponible.', 'red'); return; }
+  const fila = document.createElement('tr');
+  fila.className = 'hrow-chu-ficha'; fila.setAttribute('data-n', n);
+  fila.innerHTML = '<td colspan="' + (tr.children.length || 11) + '"><span class="small" style="color:#d8b4fe">Leyendo el movimiento N° ' + escapeHtml(n) + ' en Chunior…</span></td>';
+  tr.parentNode.insertBefore(fila, tr.nextSibling);
+  el.disabled = true;
+  try{
+    const leer = function(){ return _chuLeerMovimiento(ruta || 'movimientoficha', n); };
+    const r = (typeof _chuSerializar === 'function') ? await _chuSerializar(leer) : await leer();
+    if(!r || !r.ok) throw new Error((r && r.motivo) || 'sin respuesta');
+    fila.firstChild.innerHTML = _chuFichaHtml(n, r);
+  }catch(e){
+    console.warn('[ver movimiento en Chunior]', n, e && e.message);
+    fila.firstChild.innerHTML = '<span class="small" style="color:#fca5a5">No se pudo abrir el movimiento N° ' + escapeHtml(n) + ' en Chunior. Probá de nuevo.</span>';
+    toast('No se pudo abrir el movimiento en Chunior.', 'red');
+  }finally{ el.disabled = false; }
+};
+window.abrirMovimientoEnChunior = async function(el){
+  const url = el ? el.getAttribute('data-url') : '';
+  if(!url || url.indexOf(CHUNIOR_BASE + '/') !== 0 || !window.chunior) return;
+  el.disabled = true;
+  try{
+    const ir = function(){ return window.chunior.navigate(url); };
+    if(typeof _chuSerializar === 'function') await _chuSerializar(ir); else await ir();
+    if(window.chunior.focus) await window.chunior.focus();
+  }catch(e){ console.warn('[abrir en Chunior]', e && e.message); toast('No se pudo abrir Chunior.', 'red'); }
+  finally{ el.disabled = false; }
+};
+
 function renderHistorial(lista){
   const el = document.getElementById("historialTable");
   if(!el) return;
@@ -6847,6 +6980,13 @@ function renderHistorial(lista){
     const anularPropBtn = (String(h.tipo||'').toUpperCase()==='PROPINA' && h.chunior_movimiento_id && String(h.estado||'').toUpperCase()!=='ANULADA')
       ? '<button class="mini-btn red" style="font-size:11px" onclick="anularPropinaHistorial(\x27'+escapeHtml(String(h.id))+'\x27)" title="Anular esta propina (pone el monto en 0,10 en Chunior)">🚫 Anular</button>'
       : '';
+    // Ver el movimiento tal cual está en Chunior, desplegado debajo de la fila (Juan, 23/11).
+    const _chuMov = (typeof _chuMovDeFila === 'function') ? _chuMovDeFila(h) : null;
+    const chuVerBtn = _chuMov
+      ? '<button type="button" class="mini-btn" style="font-size:12px;background:#2a1f4a;color:#d8b4fe;border:1px solid rgba(216,180,254,.45);padding:5px 9px;line-height:1" onclick="verMovimientoChunior(this)"'
+        + ' data-n="'+escapeHtml(_chuMov.n)+'" data-ruta="'+escapeHtml(_chuMov.ruta)+'" data-fila="'+escapeHtml(String(h.id||''))+'"'
+        + ' title="Ver cómo está el movimiento N° '+escapeHtml(_chuMov.n)+' en Chunior">📄 Chunior</button>'
+      : '';
     const errBtn = (h.estado === 'ERROR')
       ? '<button class="mini-btn" style="font-size:12px;background:#3f1d1d;color:#fca5a5;border:1px solid rgba(248,113,113,.45);padding:5px 9px;line-height:1" onclick="verDetalleError(\x27'+escapeHtml(String(h.id||''))+'\x27)" title="Por qué falló: contexto completo, paso a paso y detalle técnico">🔎 Por qué falló</button>'
       : '';
@@ -6855,7 +6995,7 @@ function renderHistorial(lista){
     const recuperarBtn = (_rechazada && _sidFila && esOperacionDinero)
       ? '<button class="mini-btn green" onclick="recuperarSolicitudRechazada(\x27'+escapeHtml(_sidFila)+'\x27,\x27'+escapeHtml(String(h.usuario||''))+'\x27)" style="font-size:11px" title="Volver a ponerla en revisión para resolverla">↺ Recuperar</button>'
       : '';
-    const acciones = [errBtn, infoBtn, detalleBtn, recuperarBtn, retryBtn, chuniorBtn, claveBtn, undoBtn, anularPropBtn].filter(Boolean).join(' ') || '-';
+    const acciones = [errBtn, infoBtn, detalleBtn, chuVerBtn, recuperarBtn, retryBtn, chuniorBtn, claveBtn, undoBtn, anularPropBtn].filter(Boolean).join(' ') || '-';
     const saldoPreTd = (h.saldo_pre !== null && h.saldo_pre !== undefined && h.saldo_pre !== '')
       ? '<span style="color:#9aa7bd">'+money(h.saldo_pre)+'</span>'
       : '<span class="small">—</span>';
@@ -12308,6 +12448,9 @@ async function callDrex(method, ...args){
       const _cnChequeo = (method==='estadoPagina' || method==='iniciarSesion');
       _wHealth?.record('EFFECT', (_r && _r.ok === false && !_cnChequeo) ? 'ERROR' : 'OK', (_r && _r.ok === false && !_cnChequeo) ? 'WORKER_DREX_FAILED' : 'WORKER_DREX_OK');
       if(!_cnChequeo) window.NodoSalud?.agentes?.(method, _r, null, args);
+      if((method === 'cargarSaldo' || method === 'retirarSaldo') && _r && _r.ok !== false){
+        try{ if(typeof window.nodoCotejoTrasOperacion === 'function') window.nodoCotejoTrasOperacion(); }catch(_e){}
+      }
       if(_r && _r.ok === false && !_cnChequeo){
         if(window._cnFalla) window._cnFalla(method, _r.message || 'devolvió ok:false', { ms:_cnMs, pantalla:_cnPant, capa:'preload' });
       } else if(window._cnPaso){
@@ -13097,8 +13240,13 @@ window._estadoYaCerrado = _estadoYaCerrado;
 // peor caso es que quede en la bandeja — no que se le cambie la clave setenta veces.
 window._clavesHechas = window._clavesHechas || {};
 
+// Modo "sólo mirar" (Juan, 23/11: NODO en dev en Sanchez mientras la oficina trabaja con el suyo): esta sesión no
+// hace nada sola. Se prende por sesión (sessionStorage), así no queda prendido en el NODO de todos los días.
+function nodoSoloMirar(){ try{ return sessionStorage.getItem('nodo_solo_mirar') === '1'; }catch(_e){ return false; } }
+window.nodoSoloMirar = nodoSoloMirar;
 async function _claveAutoTick(){
   if(_claveAutoCorriendo) return;
+  if(nodoSoloMirar()) return;   // dos NODO en la misma oficina le cambiarían la clave dos veces al mismo jugador
   if(!window.ctrlElectron) return;                       // sólo en la app de escritorio
   let lista = [];
   try{
@@ -16373,6 +16521,16 @@ window._retiroSaldoCheck = window._retiroSaldoCheck || {};
   var PRIMERA_VEZ_MS     = 60 * 60000;     // la primera vuelta del día mira la última hora
   var MARGEN_MS          = 15 * 60000;     // y cada vuelta repite los últimos 15 minutos de la anterior
   var CLAVE_HASTA        = "nodoCotejoCargasHasta";
+  // Ancla (Juan, 23/11: "si ya sabés que estaban en la página 5, no te sirve revisar antes de las 12 ni después de
+  // esa página"): el movimiento más nuevo de Agentes que ya quedó revisado. Cada vuelta lee de lo más nuevo hacia
+  // atrás SÓLO hasta el ancla (menos un minuto, por si las páginas se corrieron mientras se leía). Medido en P4 el
+  // 23/11: una página son 20 movimientos, ~1,9 s, y en hora pico cubre 11 a 15 minutos; 400 de 400 movimientos
+  // engancharon con su carga de NODO, a 0-2 segundos. Leer más de unas pocas páginas no tiene sentido: si el ancla
+  // no aparece en TOPE_PAGINAS, se para ahí y lo que quedó en el medio se busca por jugador con el filtro.
+  var CLAVE_ANCLA        = "nodoCotejoAncla";
+  var ANCLA_MARGEN_MS    = 60 * 1000;
+  var TOPE_PAGINAS       = 4;
+  var CLAVE_PENDIENTES   = "nodoCotejoPendientes";
   var TOPE_FILAS_NODO    = 1500;           // si NODO trae más que esto, la lectura no es completa: no se decide
   var TOPE_SIN_AGENTES   = 3;              // más de esto en una vuelta = algo anda mal (relojes, lectura): no se marca
   var GRACIA_SIN_AGENTES = 15 * 60000;     // una fila de NODO más nueva que esto todavía no se juzga (era 10; 2.1.10, 21/11)
@@ -16449,9 +16607,13 @@ window._retiroSaldoCheck = window._retiroSaldoCheck || {};
     });
     // 3) Filas de NODO sin carga en Agentes: sólo si la lectura cubre su horario y ya pasó la gracia.
     var desdeLeido = Number(opts.desdeLeidoMs);
-    var sobrantes = Number.isFinite(desdeLeido) ? libres.filter(function(h){
+    // "Cubre" es por los dos lados (de la 2.1.10): desde lo más viejo leído HASTA lo más nuevo leído.
+    var conTecho = Object.prototype.hasOwnProperty.call(opts, "hastaLeidoMs");
+    var hastaLeido = Number(opts.hastaLeidoMs);
+    var cubre = Number.isFinite(desdeLeido) && (!conTecho || Number.isFinite(hastaLeido));
+    var sobrantes = cubre ? libres.filter(function(h){
       var t = _ms(h);
-      return !usadas[h.id] && !h._enDuda && Number.isFinite(t) && t >= desdeLeido && (ahora - t) >= GRACIA_SIN_AGENTES
+      return !usadas[h.id] && !h._enDuda && Number.isFinite(t) && t >= desdeLeido && (!conTecho || t <= hastaLeido) && (ahora - t) >= GRACIA_SIN_AGENTES
         && String(h.notas || "").indexOf(MARCA_SIN_AGENTES) < 0 && String(h.notas || "").indexOf(MARCA_SIN_AGENTES_VIEJA) < 0
         && (opts.esNuestra ? opts.esNuestra(h) : true);
     }) : [];
@@ -16508,8 +16670,9 @@ window._retiroSaldoCheck = window._retiroSaldoCheck || {};
       window.NodoSalud.accion("Revisiones", nombre, ok, { motivo: motivo, prueba: ok ? prueba(r) : "" });
     }catch(_e){}
   }
-  async function _leerAgentes(desdeMs){
-    var llamar = _conSalud({ desdeMs: desdeMs }, function(){ return window.ctrlElectron.drexAutomation("leerMovimientosCredito", { desdeMs: desdeMs }); });
+  async function _leerAgentes(desdeMs, maxPaginas){
+    var args = { desdeMs: desdeMs, maxPaginas: maxPaginas || TOPE_PAGINAS };
+    var llamar = _conSalud(args, function(){ return window.ctrlElectron.drexAutomation("leerMovimientosCredito", args); });
     if(typeof window._drexEncolar === "function") return window._drexEncolar("leerMovimientosCredito", llamar, { silencioso: true });
     return llamar();
   }
@@ -16545,12 +16708,22 @@ window._retiroSaldoCheck = window._retiroSaldoCheck || {};
       ? await window._drexEncolar("leerMovimientosCredito", llamar, { silencioso: true }) : await llamar();
     if(!r || !r.ok || r.filtradoPorAlias !== true) return null;
     var tipo = _tipoFila(h), t = _ms(h);
-    var esta = (r.filas || []).some(function(m){
+    // Está: se devuelve el movimiento (el más cercano en hora) para engancharlo con la carga.
+    var esta = (r.filas || []).filter(function(m){
       return _tipoMov(m) === tipo && _monto(m.cantidad) === _monto(h.monto) && Math.abs(m.ms - t) <= DUDA_MS;
-    });
-    if(esta) return false;
+    }).sort(function(a, b){ return Math.abs(a.ms - t) - Math.abs(b.ms - t); })[0];
+    if(esta) return { mov: esta };
     return r.completo ? true : null;
   }
+  function _anclaGuardada(){
+    try{ var a = JSON.parse(localStorage.getItem(CLAVE_ANCLA) || "null"); return a && Number.isFinite(a.ms) && a.pc === _pc() ? a : null; }catch(_e){ return null; }
+  }
+  function _guardarAncla(m){
+    try{ localStorage.setItem(CLAVE_ANCLA, JSON.stringify({ ms: m.ms, fecha: m.fecha, alias: m.alias, cantidad: m.cantidad, pc: _pc() })); }catch(_e){}
+  }
+  // Filas de NODO que quedaron entre el ancla vieja y lo que se alcanzó a leer: se verifican por jugador, de a poco.
+  function _pendientes(){ try{ var p = JSON.parse(localStorage.getItem(CLAVE_PENDIENTES) || "[]"); return Array.isArray(p) ? p : []; }catch(_e){ return []; } }
+  function _guardarPendientes(ids){ try{ localStorage.setItem(CLAVE_PENDIENTES, JSON.stringify(ids.slice(-200))); }catch(_e){} }
   function _hastaGuardado(){ try{ return Number(localStorage.getItem(CLAVE_HASTA)) || 0; }catch(_e){ return 0; } }
   async function _anotarNotas(fila, extra){
     var notas = (fila.notas ? fila.notas + " · " : "") + extra;
@@ -16639,21 +16812,47 @@ window._retiroSaldoCheck = window._retiroSaldoCheck || {};
     CORRIENDO = true; ULTIMA = Date.now();
     var resumen = { enlazadas: 0, subidas: 0, fuera: 0, sinAgentes: 0, dudas: 0, leidas: 0 };
     try{
-      var empezo = Date.now(), hasta = _hastaGuardado();
-      var desde = Math.max(empezo - MIRAR_ATRAS_MS, hasta ? hasta - MARGEN_MS : empezo - PRIMERA_VEZ_MS);
-      var lectura = await _leerAgentes(desde);
+      var empezo = Date.now(), ancla = _anclaGuardada(), hasta = _hastaGuardado();
+      var desde = ancla ? ancla.ms - ANCLA_MARGEN_MS : (hasta ? hasta - MARGEN_MS : empezo - PRIMERA_VEZ_MS);
+      desde = Math.max(empezo - MIRAR_ATRAS_MS, desde);
+      var t0 = Date.now();
+      var lectura = await _leerAgentes(desde, TOPE_PAGINAS);
+      resumen.segundosAgentes = Math.round((Date.now() - t0) / 100) / 10;
       if(!lectura || !lectura.ok) return { ok: false, motivo: (lectura && lectura.message) || "no se pudo leer Agentes" };
-      var movs = lectura.filas || [];
-      resumen.leidas = movs.length;
+      // Las páginas se corren mientras se lee (entran movimientos nuevos arriba): el mismo movimiento puede venir
+      // dos veces, al final de una página y al principio de la siguiente. Se cuenta una vez.
+      var vistosMov = {};
+      var movs = (lectura.filas || []).filter(function(m){
+        var k = m.fecha + "|" + _norm(m.alias) + "|" + m.cantidad + "|" + (m.tipo || "");
+        if(vistosMov[k]) return false; vistosMov[k] = true; return true;
+      });
+      resumen.leidas = movs.length; resumen.paginas = lectura.paginas || 0;
+      var masViejo = movs.reduce(function(a, m){ return Math.min(a, m.ms); }, Infinity);
+      var masNuevo = movs.reduce(function(a, m){ return Math.max(a, m.ms); }, -Infinity);
+      // Llegó al ancla: lo leído cubre todo desde la vuelta anterior. Si no (más de TOPE_PAGINAS de movimientos
+      // nuevos), se juzga sólo lo que cae en lo leído y el hueco queda para buscarlo por jugador.
+      var cubreDesde = lectura.completo ? desde : (Number.isFinite(masViejo) ? masViejo : NaN);
       // NODO desde un poco antes: la fila puede ir unos segundos antes que el movimiento.
       var filas = await _leerNodo(desde - VENTANA_NODO_MS);
-      var masViejo = movs.reduce(function(a, m){ return Math.min(a, m.ms); }, Infinity);
-      // Las filas de NODO del período sin movimiento en esta lectura son CANDIDATAS: cada una se confirma
-      // buscando a ese jugador con el filtro del informe (abajo), no por no haberla visto en las páginas.
-      var cubreDesde = desde;
+      if(!lectura.completo && Number.isFinite(masViejo)){
+        var hueco = filas.filter(function(h){ var t = _ms(h); return t >= desde && t < masViejo && String(h.notas || "").indexOf("Agentes ") < 0; })
+          .map(function(h){ return h.id; });
+        if(hueco.length) _guardarPendientes(_pendientes().concat(hueco.filter(function(id){ return _pendientes().indexOf(id) < 0; })));
+      }
       var r = emparejar(movs, filas, { desdeLeidoMs: cubreDesde,
+        // Techo (de la 2.1.10): lo más nuevo que lo leído no se juzga, todavía no figura en el informe.
+        hastaLeidoMs: Number.isFinite(masNuevo) ? masNuevo : NaN,
         // Los bonos (PROMO_BONO) no figuran como "Depósito de un jugador" en Agentes: no se cotejan (de la 2.1.10).
         esNuestra: function(h){ var o = String(h.origen || ""); return o !== "COTEJO" && o !== "PROMO_BONO"; } });
+      // Enganche (Juan, 23/11: "el movimiento en agentes se debe de enlazar directamente con la carga tal cual lo
+      // hace en chunior"): cada carga de NODO que encontró su movimiento queda con la hora de Agentes en sus notas,
+      // como queda el N° de Chunior. La próxima vez se reconoce de una (paso 1 de emparejar) y no se vuelve a buscar.
+      for(var e = 0; e < r.pares.length; e++){
+        var pe = r.pares[e];
+        if(!pe.fila || String(pe.fila.notas || "").indexOf(_etiqueta(pe.mov)) >= 0) continue;
+        if(pe.caso !== "enlazada" && pe.caso !== "nodo_sin_chunior") continue;
+        try{ if(await _anotarNotas(pe.fila, _etiqueta(pe.mov))){ pe.fila.notas = (pe.fila.notas ? pe.fila.notas + " · " : "") + _etiqueta(pe.mov); resumen.enganchadas = (resumen.enganchadas || 0) + 1; } }catch(_e){}
+      }
       for(var i = 0; i < r.pares.length; i++){
         if(_ocupado()) break;                                           // el operador arrancó algo: se sigue después
         var p = r.pares[i];
@@ -16673,18 +16872,34 @@ window._retiroSaldoCheck = window._retiroSaldoCheck || {};
       // de 20 por página ya no llega a las cargas de hace un rato). Como mucho TOPE_SIN_AGENTES por vuelta, para
       // no tener Agentes ocupado; las que quedan en duda no se vuelven a buscar por una hora. Si el backoffice no
       // tiene ese filtro (agentesbet.io, Drex), no se marca nada.
-      var aConfirmar = r.sobrantes.filter(function(h){ return !_enDudaReciente({ alias: "fila", cantidad: 0, fecha: h.id }); })
+      var pend = _pendientes();
+      var delHueco = pend.length ? filas.filter(function(h){ return pend.indexOf(h.id) >= 0 && String(h.notas || "").indexOf("Agentes ") < 0
+        && String(h.notas || "").indexOf(MARCA_SIN_AGENTES) < 0 && (Date.now() - _ms(h)) >= GRACIA_SIN_AGENTES; }) : [];
+      var aConfirmar = r.sobrantes.concat(delHueco.filter(function(h){ return r.sobrantes.indexOf(h) < 0; }))
+        .filter(function(h){ return !_enDudaReciente({ alias: "fila", cantidad: 0, fecha: h.id }); })
         .slice(0, TOPE_SIN_AGENTES);
+      // Lo que ya se resolvió (o ya no está en lo que se lee de NODO) sale de pendientes.
+      if(pend.length){
+        var vivos = {}; filas.forEach(function(h){ vivos[h.id] = h; });
+        _guardarPendientes(pend.filter(function(id){ var h = vivos[id]; return h && String(h.notas || "").indexOf("Agentes ") < 0 && String(h.notas || "").indexOf(MARCA_SIN_AGENTES) < 0; }));
+      }
       var confirmadas = [];
       for(var k = 0; k < aConfirmar.length; k++){
         if(_ocupado()) break;
         var cand = aConfirmar[k], conf = null;
         try{ conf = await _confirmarSinAgentes(cand); }catch(_e){ conf = null; }
-        if(conf === true) confirmadas.push(cand);
+        if(conf && conf.mov){
+          try{ if(await _anotarNotas(cand, _etiqueta(conf.mov))) resumen.enganchadas = (resumen.enganchadas || 0) + 1; }catch(_e){}
+          _guardarPendientes(_pendientes().filter(function(id){ return id !== cand.id; }));
+          continue;
+        }
+        if(conf === true){ confirmadas.push(cand); _guardarPendientes(_pendientes().filter(function(id){ return id !== cand.id; })); }
         else { resumen.dudas += conf === null ? 1 : 0; _anotarDuda({ alias: "fila", cantidad: 0, fecha: cand.id }); }
       }
       for(var j = 0; j < confirmadas.length; j++){
         var h = confirmadas[j];
+        // Si ese movimiento ya se vio en otra fila (una copia), no se vuelve a avisar.
+        try{ if(await _hermanasConVista(h)){ resumen.dudas++; continue; } }catch(_e){}
         var esRetiro = _tipoFila(h) === "RETIRO";
         var txt = MARCA_SIN_AGENTES + " (buscado por alias): " + (h.chunior_movimiento_id ? "anotado en Chunior" : "NODO lo marcó hecho")
           + " pero en Agentes no aparece " + (esRetiro ? "este retiro" : "esta carga");
@@ -16696,7 +16911,9 @@ window._retiroSaldoCheck = window._retiroSaldoCheck || {};
       if(resumen.fuera) _toast("⚠️ Hay " + resumen.fuera + " carga(s) o retiro(s) hechos fuera de NODO. Revisalos en el historial y avisale a tu superior.", "red");
       if(resumen.sinAgentes) _toast("⚠️ Hay " + resumen.sinAgentes + " movimiento(s) anotados que no aparecen en Agentes. Revisalos en el historial.", "red");
       await pintarAvisos();
-      // La próxima vuelta arranca desde acá (menos el margen). Sólo si se pudo leer todo el período.
+      // La próxima vuelta lee sólo hasta el movimiento más nuevo de esta (el ancla). Si no llegó al ancla vieja, lo
+      // del medio ya quedó en pendientes, así que el ancla igual avanza: no se vuelve a leer lo mismo.
+      if(movs.length){ var nuevo = movs.reduce(function(a, m){ return m.ms > a.ms ? m : a; }, movs[0]); _guardarAncla(nuevo); }
       if(lectura.completo){ try{ localStorage.setItem(CLAVE_HASTA, String(empezo)); }catch(_e){} }
       return { ok: true, resumen: resumen };
     }catch(e){
@@ -16706,15 +16923,88 @@ window._retiroSaldoCheck = window._retiroSaldoCheck || {};
   }
 
   // ── Avisos para el operador: salen del historial, así los ve cualquier PC de la oficina ────
+  // ── "Lo vi" enlazado al movimiento (Juan, 23/11: "que estos 'lo vi' se enlacen también al movimiento, así por
+  // lo menos no se repiten") ─────────────────────────────────────────────────────────────────────────────────
+  // Un mismo movimiento puede dejar varias filas con aviso: la carga y sus copias repetidas (P4, 21-22/11: miles,
+  // "Lo vi" apretado 629 veces en un día), la fila que agregó la revisión de Chunior y su alerta para el admin.
+  // Son el mismo movimiento si tienen el mismo N° de Chunior (en la fila o en el detalle de la alerta), la misma
+  // hora de Agentes para el mismo jugador, o el mismo jugador, monto y tipo a menos de 3 minutos ("es
+  // virtualmente imposible que pepe transfiera en el mismo minuto dos veces"). "Lo vi" en una las marca a todas,
+  // y en el cartel sale una sola por movimiento y ninguna de un movimiento que ya se vio.
+  var ETIQUETA_AG = /Agentes \d{2}\/\d{2}\/\d{4} \d{2}:\d{2}:\d{2}/;
+  var COPIA_MS = 3 * 60000;
+  function _chuDe(h){
+    var propio = String((h && h.chunior_movimiento_id) || "").trim();
+    if(/^\d+$/.test(propio)) return propio;
+    return (String((h && h.notas) || "").match(/"n":"(\d+)"/) || [])[1] || "";
+  }
+  function _mismoMovimiento(a, b){
+    if(!a || !b) return false;
+    var ca = _chuDe(a), cb = _chuDe(b);
+    if(ca && cb) return ca === cb;
+    var ua = _norm(a.usuario), ub = _norm(b.usuario);
+    var ea = (String(a.notas || "").match(ETIQUETA_AG) || [])[0], eb = (String(b.notas || "").match(ETIQUETA_AG) || [])[0];
+    if(ea && eb && ua === ub) return ea === eb;
+    var ta = Date.parse(a.created_at), tb = Date.parse(b.created_at);
+    return !!ua && ua === ub && _monto(a.monto) === _monto(b.monto) && _tipoFila(a) === _tipoFila(b)
+      && Number.isFinite(ta) && Number.isFinite(tb) && Math.abs(ta - tb) <= COPIA_MS;
+  }
+  function _vista(h){ return String((h && h.notas) || "").indexOf(MARCA_RECONOCIDA) >= 0; }
+  // De la lista de avisos (vistos y no vistos): los que hay que mostrar, uno por movimiento.
+  function avisosParaMostrar(filas){
+    var vistas = (filas || []).filter(_vista), salen = [];
+    (filas || []).forEach(function(h){
+      if(_vista(h) || h.estado === "REVERTIDA") return;
+      if(vistas.some(function(v){ return _mismoMovimiento(v, h); })) return;
+      if(salen.some(function(v){ return _mismoMovimiento(v, h); })) return;
+      salen.push(h);
+    });
+    return salen;
+  }
   async function _leerAvisos(){
     var r = await supabaseClient.from("historial_ops")
-      .select("id,created_at,usuario,monto,tipo,notas,estado,operador")
+      .select("id,created_at,usuario,monto,tipo,notas,estado,operador,chunior_movimiento_id")
       .eq("pc_codigo", _pc())
       .gte("created_at", new Date(Date.now() - 7 * 86400000).toISOString())
       .or("notas.ilike.*" + MARCA_FUERA + "*,notas.ilike.*" + MARCA_SIN_AGENTES + "*,notas.ilike.*" + MARCA_CHUNIOR + "*")
-      .order("created_at", { ascending: false }).limit(30);
+      .order("created_at", { ascending: false }).limit(80);
     if(r.error) return [];
-    return (r.data || []).filter(function(h){ return String(h.notas || "").indexOf(MARCA_RECONOCIDA) < 0 && h.estado !== "REVERTIDA"; });
+    return avisosParaMostrar(r.data || []);
+  }
+  // ¿Ese movimiento ya se vio en otra fila? (copias de la misma carga a menos de 3 minutos, mismo N° de Chunior).
+  async function _hermanasConVista(base){
+    var t = Date.parse(base.created_at);
+    if(!Number.isFinite(t)) return false;
+    var r = await supabaseClient.from("historial_ops").select("id,created_at,usuario,monto,tipo,notas,chunior_movimiento_id")
+      .eq("pc_codigo", _pc()).gte("created_at", new Date(t - COPIA_MS).toISOString()).lte("created_at", new Date(t + COPIA_MS).toISOString())
+      .ilike("notas", "%" + MARCA_RECONOCIDA + "%").limit(50);
+    if(r.error) return false;
+    return (r.data || []).some(function(h){ return String(h.id) !== String(base.id) && _mismoMovimiento(base, h); });
+  }
+  // Las otras filas del mismo movimiento que todavía no se vieron (la base no).
+  async function _hermanasNoVistas(base){
+    var t = Date.parse(base.created_at), out = [];
+    var marcas = [MARCA_FUERA, MARCA_SIN_AGENTES, MARCA_SIN_AGENTES_VIEJA, MARCA_CHUNIOR];
+    var cerca = await supabaseClient.from("historial_ops").select("id,created_at,usuario,monto,tipo,notas,chunior_movimiento_id")
+      .eq("pc_codigo", _pc())
+      .gte("created_at", new Date(t - 86400000).toISOString()).lte("created_at", new Date(t + 86400000).toISOString())
+      .or(marcas.map(function(m){ return "notas.ilike.*" + m + "*"; }).join(",")).limit(300);
+    if(!cerca.error) out = (cerca.data || []);
+    // La alerta para el admin de la revisión de Chunior lleva el N° en su detalle y puede ser de días después.
+    var n = _chuDe(base);
+    if(n){
+      var al = await supabaseClient.from("historial_ops").select("id,created_at,usuario,monto,tipo,notas,chunior_movimiento_id")
+        .eq("pc_codigo", _pc()).eq("tipo", "ALERTA")
+        .gte("created_at", new Date(t - 86400000).toISOString()).lte("created_at", new Date(t + 14 * 86400000).toISOString())
+        .ilike("notas", '%"n":"' + n + '"%').limit(20);
+      if(!al.error) out = out.concat(al.data || []);
+    }
+    var vistos = {};
+    return out.filter(function(h){
+      if(String(h.id) === String(base.id) || vistos[h.id] || _vista(h)) return false;
+      vistos[h.id] = true;
+      return _mismoMovimiento(base, h);
+    });
   }
   function _esc(v){ try{ return window.escapeHtml ? window.escapeHtml(String(v == null ? "" : v)) : String(v == null ? "" : v); }catch(_e){ return String(v || ""); } }
   async function pintarAvisos(){
@@ -16764,11 +17054,18 @@ window._retiroSaldoCheck = window._retiroSaldoCheck || {};
   window.nodoCotejoReconocer = async function(id, casilla){
     if(casilla) casilla.disabled = true;
     try{
-      var r = await supabaseClient.from("historial_ops").select("id,notas").eq("id", id).single();
+      var r = await supabaseClient.from("historial_ops").select("id,created_at,usuario,monto,tipo,notas,chunior_movimiento_id").eq("id", id).single();
       if(r.error || !r.data) throw r.error || new Error("no está");
-      var ok = await _anotarNotas(r.data, MARCA_RECONOCIDA + " " + _operador() + " " + new Date().toLocaleString("es-AR"));
+      var marca = MARCA_RECONOCIDA + " " + _operador() + " " + new Date().toLocaleString("es-AR");
+      var ok = await _anotarNotas(r.data, marca);
       if(!ok) throw new Error("no se guardó");
-      _toast("Listo: quedó marcada como vista por " + _operador() + ".", "green");
+      // El mismo movimiento en otras filas (copias, la alerta para el admin): también quedan vistas.
+      var otras = 0;
+      try{
+        var hermanas = await _hermanasNoVistas(r.data);
+        for(var i = 0; i < hermanas.length; i++){ if(await _anotarNotas(hermanas[i], marca)) otras++; }
+      }catch(e){ console.warn("[cotejo-cargas] lo vi en las copias", e && e.message); }
+      _toast("Listo: quedó marcada como vista por " + _operador() + (otras ? " (y " + otras + " fila(s) más del mismo movimiento)" : "") + ".", "green");
       await pintarAvisos();
     }catch(_e){
       if(casilla){ casilla.checked = false; casilla.disabled = false; }
@@ -16823,11 +17120,13 @@ window._retiroSaldoCheck = window._retiroSaldoCheck || {};
   function _operadorTrabajando(){ return Date.now() - (Number(window._nodoUltimaInteraccion) || 0) < 20000; }
   async function revisionesFondo(opts){
     opts = opts || {};
+    // En "sólo mirar" las revisiones de fondo no corren: escriben en NODO y anotan en Chunior.
+    if(typeof window.nodoSoloMirar === "function" && window.nodoSoloMirar()) return { ok: false, motivo: "sólo mirar" };
     if(FONDO.corriendo) return { ok: false, motivo: "ya se está revisando" };
     if(_ocupado()) return { ok: false, motivo: "hay una operación en curso" };
     if(!opts.forzar && _operadorTrabajando()) return { ok: false, motivo: "el operador está trabajando" };
     var ahora = Date.now();
-    var tocaCotejo = !opts.soloChunior && (opts.forzar || ahora - FONDO.ultCotejo >= CADA_CUANTO_MS);
+    var tocaCotejo = !opts.soloChunior && (opts.forzar || opts.cotejoYa || ahora - FONDO.ultCotejo >= CADA_CUANTO_MS);
     var tocaChunior = !!window.NodoPasadaChunior && (opts.forzar || opts.soloChunior || ahora - FONDO.ultChunior >= CHUNIOR_CADA_MS);
     if(!tocaCotejo && !tocaChunior) return { ok: true, nada: true };
     FONDO.corriendo = true; window._revisionFondoCorriendo = true;
@@ -16858,8 +17157,23 @@ window._retiroSaldoCheck = window._retiroSaldoCheck || {};
     }finally{ FONDO.corriendo = false; window._revisionFondoCorriendo = false; }
   }
   window._revisionesFondo = revisionesFondo;
+  // El cotejo va DESPUÉS de la carga (Juan, 23/11). Un rato después de cada carga o retiro, con NODO libre, se lee la
+  // página 1 de Agentes (alcanza: en hora pico cubre 11 minutos) y la carga queda enganchada con su movimiento. Si el
+  // operador sigue trabajando, se espera y se vuelve a intentar.
+  var _trasOpTimer = null;
+  window.nodoCotejoTrasOperacion = function(){
+    if(_trasOpTimer) clearTimeout(_trasOpTimer);
+    var intentar = function(){
+      _trasOpTimer = null;
+      Promise.resolve(revisionesFondo({ cotejoYa: true, motivo: "tras-operacion" })).then(function(r){
+        if(r && r.ok === false && /operaci[oó]n en curso|trabajando|revisando/i.test(r.motivo || "")) _trasOpTimer = setTimeout(intentar, 30000);
+      }).catch(function(){});
+    };
+    _trasOpTimer = setTimeout(intentar, 45000);
+  };
 
   window.NodoCotejoCargas = { emparejar: emparejar, revisar: revisar, pintarAvisos: pintarAvisos, revisionesFondo: revisionesFondo,
+    avisosParaMostrar: avisosParaMostrar, mismoMovimiento: _mismoMovimiento,
     _marcas: { fuera: MARCA_FUERA, sinAgentes: MARCA_SIN_AGENTES, reconocida: MARCA_RECONOCIDA } };
 
   // Un solo reloj: cada 2 minutos se pregunta si algo de la fila "toca" (cotejo cada 10, Chunior cada 30)
@@ -17001,7 +17315,10 @@ window._retiroSaldoCheck = window._retiroSaldoCheck || {};
     return r && r.lista ? r : null;
   }
   // Las filas de una tabla desde `desdeMs`, página por página (la lista viene de la más nueva a la más vieja).
-  async function leerTabla(tabla, desdeMs){
+  // Juan, 23/11: "la idea es que no tenga que leer tanto como 7 listas". Con yaConocidos, en cuanto una página tiene
+  // todos sus movimientos ya en NODO (o recién anotados), no se sigue: lo más viejo ya se revisó en vueltas anteriores.
+  async function leerTabla(tabla, desdeMs, opts){
+    opts = opts || {};
     var base = CHUNIOR_BASE + "/transacciones/" + tabla.ruta + "/";
     var url = base, todas = [], paginas = 0, completo = false;
     while(url && paginas < MAX_PAGINAS){
@@ -17012,6 +17329,7 @@ window._retiroSaldoCheck = window._retiroSaldoCheck || {};
       if(movs.length && movs.every(function(m){ return !Number.isFinite(m.ms); })) return { ok: false, motivo: "no pude leer las fechas de " + tabla.nombre };
       movs.forEach(function(m){ if(m.ms >= desdeMs) todas.push(m); });
       if(!movs.length || movs[movs.length - 1].ms < desdeMs){ completo = true; break; }
+      if(typeof opts.yaConocidos === "function" && await opts.yaConocidos(movs)){ completo = true; break; }
       var sig = p.links.filter(function(l){ return l.t === String((parseInt(p.pagina, 10) || 1) + 1); })[0];
       if(!sig){ completo = true; break; }
       url = base + sig.h;
@@ -17082,7 +17400,13 @@ window._retiroSaldoCheck = window._retiroSaldoCheck || {};
         var tabla = TABLAS[i];
         if(_ocupado()){ todoOk = false; break; }
         var lectura;
-        try{ lectura = await _chuSerializar(function(){ return leerTabla(tabla, desde); }); }
+        var yaConocidos = (function(tab){ return async function(movs){
+          var ids = movs.map(function(m){ return m.id; }).filter(Boolean);
+          if(!ids.length) return false;
+          var porIdPag = await _filasPorId(tab, ids);
+          return movs.every(function(m){ return !m.id || porIdPag[m.id] || (Number.isFinite(m.ms) && Date.now() - m.ms < FRESCO_MS); });
+        }; })(tabla);
+        try{ lectura = await _chuSerializar(function(){ return leerTabla(tabla, desde, { yaConocidos: yaConocidos }); }); }
         catch(e){ lectura = { ok: false, motivo: (e && e.message) || "error" }; }
         if(!lectura || !lectura.ok){ todoOk = false; resumen.fallas.push(tabla.nombre + ": " + ((lectura && lectura.motivo) || "no se pudo leer")); continue; }
         var ids = lectura.movs.map(function(m){ return m.id; }).filter(Boolean);

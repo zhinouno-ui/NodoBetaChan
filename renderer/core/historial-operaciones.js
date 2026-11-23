@@ -526,6 +526,139 @@ function filtrarHistorial(){
   renderHistorial(lista);
 }
 
+// ── El movimiento tal cual está en Chunior (Juan, 23/11) ─────────────────────────────────────────
+// "Debería haber un botón que despliegue el movimiento para revisarlo": una alerta de la revisión de Chunior
+// decía "(sin usuario)" y no había forma de ver qué había anotado allá (era un ajuste de un movimiento
+// duplicado, sin usuario). El botón abre la ficha del movimiento en la ventana de Chunior, la lee y la
+// despliega debajo de la fila: lo que Chunior tiene cargado y quién lo cambió. No toca nada en Chunior.
+function _chuRutaDeTipo(tipo){
+  const t = String(tipo || '').toUpperCase();
+  const tablas = (window.NodoPasadaChunior && window.NodoPasadaChunior.TABLAS) || [];
+  const tab = tablas.find(function(x){ return (x.grupo || []).indexOf(t) >= 0; });
+  return tab ? tab.ruta : ((window._CHUNIOR_URL_POR_TIPO || {})[t] || 'movimientoficha');
+}
+// El N° de Chunior de una fila: el suyo, o el de la alerta de la revisión de Chunior (va en el detalle [ERR]).
+function _chuMovDeFila(h){
+  const propio = String(h && h.chunior_movimiento_id || '').trim();
+  if(/^\d+$/.test(propio)) return { n: propio, ruta: _chuRutaDeTipo(h.tipo) };
+  let c = null;
+  try{ c = (typeof _errParse === 'function') ? _errParse(h && h.notas) : null; }catch(_e){ c = null; }
+  if(c && /^\d+$/.test(String(c.n || ''))){
+    const tablas = (window.NodoPasadaChunior && window.NodoPasadaChunior.TABLAS) || [];
+    const tab = tablas.find(function(x){ return x.nombre === c.tabla; });
+    return { n: String(c.n), ruta: tab ? tab.ruta : _chuRutaDeTipo(c.tipo) };
+  }
+  return null;
+}
+// Corre DENTRO de la ventana de Chunior. Ficha del movimiento: cada campo con su rótulo y su valor.
+function _chuLeerFichaEnPagina(){
+  var out = [], vistos = {};
+  var cajas = Array.prototype.slice.call(document.querySelectorAll('.fieldBox'));
+  Array.prototype.slice.call(document.querySelectorAll('.form-row')).forEach(function(r){ if(!r.querySelector('.fieldBox')) cajas.push(r); });
+  cajas.forEach(function(row){
+    var lab = row.querySelector('label'); if(!lab) return;
+    var k = (lab.textContent || '').replace(/:\s*$/, '').replace(/\s+/g, ' ').trim();
+    if(!k || vistos[k]) return;
+    var v = '', sel = row.querySelector('select'), chk = row.querySelector('input[type=checkbox]');
+    var inp = row.querySelector('input:not([type=hidden]):not([type=checkbox]), textarea'), ro = row.querySelector('.readonly');
+    if(sel) v = sel.selectedIndex >= 0 ? (sel.options[sel.selectedIndex].textContent || '') : '';
+    else if(inp) v = inp.value || '';
+    else if(chk) v = chk.checked ? 'Sí' : 'No';
+    else if(ro) v = ro.textContent || '';
+    vistos[k] = 1; out.push({ k: k, v: String(v).replace(/\s+/g, ' ').trim() });
+  });
+  return { ok: out.length > 0, campos: out, lista: !!document.querySelector('#content-main form, form#movimientoficha_form, .submit-row') };
+}
+// Corre DENTRO de la ventana de Chunior. Los últimos cambios del movimiento (historial del admin).
+function _chuLeerCambiosEnPagina(){
+  var filas = Array.prototype.slice.call(document.querySelectorAll('#change-history tbody tr'));
+  return { ok: !!document.getElementById('change-history') || /historial|history/i.test(document.title || ''),
+    cambios: filas.slice(-5).map(function(tr){
+      var c = tr.querySelectorAll('th, td');
+      return { cuando: (c[0] && c[0].textContent || '').trim(), quien: (c[1] && c[1].textContent || '').trim(), que: (c[2] && c[2].textContent || '').replace(/\s+/g, ' ').trim() };
+    }) };
+}
+async function _chuEsperar(script, listo, ms){
+  const t0 = Date.now(); let r = null;
+  while(Date.now() - t0 < ms){
+    r = await window.chunior.exec(script).catch(function(){ return null; });
+    if(r && listo(r)) return r;
+    await new Promise(function(ok){ setTimeout(ok, 300); });
+  }
+  return r;
+}
+async function _chuLeerMovimiento(ruta, n){
+  const base = CHUNIOR_BASE + '/transacciones/' + ruta + '/' + encodeURIComponent(n);
+  await window.chunior.navigate(base + '/change/');
+  const ficha = await _chuEsperar('(' + _chuLeerFichaEnPagina.toString() + ')()', function(r){ return r.ok; }, 10000);
+  if(!ficha || !ficha.ok) return { ok: false, motivo: 'no abrió' };
+  let cambios = [];
+  try{
+    await window.chunior.navigate(base + '/history/');
+    const h = await _chuEsperar('(' + _chuLeerCambiosEnPagina.toString() + ')()', function(r){ return r.ok; }, 6000);
+    cambios = (h && h.cambios) || [];
+  }catch(_e){}
+  return { ok: true, campos: ficha.campos, cambios: cambios, url: base + '/change/' };
+}
+// Los rótulos que Chunior pueda traer en inglés, en castellano. El resto, como viene.
+const _CHU_ROTULOS = { 'creation': 'Fecha', 'created by': 'Anotado por', 'created_by': 'Anotado por', 'notes': 'Notas', 'amount': 'Monto', 'account': 'Billetera' };
+function _chuFichaHtml(n, r){
+  const celda = 'max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
+  const campos = (r.campos || []).map(function(c){
+    const k = _CHU_ROTULOS[String(c.k).toLowerCase()] || c.k;
+    const v = c.v === '' ? '(vacío)' : c.v;
+    return '<div style="color:#8b949e;' + celda + '">' + escapeHtml(k) + '</div>'
+      + '<div style="color:#e6edf3;font-weight:700;' + celda + '" title="' + escapeHtml(v) + '">' + escapeHtml(v) + '</div>';
+  }).join('');
+  const cambios = (r.cambios || []).length
+    ? '<div style="margin-top:8px;color:#8b949e">Cambios en Chunior:</div>' + r.cambios.map(function(x){
+        const t = [x.cuando, x.quien, x.que].filter(Boolean).join(' · ');
+        return '<div style="' + celda + '" title="' + escapeHtml(t) + '">' + escapeHtml(t) + '</div>';
+      }).join('')
+    : '';
+  return '<div style="padding:10px 12px;border:1px solid rgba(216,180,254,.35);border-radius:10px;background:#160f29;max-width:760px">'
+    + '<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:8px">'
+    + '<b style="color:#d8b4fe">Movimiento N° ' + escapeHtml(n) + ' en Chunior</b>'
+    + '<button type="button" class="mini-btn purple" style="font-size:11px" onclick="abrirMovimientoEnChunior(this)" data-url="' + escapeHtml(r.url) + '">Abrir en Chunior</button></div>'
+    + '<div style="display:grid;grid-template-columns:minmax(90px,180px) minmax(0,1fr);gap:4px 14px;font-size:12px">' + campos + '</div>'
+    + cambios + '</div>';
+}
+window.verMovimientoChunior = async function(el){
+  const tr = el && el.closest ? el.closest('tr') : null;
+  const n = el ? el.getAttribute('data-n') : '', ruta = el ? el.getAttribute('data-ruta') : '';
+  if(!tr || !/^\d+$/.test(String(n || ''))) return;
+  // Segundo toque: se pliega.
+  const abierta = tr.nextElementSibling;
+  if(abierta && abierta.classList.contains('hrow-chu-ficha') && abierta.getAttribute('data-n') === n){ abierta.remove(); return; }
+  if(!window.chunior){ toast('La ventana de Chunior no está disponible.', 'red'); return; }
+  const fila = document.createElement('tr');
+  fila.className = 'hrow-chu-ficha'; fila.setAttribute('data-n', n);
+  fila.innerHTML = '<td colspan="' + (tr.children.length || 11) + '"><span class="small" style="color:#d8b4fe">Leyendo el movimiento N° ' + escapeHtml(n) + ' en Chunior…</span></td>';
+  tr.parentNode.insertBefore(fila, tr.nextSibling);
+  el.disabled = true;
+  try{
+    const leer = function(){ return _chuLeerMovimiento(ruta || 'movimientoficha', n); };
+    const r = (typeof _chuSerializar === 'function') ? await _chuSerializar(leer) : await leer();
+    if(!r || !r.ok) throw new Error((r && r.motivo) || 'sin respuesta');
+    fila.firstChild.innerHTML = _chuFichaHtml(n, r);
+  }catch(e){
+    console.warn('[ver movimiento en Chunior]', n, e && e.message);
+    fila.firstChild.innerHTML = '<span class="small" style="color:#fca5a5">No se pudo abrir el movimiento N° ' + escapeHtml(n) + ' en Chunior. Probá de nuevo.</span>';
+    toast('No se pudo abrir el movimiento en Chunior.', 'red');
+  }finally{ el.disabled = false; }
+};
+window.abrirMovimientoEnChunior = async function(el){
+  const url = el ? el.getAttribute('data-url') : '';
+  if(!url || url.indexOf(CHUNIOR_BASE + '/') !== 0 || !window.chunior) return;
+  el.disabled = true;
+  try{
+    const ir = function(){ return window.chunior.navigate(url); };
+    if(typeof _chuSerializar === 'function') await _chuSerializar(ir); else await ir();
+    if(window.chunior.focus) await window.chunior.focus();
+  }catch(e){ console.warn('[abrir en Chunior]', e && e.message); toast('No se pudo abrir Chunior.', 'red'); }
+  finally{ el.disabled = false; }
+};
+
 function renderHistorial(lista){
   const el = document.getElementById("historialTable");
   if(!el) return;
@@ -664,6 +797,13 @@ function renderHistorial(lista){
     const anularPropBtn = (String(h.tipo||'').toUpperCase()==='PROPINA' && h.chunior_movimiento_id && String(h.estado||'').toUpperCase()!=='ANULADA')
       ? '<button class="mini-btn red" style="font-size:11px" onclick="anularPropinaHistorial(\x27'+escapeHtml(String(h.id))+'\x27)" title="Anular esta propina (pone el monto en 0,10 en Chunior)">🚫 Anular</button>'
       : '';
+    // Ver el movimiento tal cual está en Chunior, desplegado debajo de la fila (Juan, 23/11).
+    const _chuMov = (typeof _chuMovDeFila === 'function') ? _chuMovDeFila(h) : null;
+    const chuVerBtn = _chuMov
+      ? '<button type="button" class="mini-btn" style="font-size:12px;background:#2a1f4a;color:#d8b4fe;border:1px solid rgba(216,180,254,.45);padding:5px 9px;line-height:1" onclick="verMovimientoChunior(this)"'
+        + ' data-n="'+escapeHtml(_chuMov.n)+'" data-ruta="'+escapeHtml(_chuMov.ruta)+'" data-fila="'+escapeHtml(String(h.id||''))+'"'
+        + ' title="Ver cómo está el movimiento N° '+escapeHtml(_chuMov.n)+' en Chunior">📄 Chunior</button>'
+      : '';
     const errBtn = (h.estado === 'ERROR')
       ? '<button class="mini-btn" style="font-size:12px;background:#3f1d1d;color:#fca5a5;border:1px solid rgba(248,113,113,.45);padding:5px 9px;line-height:1" onclick="verDetalleError(\x27'+escapeHtml(String(h.id||''))+'\x27)" title="Por qué falló: contexto completo, paso a paso y detalle técnico">🔎 Por qué falló</button>'
       : '';
@@ -672,7 +812,7 @@ function renderHistorial(lista){
     const recuperarBtn = (_rechazada && _sidFila && esOperacionDinero)
       ? '<button class="mini-btn green" onclick="recuperarSolicitudRechazada(\x27'+escapeHtml(_sidFila)+'\x27,\x27'+escapeHtml(String(h.usuario||''))+'\x27)" style="font-size:11px" title="Volver a ponerla en revisión para resolverla">↺ Recuperar</button>'
       : '';
-    const acciones = [errBtn, infoBtn, detalleBtn, recuperarBtn, retryBtn, chuniorBtn, claveBtn, undoBtn, anularPropBtn].filter(Boolean).join(' ') || '-';
+    const acciones = [errBtn, infoBtn, detalleBtn, chuVerBtn, recuperarBtn, retryBtn, chuniorBtn, claveBtn, undoBtn, anularPropBtn].filter(Boolean).join(' ') || '-';
     const saldoPreTd = (h.saldo_pre !== null && h.saldo_pre !== undefined && h.saldo_pre !== '')
       ? '<span style="color:#9aa7bd">'+money(h.saldo_pre)+'</span>'
       : '<span class="small">—</span>';
