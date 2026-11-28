@@ -89,6 +89,36 @@ test('la fila nueva dice quién la anotó en Chunior, y se busca por N° sólo d
   assert.match(manifest, /"core\/cotejo-chunior\.js"/);
 });
 
+// Juan, 18/11: lo que la pasada tiene que agregar a NODO es un error y le tiene que llegar al admin por el
+// canal de errores de siempre (historial con estado ERROR y [ERR]{...} en notas), sin tocar el servidor.
+test('lo anotado sólo en Chunior sale como alerta de error para el admin, con el detalle completo', () => {
+  const d = { mov: mov('10184376', '18-11-2026 17:41:00', -1500, 'pepe', { creadoPor: 'xprueba', origen: '882 - PROMOS' }), accion: 'crear', tipo: 'RETIRO' };
+  const a = P.alertaDeError(ficha, d, { filaId: 777, pc: 'P1', op: 'Chunior', usuario: 'pepe', billetera: 'SALVATIERRA MP' });
+  assert.equal(a.estado, 'ERROR');
+  assert.equal(a.tipo, 'ALERTA', 'nunca CARGA/RETIRO: un operador la tomaría por una carga que falló');
+  assert.equal(a.billetera_id, null, 'no mueve el saldo de ninguna billetera');
+  assert.equal(a.monto, 1500);
+  assert.equal(a.pc_codigo, 'P1');
+  assert.equal(a.operador, 'xprueba');
+  assert.equal(a.chunior_movimiento_id, undefined, 'la pasada y el cotejo no la toman por un movimiento');
+  assert.match(a.notas, /^Revisión de Chunior · Movimientos de fichas N° 10184376: xprueba lo anotó directo en Chunior el 18\/11 17:41, sin pasar por NODO\. NODO lo agregó al historial \(fila 777\)\. \[ERR\]\{/);
+  const det = JSON.parse(a.notas.slice(a.notas.indexOf('[ERR]') + 5));
+  assert.deepEqual(det, { m: 'ANOTADO_SOLO_EN_CHUNIOR', tabla: 'Movimientos de fichas', n: '10184376', tipo: 'RETIRO', por: 'xprueba',
+    chunior: '18/11 17:41', monto: -1500, usuario: 'pepe', cuenta: '1170 - SALVATIERRA MP', desde: '882 - PROMOS', fila: 777, pc: 'P1', op: 'Chunior' });
+  // Las marcas del cartel del operador: si la alerta las tuviera, el cartel la mostraría dos veces.
+  assert.doesNotMatch(a.notas, /no estaba en NODO|fuera de NODO|sin carga en Agentes/);
+  assert.ok(a.notas.length < 1800);
+});
+
+test('la alerta sale después de crear la fila, y si no sale no frena la pasada', () => {
+  const crear = fuente.slice(fuente.indexOf('async function _crear('), fuente.indexOf('// ── Una pasada'));
+  assert.ok(crear.indexOf('.insert(fila)') < crear.indexOf('.insert(alertaDeError('));
+  assert.match(crear, /catch\(e\)\{ console\.warn\("\[pasada-chunior\] alerta para el admin"/);
+  assert.match(fuente, /if\(!\(await _crear\(tabla, d\)\)\) resumen\.alertasSinMandar/);
+  const manuales = fs.readFileSync(path.join(ROOT, 'renderer', 'core', 'operaciones-manuales.js'), 'utf8');
+  assert.match(manuales, /ANOTADO_SOLO_EN_CHUNIOR: \{t:'Anotado sólo en Chunior', plata:false/, '"Por qué falló" la explica en castellano');
+});
+
 test('Juan anotó tres pruebas, apretó Recargar y no aparecieron: ahora espera poco y se vuelve a mirar sola', () => {
   assert.ok(fuente.includes('var FRESCO_MS    = 90 * 1000;'));
   assert.match(fuente, /resumen\.esperan && opts\.recargar[\s\S]{0,80}setTimeout/);

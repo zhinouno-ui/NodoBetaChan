@@ -213,7 +213,9 @@ const _ERR_MOTIVOS = {
   ERROR_PAGINA:          {t:'Error de página',          plata:true,  d:'Agentes devolvió un error de página (403/CDN). NO está confirmado si llegó a aplicarse — verificá en el casino antes de reintentar.'},
   RECHAZO_CASINO:        {t:'Rechazado por el casino',  plata:false, d:'Agentes no dijo "Operación correcta". No se anota en Chunior.'},
   NO_APLICO:             {t:'No se pudo aplicar',       plata:true,  d:'Agentes no aplicó la operación. Verificá en el casino.'},
-  EXCEPCION:             {t:'Error inesperado',         plata:true,  d:'Excepción de JavaScript en el panel. El detalle técnico está abajo.'}
+  EXCEPCION:             {t:'Error inesperado',         plata:true,  d:'Excepción de JavaScript en el panel. El detalle técnico está abajo.'},
+  // La escribe la pasada por Chunior (cotejo-chunior.js): es la alerta para el admin, no un movimiento.
+  ANOTADO_SOLO_EN_CHUNIOR: {t:'Anotado sólo en Chunior', plata:false, d:'Este movimiento se anotó directo en Chunior, sin hacerlo desde NODO. NODO ya lo agregó al historial para que no se pierda. Revisalo con quien lo anotó.'}
 };
 
 // Arma el contexto del fallo y devuelve el texto para `notas`: humano + etiqueta [ERR].
@@ -311,7 +313,7 @@ window.verDetalleError = function(histId){
     ['Operador',     h.operador || (ctx&&ctx.op) || '—'],
     ['PC',           h.pc_codigo || (ctx&&ctx.pc) || '—'],
     ['Solicitud',    h.solicitud_id ? ('#'+h.solicitud_id) : '—'],
-    ['Mov. Chunior', h.chunior_movimiento_id ? ('N° '+h.chunior_movimiento_id) : (ctx && /^\d+$/.test(String(ctx.n||'')) ? ('N° '+ctx.n+(ctx.tabla ? ' · '+ctx.tabla : '')) : '— (no se anotó)')],
+    ['Mov. Chunior', h.chunior_movimiento_id ? ('N° '+h.chunior_movimiento_id) : (ctx && /^d+$/.test(String(ctx.n||'')) ? ('N° '+ctx.n+(ctx.tabla ? ' · '+ctx.tabla : '')) : '— (no se anotó)')],
     ['ID historial', h.id||'—']
   ];
   if(ctx && ctx.ms!=null)      campos.push(['Duró', (ctx.ms/1000).toFixed(1)+'s hasta fallar']);

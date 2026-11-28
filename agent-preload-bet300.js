@@ -1068,7 +1068,7 @@ async function cambiarClave(password, options = {}) {
   };
 }
 
-// ── Crear jugador (modal; clave → CLAVE_ESTANDAR) ────────────────────────────
+// ── Crear jugador (modal; clave → la de la página o la del operador) ─────────
 async function crearUsuario(alias, _password, options = {}) {
   if (!alias || String(alias).trim().length < 3) throw new Error('El alias debe tener al menos 3 caracteres.');
   const ready = await ensureReady();
@@ -1086,10 +1086,20 @@ async function crearUsuario(alias, _password, options = {}) {
   const aliasOk = await setFieldAndVerify(aliasInput, String(alias).trim(), 5);
   if (!aliasOk) throw new Error('No se pudo escribir el alias.');
 
-  // Contraseña autogenerada (placeholder "password_placeholder") → forzar CLAVE_ESTANDAR.
+  // La página trae una contraseña al azar. Si el operador dejó la clave vacía, se usa ésa en vez de pisarla
+  // (Juan, 18/11); NODO ya no rellena con 1a2b3c4d (23/11), así que si escribió una —aunque sea la estándar—
+  // se escribe la suya. Sólo si la página no trae ninguna se cae a la estándar.
   const passInput = firstVisible('input[placeholder="password_placeholder"]', modal)
     || Array.from(modal.querySelectorAll('input.v-field__input')).filter(isVisible)[1];
-  if (passInput) await setFieldAndVerify(passInput, CLAVE_ESTANDAR, 5);
+  const elegida = String(_password == null ? '' : _password).trim();
+  let propuesta = '';
+  if (passInput && !elegida) {
+    for (let i = 0; i < 8 && String(passInput.value || '').trim().length < 8; i++) await delay(150);
+    const v = String(passInput.value || '').trim();
+    if (v.length >= 8 && /^[A-Za-z0-9]+$/.test(v)) propuesta = v;
+  }
+  const clave = propuesta || claveParaAgente(_password);
+  if (passInput && !propuesta) await setFieldAndVerify(passInput, clave, 5);
 
   const guardar = findByText(/^guardar$/i, 'button, .v-btn', modal);
   if (!guardar) throw new Error('No se encontró el botón "Guardar".');
@@ -1106,7 +1116,7 @@ async function crearUsuario(alias, _password, options = {}) {
   // NO se detecta el banner, seguimos con el flujo de abajo como antes (no es absoluto).
   if (snack && (snack.creado || /create_?successfully/i.test(snack.texto || ''))) {
     await _cerrarTodoBet300();
-    return { ok: true, alias, password: CLAVE_ESTANDAR, message: 'Jugador creado (banner user_create_successfully).' };
+    return { ok: true, alias, password: clave, message: 'Jugador creado (banner user_create_successfully).' };
   }
   // C: "Duplicated alias" → alias duplicado. Cerramos RÁPIDO con "Cerrar" para agilizar la cola
   // (p.ej. si hay una carga esperando detrás mientras se intentaba crear).
@@ -1121,7 +1131,7 @@ async function crearUsuario(alias, _password, options = {}) {
     return { ok: false, alias, error: 'rechazado', message: 'BET300 rechazó la creación: ' + snack.texto };
   }
   if (snack && snack.tipo === 'ok') {
-    return { ok: true, alias, password: CLAVE_ESTANDAR, message: 'Jugador creado correctamente.' };
+    return { ok: true, alias, password: clave, message: 'Jugador creado correctamente.' };
   }
   // Sin toast concluyente (a veces no se alcanza a leer el toast de éxito): VERIFICAMOS
   // buscando el alias — si ya figura en BET300, la creación fue correcta y NODO recibe el OK.
@@ -1130,7 +1140,7 @@ async function crearUsuario(alias, _password, options = {}) {
     const fila = await waitFor(() => buscarFilaPorAlias(String(alias).trim()), 6000).catch(() => null);
     if (fila) {
       _currentUser = aliasDeFila(fila);
-      return { ok: true, alias, password: CLAVE_ESTANDAR, message: 'Jugador creado (verificado por búsqueda).' };
+      return { ok: true, alias, password: clave, message: 'Jugador creado (verificado por búsqueda).' };
     }
   } catch (_e) {}
   return { ok: false, alias, error: 'sin_confirmacion', message: 'No se pudo confirmar la creación. Verificá en BET300 antes de cargar.' };

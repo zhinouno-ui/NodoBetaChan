@@ -336,7 +336,13 @@ async function ejecutarVincular(usuario, telefono, desdeChat, opts){
       if(typeof window.nodoEnviarMensajePortal==="function"){
         // La marca lleva usuario|telefono CORREGIDOS: si el operador cambió el tel (o el usuario), el
         // portal revalida con los datos buenos y el botón "Ingresar" funciona sin re-loguear.
-        const msg="✅ ¡Listo! Ya validamos tu cuenta.\n\nPara entrar al portal usá:\n👤 Usuario: "+usuario+"\n📱 Teléfono: "+telefono+"\n\nTocá el botón *Ingresar* acá abajo 👇\n⟦INGRESAR:"+usuario+"|"+telefono+"⟧";
+        // Cuenta recién creada (18/11, Juan): antes le llegaba el mismo aviso que a una cuenta vieja, sin
+        // la clave, y el jugador no sabía con qué entrar a jugar. Ahora va la clave y la marca "nueva"
+        // hace que el Portal lo lleve a elegir una clave suya (los Portales viejos ignoran ese tercer dato).
+        const _claveNueva=String((opts&&opts.claveNueva)||"").trim();
+        const msg=_claveNueva
+          ? "✅ ¡Listo! Ya creamos tu cuenta.\n\n👤 Usuario: "+usuario+"\n🔑 Nueva clave: "+_claveNueva+"\n\nCon ese usuario y esa clave entrás al casino. Tocá Ingresar acá abajo y elegí una clave tuya 👇\n⟦INGRESAR:"+usuario+"|"+telefono+"|nueva⟧"
+          : "✅ ¡Listo! Ya validamos tu cuenta.\n\nPara entrar al portal usá:\n👤 Usuario: "+usuario+"\n📱 Teléfono: "+telefono+"\n\nTocá el botón *Ingresar* acá abajo 👇\n⟦INGRESAR:"+usuario+"|"+telefono+"⟧";
         // Con el chat cerrado también tiene que llegarle: está esperando el botón Ingresar.
         (window.nodoIniciarChat||window.nodoEnviarMensajePortal)(usuario,msg,desdeChat).then(rr=>{
           if(rr&&rr.ok) return;
@@ -986,7 +992,8 @@ window._altaCotejoConsulta = async function(ticket){
     // siempre (Juan, 2/11). Sale de la conversación, así que vale en cualquier PC.
     (Array.isArray(th)?th:[]).forEach(function(m){
       if(delJugador(m)) return;
-      const x=String((m&&(m.mensaje||m.texto||m.MENSAJE))||'').match(/⟦INGRESAR:([^|⟧]*)\|?([^⟧]*)⟧/);
+      // Un tercer dato ("|nueva", cuenta recién creada, 18/11) no es parte del teléfono.
+      const x=String((m&&(m.mensaje||m.texto||m.MENSAJE))||'').match(/⟦INGRESAR:([^|⟧]*)\|?([^|⟧]*)(?:\|[^⟧]*)?⟧/);
       if(x && x[1].trim()){ ingU=x[1].trim(); ingT=x[2].trim(); }
     });
   }catch(_e){}

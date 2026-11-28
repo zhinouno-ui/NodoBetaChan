@@ -335,6 +335,9 @@ async function cargarSolicitudesPortal(silencioso=false){
       // Si entró una carga con un retiro a medio pagar, ese parcial se cierra solo (Juan, 26/9).
       // Va después del render para no demorar la pantalla, y sin await: si falla, no arrastra nada.
       try{ if(deps.window.cerrarParcialesPorCarga) deps.window.cerrarParcialesPorCarga(); }catch(_e){}
+      // Llegó un retiro: se le revisan las fichas en el momento, sin esperar a que el agente quede ocioso
+      // (Juan, 23/11). Sin await: la bandeja ya está en pantalla y la lectura se dibuja cuando vuelve.
+      try{ if(deps.window.revisarFichasAlLlegar) deps.window.revisarFichasAlLlegar(deps.V154P.solicitudes); }catch(_e){}
       // NODO en Discord: los renglones se rearman con lo que acaba de llegar.
       try{ if(deps.window.actualizarPresenciaDiscord) deps.window.actualizarPresenciaDiscord(); }catch(_e){}
       // Alertas de retiro (bono sin liberar / CBU compartido): async y cacheadas 60 s.

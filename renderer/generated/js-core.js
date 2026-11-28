@@ -772,12 +772,148 @@ async function _blacklistDelServidor(usuario){
     return d;
   }catch(_e){ return null; }
 }
-async function verificarRetiro24h(usuario) {
+// ── La misma persona desde otra cuenta (Juan, 19/11) ─────────────────────────────────────────
+// El chequeo de 24 h miraba sólo el usuario. Caso real de P4: tres cuentas, tres teléfonos, un mismo titular
+// y la misma cuenta de cobro; en 90 días 28 retiros salieron a menos de 24 h del anterior de esa persona, y el
+// chequeo por usuario frenaba 2. No se traba nada: se le avisa al operador quién cobró, cuándo y a qué cuenta,
+// con el texto listo para el motivo del rechazo ("el operador tiene más decisión con buena información").
+// "Misma persona" = cobró a la misma cuenta (CBU/alias) o a nombre del mismo titular, sin importar tildes.
+function _bl24Norm(t){ return String(t||'').normalize('NFD').replace(/[̀-ͯ]/g,'').toLowerCase().replace(/\s+/g,' ').trim(); }
+function _bl24Destino(t){ const s = String(t||'').replace(/[^A-Za-z0-9.]/g,'').toLowerCase(); return s.length > 5 ? s : ''; }
+// Las filas de retiro del historial dicen "#502169 · Titular: Nombre Apellido · Alias: 0000… · ARS 5,000.06".
+function _bl24DeNotas(notas){
+  const s = String(notas||'');
+  return { titular: ((s.match(/Titular:\s*([^·|\n]+?)\s*(?:·|\||$)/i)||[])[1]||'').trim(),
+           destino: ((s.match(/(?:Alias|CBU|CVU|Destino)\s*:\s*([^·|\s]+)/i)||[])[1]||'').trim() };
+}
+// Para buscar el titular en el servidor sin que una tilde lo esconda: "López" y "Lopez" tienen que dar igual.
+// Vocales y eñe van como comodín (_); después se compara el nombre entero acá.
+function _bl24PatronTitular(tit){
+  const pal = _bl24Norm(tit).split(' ').filter(Boolean);
+  if(pal.length < 2) return '';
+  return 'Titular: ' + pal.slice(0, 2).map(function(p){ return p.replace(/[^a-z]/g,'_').replace(/[aeioun]/g,'_'); }).join(' ');
+}
+function _bl24Hora(d){ return d.toLocaleTimeString('es-AR', { hour:'2-digit', minute:'2-digit', hour12:false }); }
+function _bl24Dia(d){
+  const hoy = new Date(); const ayer = new Date(Date.now() - _BL_H24); const manana = new Date(Date.now() + _BL_H24);
+  return d.toDateString() === hoy.toDateString() ? 'hoy' : d.toDateString() === ayer.toDateString() ? 'ayer'
+    : d.toDateString() === manana.toDateString() ? 'mañana' : 'el ' + d.toLocaleDateString('es-AR', { day:'2-digit', month:'2-digit' });
+}
+// Devuelve el retiro más reciente (24 h) de OTRA cuenta de la misma persona, o null.
+async function _retiro24hMismaPersona(usuario, extra){
+  if(typeof supabaseClient === 'undefined') return null;
+  const u = String(usuario||'').trim(); if(!u) return null;
+  const uN = normalizar(u);
+  const destinos = new Set(), titulares = new Set();
+  const sumar = function(d, t){ const dn = _bl24Destino(d); if(dn) destinos.add(dn); const tn = _bl24Norm(t); if(tn.split(' ').length >= 2) titulares.add(tn); };
+  if(extra) sumar(extra.destino, extra.titular);
+  // A dónde cobra esta cuenta: sus últimos retiros. Con .in (no ilike) para que use el índice: 0,4–1 s contra 1,2–1,8 s.
+  const variantes = Array.from(new Set([u, u.toLowerCase(), u.toUpperCase(), u.charAt(0).toUpperCase() + u.slice(1).toLowerCase()]));
+  const prev = await supabaseClient.from('historial_ops').select('notas')
+    .in('usuario', variantes).eq('tipo','RETIRO').eq('estado','OK')
+    .order('created_at', { ascending:false }).limit(15);
+  if(prev.error) throw prev.error;
+  (prev.data||[]).forEach(function(r){ const x = _bl24DeNotas(r.notas); sumar(x.destino, x.titular); });
+  const filtros = [];
+  destinos.forEach(function(d){ filtros.push('notas.ilike.*' + d + '*'); });
+  titulares.forEach(function(t){ const p = _bl24PatronTitular(t); if(p) filtros.push('notas.ilike.*' + p + '*'); });
+  if(!filtros.length) return null;
+  const r = await supabaseClient.from('historial_ops')
+    .select('id, usuario, created_at, monto, notas, pc_codigo, billetera_nombre')
+    .eq('tipo','RETIRO').eq('estado','OK').gte('created_at', new Date(Date.now() - _BL_H24).toISOString())
+    .or(filtros.slice(0, 12).join(','))
+    .order('created_at', { ascending:false }).limit(30);
+  if(r.error) throw r.error;
+  for(const h of (r.data||[])){
+    if(normalizar(h.usuario) === uN || _blEsParcial(h) || /\[BL_EXCLUIDO\]/.test(String(h.notas||''))) continue;
+    const x = _bl24DeNotas(h.notas), dn = _bl24Destino(x.destino);
+    const porCuenta = !!(dn && destinos.has(dn));
+    const porTitular = !porCuenta && titulares.has(_bl24Norm(x.titular));
+    if(porCuenta || porTitular) return { fila: h, porCuenta: porCuenta, titular: x.titular, destino: x.destino };
+  }
+  return null;
+}
+function _retiro24hResultadoPersona(usuario, hit){
+  const h = hit.fila, fecha = new Date(h.created_at), proximo = new Date(fecha.getTime() + _BL_H24);
+  const como = hit.porCuenta ? 'a la misma cuenta de cobro' : 'a nombre del mismo titular';
+  return {
+    bloqueado: true, advertencia: true, usuario, origen: 'MISMA_PERSONA',
+    otroUsuario: h.usuario, porCuenta: hit.porCuenta, titular: hit.titular || null, destino: hit.destino || null,
+    oficinaOtro: h.pc_codigo || null, historial_id: h.id,
+    horasRestantes: Math.max(0, Math.ceil((proximo.getTime() - Date.now()) / 3600000)),
+    monto: h.monto, fecha: h.created_at, proximoRetiro: proximo.toISOString(), billetera_nombre: h.billetera_nombre || null,
+    // Es el texto que le llega al jugador si se rechaza (va después de "Tu solicitud de retiro fue rechazada:").
+    mensaje: 'Retiro 24 hs: ya se hizo un retiro desde el usuario ' + h.usuario + ' ' + _bl24Dia(fecha) + ' a las ' + _bl24Hora(fecha)
+      + ', ' + como + '. Podés volver a pedir ' + _bl24Dia(proximo) + ' a las ' + _bl24Hora(proximo) + '.'
+  };
+}
+// Las segundas cuentas, fuera de las 24 h (Juan, 19/11: "NODO debe notificar cuáles son las segundas cuentas"):
+// qué OTROS usuarios cobraron en los últimos 60 días a esta cuenta o a nombre de este titular, y cuántas veces.
+// Para mostrar en el detalle del retiro; no frena nada. → { cuenta:[{usuario,oficina,veces}], titular:[…] } o null.
+async function nodoOtrasCuentasDeCobro(destino, titular, usuario){
+  if(typeof supabaseClient === 'undefined') return null;
+  const dn = _bl24Destino(destino), tn = _bl24Norm(titular), pat = _bl24PatronTitular(titular), uN = normalizar(usuario);
+  const desde = new Date(Date.now() - 60 * 86400000).toISOString();
+  const pedir = function(patron){
+    return supabaseClient.from('historial_ops').select('usuario, pc_codigo, notas')
+      .eq('tipo','RETIRO').eq('estado','OK').ilike('notas', '%' + patron + '%').gte('created_at', desde).limit(300);
+  };
+  const [rc, rt] = await Promise.all([dn ? pedir(dn) : null, pat ? pedir(pat) : null]);
+  if((rc && rc.error) || (rt && rt.error)) throw (rc && rc.error) || rt.error;
+  const juntar = function(filas, vale){
+    const m = {};
+    (filas || []).forEach(function(h){
+      if(normalizar(h.usuario) === uN || !vale(_bl24DeNotas(h.notas))) return;
+      const k = normalizar(h.usuario);
+      m[k] = m[k] || { usuario: h.usuario, oficina: h.pc_codigo || '', veces: 0 };
+      m[k].veces++;
+    });
+    return Object.values(m).sort(function(a, b){ return b.veces - a.veces; });
+  };
+  return {
+    cuenta: juntar(rc && rc.data, function(x){ return _bl24Destino(x.destino) === dn; }),
+    titular: juntar(rt && rt.data, function(x){ return tn && _bl24Norm(x.titular) === tn; })
+  };
+}
+window.nodoOtrasCuentasDeCobro = nodoOtrasCuentasDeCobro;
+// Lo mismo, en castellano y corto, para pintar en el detalle del retiro.
+function nodoOtrasCuentasHtml(r){
+  if(!r) return '';
+  const lista = function(xs){ return xs.slice(0, 6).map(function(x){ return escapeHtml(x.usuario) + (x.oficina ? ' (' + escapeHtml(x.oficina) + ')' : '') + ' ×' + x.veces; }).join(' · ') + (xs.length > 6 ? ' · y ' + (xs.length - 6) + ' más' : ''); };
+  const nombresCuenta = {}; r.cuenta.forEach(function(x){ nombresCuenta[normalizar(x.usuario)] = 1; });
+  const soloTitular = r.titular.filter(function(x){ return !nombresCuenta[normalizar(x.usuario)]; });
+  if(!r.cuenta.length && !soloTitular.length) return '<div style="margin-top:5px;font-size:11px;color:#8b949e">Ningún otro usuario cobró a esta cuenta ni a este titular en 60 días.</div>';
+  return '<div style="margin-top:6px;padding:7px 10px;border-radius:8px;background:rgba(168,85,247,.12);border:1px solid rgba(168,85,247,.5);color:#e9d5ff;font-size:12px;font-weight:700">'
+    + '👥 Posibles segundas cuentas (60 días)'
+    + (r.cuenta.length ? '<br><span style="font-weight:600">Cobraron a esta misma cuenta: ' + lista(r.cuenta) + '</span>' : '')
+    + (soloTitular.length ? '<br><span style="font-weight:600">Cobraron a nombre del mismo titular: ' + lista(soloTitular) + '</span>' : '')
+    + '</div>';
+}
+window.nodoOtrasCuentasHtml = nodoOtrasCuentasHtml;
+
+// La búsqueda por persona no puede demorar el retiro: si no contesta en 5 s se sigue sin ella (y la luz lo dice).
+function _retiro24hPersonaConTope(usuario, extra){
+  let tope;
+  const limite = new Promise(function(ok){ tope = setTimeout(function(){ ok({ sinComprobar: true }); }, 5000); });
+  const busqueda = _retiro24hMismaPersona(usuario, extra)
+    .catch(function(e){ console.warn('[retiro-24h] misma persona', e && e.message); return { sinComprobar: true }; });
+  return Promise.race([busqueda, limite]).finally(function(){ clearTimeout(tope); });
+}
+async function _retiro24hSoloPersona(usuario, personaP, health){
+  const p = await personaP;
+  if(p && p.sinComprobar){ health?.record('DATA', 'DEGRADED', 'RETIRO_24H_PERSONA_SIN_COMPROBAR'); return { bloqueado: false }; }
+  if(p && p.fila){ health?.record('DATA', 'OK', 'RETIRO_24H_MISMA_PERSONA'); return _retiro24hResultadoPersona(usuario, p); }
+  return { bloqueado: false };
+}
+
+// extra (opcional): { destino, titular } del retiro que se está por pagar, si se conocen.
+async function verificarRetiro24h(usuario, extra) {
   const health = window.NodoSalud?.begin('RETIROS');
+  const personaP = _retiro24hPersonaConTope(usuario, extra);
   const bl = await _blacklistDelServidor(usuario);
   if(bl){
     health?.record('DATA', 'OK', bl.bloqueado ? 'RETIRO_24H_MATCH' : 'RETIRO_24H_CLEAR');
-    if(!bl.bloqueado) return { bloqueado: false };
+    if(!bl.bloqueado) return _retiro24hSoloPersona(usuario, personaP, health);
     const fecha = new Date(bl.retiro_at), proximo = new Date(bl.hasta), pasado = Date.now() - fecha.getTime();
     return {
       bloqueado: true, advertencia: true, usuario,
@@ -848,7 +984,7 @@ async function verificarRetiro24h(usuario) {
   if(candidatos.length) health?.record('DATA', _fuenteFallo?'DEGRADED':'OK',
     _fuenteFallo?'RETIRO_24H_MATCH_PARCIAL':'RETIRO_24H_MATCH');
   else health?.record('DATA', _fuenteFallo ? 'DEGRADED' : 'OK', _fuenteFallo ? 'RETIRO_24H_SIN_COMPROBAR' : 'RETIRO_24H_CLEAR');
-  if(!candidatos.length) return { bloqueado: false };
+  if(!candidatos.length) return _retiro24hSoloPersona(usuario, personaP, health);
 
   // Tomar el retiro más reciente de cualquier fuente
   candidatos.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
@@ -885,14 +1021,34 @@ function confirmarRetiroDuplicado(check) {
       ? '<br><span class="small" style="color:#e0c070">Billetera: <b>' + escapeHtml(check.billetera_nombre) + '</b></span>'
       : '';
 
+    const persona = check.origen === 'MISMA_PERSONA';
+    const pasado  = Date.now() - new Date(check.fecha).getTime();
+    const cabeza  = persona
+      ? '<b>⚠️ Esta persona ya retiró desde otro usuario</b><br><br>' +
+        '<b>' + escapeHtml(check.otroUsuario || '') + '</b> cobró hace <b>' + escapeHtml(_blFmtGap(pasado)) + '</b>'
+          + (check.oficinaOtro ? ' (' + escapeHtml(check.oficinaOtro) + ')' : '') + ', '
+          + (check.porCuenta ? 'a la misma cuenta de cobro' : 'a nombre del mismo titular') + ':<br>' +
+        (check.titular ? '👤 Titular: <b>' + escapeHtml(check.titular) + '</b><br>' : '') +
+        (check.destino ? '🏦 Cuenta: <b>' + escapeHtml(check.destino) + '</b><br>' : '')
+      : '<b>⚠️ Retiro en las últimas 24hs</b><br><br>' +
+        '<b>' + escapeHtml(check.usuario || '') + '</b> ya realizó un retiro:<br>';
+    // El texto para el motivo del rechazo, listo para copiar (en el retiro del Portal, al cancelar se le manda solo).
+    const motivo = String(check.mensaje || '');
+    const copiar = motivo
+      ? '<div style="margin:0 0 12px;padding:8px 10px;border-radius:8px;background:#0d1117;border:1px solid rgba(255,255,255,.12)">' +
+          '<div class="small" style="color:#8b949e;font-weight:800;margin-bottom:4px">MENSAJE PARA EL RECHAZO</div>' +
+          '<div style="font-size:13px;color:#e6edf3;margin-bottom:6px">' + escapeHtml(motivo) + '</div>' +
+          '<button type="button" class="mini-btn" data-valor="' + escapeHtml(motivo) + '" onclick="portalCopiarCbu(this)" style="width:auto">📋 Copiar mensaje <span class="pcopy-ico"></span></button>' +
+        '</div>'
+      : '';
     const body =
       '<div class="alert-box" style="line-height:1.7;margin-bottom:14px">' +
-        '<b>⚠️ Retiro en las últimas 24hs</b><br><br>' +
-        '<b>' + escapeHtml(check.usuario || '') + '</b> ya realizó un retiro:<br>' +
+        cabeza +
         '📅 Retiro anterior: <b>' + fechaRet + '</b><br>' +
         '🕐 Habilitado nuevamente: <b>' + horaOk + '</b><br>' +
         '💰 Monto anterior: <b>' + money(check.monto) + '</b>' + bilInfo +
       '</div>' +
+      copiar +
       (check.origen === 'BLACKLIST'
         ? '<p style="color:#c0cad8;font-size:13px">Está en la <b>blacklist</b>: hasta esa hora no puede pedir otro retiro. '
           + 'Si revisaste el caso y corresponde pagarle, sacalo de la blacklist: queda destrabado también en el Portal.</p>'
@@ -2153,7 +2309,9 @@ const _ERR_MOTIVOS = {
   ERROR_PAGINA:          {t:'Error de página',          plata:true,  d:'Agentes devolvió un error de página (403/CDN). NO está confirmado si llegó a aplicarse — verificá en el casino antes de reintentar.'},
   RECHAZO_CASINO:        {t:'Rechazado por el casino',  plata:false, d:'Agentes no dijo "Operación correcta". No se anota en Chunior.'},
   NO_APLICO:             {t:'No se pudo aplicar',       plata:true,  d:'Agentes no aplicó la operación. Verificá en el casino.'},
-  EXCEPCION:             {t:'Error inesperado',         plata:true,  d:'Excepción de JavaScript en el panel. El detalle técnico está abajo.'}
+  EXCEPCION:             {t:'Error inesperado',         plata:true,  d:'Excepción de JavaScript en el panel. El detalle técnico está abajo.'},
+  // La escribe la pasada por Chunior (cotejo-chunior.js): es la alerta para el admin, no un movimiento.
+  ANOTADO_SOLO_EN_CHUNIOR: {t:'Anotado sólo en Chunior', plata:false, d:'Este movimiento se anotó directo en Chunior, sin hacerlo desde NODO. NODO ya lo agregó al historial para que no se pierda. Revisalo con quien lo anotó.'}
 };
 
 // Arma el contexto del fallo y devuelve el texto para `notas`: humano + etiqueta [ERR].
@@ -2251,7 +2409,7 @@ window.verDetalleError = function(histId){
     ['Operador',     h.operador || (ctx&&ctx.op) || '—'],
     ['PC',           h.pc_codigo || (ctx&&ctx.pc) || '—'],
     ['Solicitud',    h.solicitud_id ? ('#'+h.solicitud_id) : '—'],
-    ['Mov. Chunior', h.chunior_movimiento_id ? ('N° '+h.chunior_movimiento_id) : (ctx && /^\d+$/.test(String(ctx.n||'')) ? ('N° '+ctx.n+(ctx.tabla ? ' · '+ctx.tabla : '')) : '— (no se anotó)')],
+    ['Mov. Chunior', h.chunior_movimiento_id ? ('N° '+h.chunior_movimiento_id) : (ctx && /^d+$/.test(String(ctx.n||'')) ? ('N° '+ctx.n+(ctx.tabla ? ' · '+ctx.tabla : '')) : '— (no se anotó)')],
     ['ID historial', h.id||'—']
   ];
   if(ctx && ctx.ms!=null)      campos.push(['Duró', (ctx.ms/1000).toFixed(1)+'s hasta fallar']);
@@ -3107,6 +3265,14 @@ async function nodoInstalarActualizacion(){
 }
 document.addEventListener("DOMContentLoaded", nodoInitUpdater);
 if(document.readyState !== "loading") nodoInitUpdater();
+// La clave del alta no se rellena con 1a2b3c4d (Juan, 23/11). Si el operador la deja vacía, los paneles
+// nuevos usan la clave al azar que ya trae la página de Agentes; Drex no propone ninguna y ahí va la
+// estándar. Si escribe una, va ésa. Lo que quedó de verdad vuelve de Agentes y es lo que se le pasa al jugador.
+function _altaClavePista(){
+  const be = String((window._agentBackendState && window._agentBackendState.backend) || '').toLowerCase();
+  return be === 'casinodrex' ? 'Vacía: 1a2b3c4d' : 'Vacía: la que da Agentes';
+}
+
 // prefUsuario/prefTelefono: para poder crear la cuenta DESDE la consulta del chat, con lo que el
 // cliente ya declaró. Antes había que copiar los datos, irse al apartado manual, crear la cuenta
 // allá, copiar el mensaje, volver al chat y recién ahí validar.
@@ -3129,8 +3295,8 @@ function abrirModalCrearUsuario(prefUsuario, prefTelefono, desdeChat){
     // por algo que ya sabíamos en el momento de crearla.
     '<label style="color:#c0cad8;font-size:12px;font-weight:700">TELÉFONO <span style="font-weight:400;text-transform:none;color:#777">(con código de área, sin 0 ni 15)</span></label>' +
     '<input id="nuevoJugTelefono" type="tel" inputmode="tel" placeholder="ej: 11 2345 6789" autocomplete="off" value="'+_pT+'" oninput="_altaNuevoCotejar()" style="margin-bottom:8px">' +
-    '<label style="color:#c0cad8;font-size:12px;font-weight:700">CLAVE INICIAL <span style="font-weight:400;text-transform:none;color:#777">(mín 6 caracteres)</span></label>' +
-    '<input id="nuevoJugClave" type="text" placeholder="1a2b3c4d" value="1a2b3c4d" autocomplete="off" style="margin-bottom:4px">' +
+    '<label style="color:#c0cad8;font-size:12px;font-weight:700">CLAVE INICIAL <span style="font-weight:400;text-transform:none;color:#777">(opcional · 8 o más letras o números)</span></label>' +
+    '<input id="nuevoJugClave" type="text" placeholder="'+escapeHtml(_altaClavePista())+'" value="" autocomplete="off" style="margin-bottom:4px">' +
     // El veredicto va ARRIBA del botón, no abajo: es lo que decide si hay que crear la cuenta o no.
     '<div id="nuevoJugCotejo" style="margin-top:8px"></div>' +
     '<div id="nuevoJugRes" style="min-height:16px;margin-top:4px"></div>',
@@ -3208,13 +3374,14 @@ window._altaValidarExistente = function(el){
 };
 async function _ejecutarCrearUsuario(){
   const usuario = (document.getElementById("nuevoJugUsuario")?.value || "").trim().toLowerCase().replace(/\s+/g, "");
-  const clave   = (document.getElementById("nuevoJugClave")?.value   || "").trim() || "1a2b3c4d";
+  // Vacía = la que da Agentes (ver _altaClavePista).
+  const clave   = (document.getElementById("nuevoJugClave")?.value   || "").trim();
   const telefono= (document.getElementById("nuevoJugTelefono")?.value|| "").trim();
   const resEl   = document.getElementById("nuevoJugRes");
   const btn     = document.getElementById("modalSaveBtn");
   if(!usuario){ if(resEl) resEl.innerHTML = '<span style="color:var(--red);font-size:12px">Ingresá un usuario.</span>'; return; }
   if(String(telefono).replace(/\D/g,"").length < 6){ if(resEl) resEl.innerHTML = '<span style="color:var(--red);font-size:12px">Ingresá el teléfono: sin él la cuenta nace sin vincular y no va a poder operar en el portal.</span>'; return; }
-  if(clave.length < 8){ if(resEl) resEl.innerHTML = '<span style="color:var(--red);font-size:12px">La clave tiene que tener al menos 8 letras o números (el sistema de juego no acepta menos).</span>'; return; }
+  if(clave && clave.length < 8){ if(resEl) resEl.innerHTML = '<span style="color:var(--red);font-size:12px">La clave tiene que tener al menos 8 letras o números (el sistema de juego no acepta menos). Dejala vacía para usar la que da Agentes.</span>'; return; }
   if(btn){ btn.disabled = true; btn.textContent = "Creando..."; }
   if(resEl) resEl.innerHTML = '<span style="color:#c0cad8;font-size:12px">Procesando...</span>';
   try {
@@ -3222,8 +3389,10 @@ async function _ejecutarCrearUsuario(){
     const r = await callDrex("crearUsuario", usuario, clave);
     if(r && r.ok !== false){
       const aliasFinal = r.alias || usuario;
+      // La que quedó de verdad la devuelve Agentes (la al azar de la página, si se dejó vacía).
       const claveFinal = r.password || clave;
-      const texto = "Usuario: " + aliasFinal + "\nClave: " + claveFinal;
+      if(!claveFinal) toast("Usuario creado, pero no pude leer la clave que quedó: fijate en Agentes antes de pasársela.", "yellow");
+      const texto = "Usuario: " + aliasFinal + (claveFinal ? "\nClave: " + claveFinal : "");
       try { await navigator.clipboard.writeText(texto); } catch(_){}
       toast("Usuario " + aliasFinal + " creado · vinculando el teléfono...", "green");
       // Auto-registrar el usuario recién creado en NODO en segundo plano
@@ -3236,16 +3405,17 @@ async function _ejecutarCrearUsuario(){
       // La clave recién elegida viaja por acá porque ejecutarVincular no la conoce y el modal
       // de resultado, si no, ofrece copiar el mensaje con "12345a" fijo — que sería mentira
       // cuando el operador puso otra.
-      try{ window._altaClaveNueva = claveFinal; }catch(_e){}
+      try{ if(claveFinal) window._altaClaveNueva = claveFinal; }catch(_e){}
       // La clave del alta sólo vivía en memoria: cerrabas el panel y se perdía. Queda
       // registrada igual que un cambio de clave, así "Datos de ingreso" la puede mostrar
       // después sin tener que resetearla.
       try{
-        await registrarEnHistorial({ usuario: aliasFinal, tipo:'RESET_CLAVE', monto:0,
+        if(claveFinal) await registrarEnHistorial({ usuario: aliasFinal, tipo:'RESET_CLAVE', monto:0,
           origen:'MANUAL', estado:'OK', notas:'clave → '+claveFinal+' · alta' });
       }catch(_e){}
       try{ cerrarModal(); }catch(_e){}
-      await ejecutarVincular(aliasFinal, telefono, !!window.__altaDesdeChat);
+      // La clave viaja al aviso del chat: el jugador nuevo tiene que saber con qué entrar (Juan, 18/11).
+      await ejecutarVincular(aliasFinal, telefono, !!window.__altaDesdeChat, { claveNueva: claveFinal || undefined });
       return;
     } else if(r?.error === 'duplicado'){
       // Alias duplicado → buscar y proponer alternativas que NO estén usadas
@@ -5050,6 +5220,18 @@ window.verDetalleMovimiento = function(histId, usuarioArg, solicitudIdArg){
         cbuWarnHtml += '<button type="button" class="mini-btn" style="margin-top:6px;font-size:11px;background:#1e293b;color:#93c5fd" onclick="mostrarDestinosUsuario(\''+_uEsc+'\')">📇 Todos los destinos del usuario</button>';
       }
     }catch(_e){}
+  }
+  // Segundas cuentas (Juan, 19/11): lo de arriba sale de lo que vio ESTA PC y sólo de este usuario. Esto pregunta al
+  // servidor qué otros usuarios cobraron a esta misma cuenta o a este titular. Se pinta cuando llega; no frena nada.
+  if(esRetiro && cbuVal && typeof window.nodoOtrasCuentasDeCobro === 'function'){
+    const _idOtras = 'pjOtrasCuentas' + Date.now().toString(36) + Math.floor(Math.random() * 1e4);
+    cbuWarnHtml += '<div id="' + _idOtras + '" style="margin-top:5px;font-size:11px;color:#8b949e">Buscando si otros usuarios cobran a esta cuenta…</div>';
+    window.nodoOtrasCuentasDeCobro(cbuVal, titularDecl, usuario).then(function(r){
+      const el = document.getElementById(_idOtras); if(el) el.outerHTML = window.nodoOtrasCuentasHtml(r);
+    }).catch(function(e){
+      console.warn('[perfil] otras cuentas', e && e.message);
+      const el = document.getElementById(_idOtras); if(el) el.textContent = 'No se pudo revisar si otros usuarios cobran a esta cuenta.';
+    });
   }
 
   const arbol = arbolUsuario(usuario);
@@ -9281,7 +9463,7 @@ async function abrirCerrarRetiro(id){
 
   const usuario = s.USUARIO || s.USUARIO_JUGADOR || "";
   if(usuario){
-    const check = await verificarRetiro24h(usuario);
+    const check = await verificarRetiro24h(usuario, { destino: s.DESTINO || s.CBU || s.RETIRO_ALIAS_CBU || s.ALIAS_CBU || '', titular: s.TITULAR || s.RETIRO_TITULAR || '' });
     if(check.bloqueado){
       const proceder = await confirmarRetiroDuplicado(check);
       if(!proceder) return;
@@ -11046,7 +11228,13 @@ async function ejecutarVincular(usuario, telefono, desdeChat, opts){
       if(typeof window.nodoEnviarMensajePortal==="function"){
         // La marca lleva usuario|telefono CORREGIDOS: si el operador cambió el tel (o el usuario), el
         // portal revalida con los datos buenos y el botón "Ingresar" funciona sin re-loguear.
-        const msg="✅ ¡Listo! Ya validamos tu cuenta.\n\nPara entrar al portal usá:\n👤 Usuario: "+usuario+"\n📱 Teléfono: "+telefono+"\n\nTocá el botón *Ingresar* acá abajo 👇\n⟦INGRESAR:"+usuario+"|"+telefono+"⟧";
+        // Cuenta recién creada (18/11, Juan): antes le llegaba el mismo aviso que a una cuenta vieja, sin
+        // la clave, y el jugador no sabía con qué entrar a jugar. Ahora va la clave y la marca "nueva"
+        // hace que el Portal lo lleve a elegir una clave suya (los Portales viejos ignoran ese tercer dato).
+        const _claveNueva=String((opts&&opts.claveNueva)||"").trim();
+        const msg=_claveNueva
+          ? "✅ ¡Listo! Ya creamos tu cuenta.\n\n👤 Usuario: "+usuario+"\n🔑 Nueva clave: "+_claveNueva+"\n\nCon ese usuario y esa clave entrás al casino. Tocá Ingresar acá abajo y elegí una clave tuya 👇\n⟦INGRESAR:"+usuario+"|"+telefono+"|nueva⟧"
+          : "✅ ¡Listo! Ya validamos tu cuenta.\n\nPara entrar al portal usá:\n👤 Usuario: "+usuario+"\n📱 Teléfono: "+telefono+"\n\nTocá el botón *Ingresar* acá abajo 👇\n⟦INGRESAR:"+usuario+"|"+telefono+"⟧";
         // Con el chat cerrado también tiene que llegarle: está esperando el botón Ingresar.
         (window.nodoIniciarChat||window.nodoEnviarMensajePortal)(usuario,msg,desdeChat).then(rr=>{
           if(rr&&rr.ok) return;
@@ -11696,7 +11884,8 @@ window._altaCotejoConsulta = async function(ticket){
     // siempre (Juan, 2/11). Sale de la conversación, así que vale en cualquier PC.
     (Array.isArray(th)?th:[]).forEach(function(m){
       if(delJugador(m)) return;
-      const x=String((m&&(m.mensaje||m.texto||m.MENSAJE))||'').match(/⟦INGRESAR:([^|⟧]*)\|?([^⟧]*)⟧/);
+      // Un tercer dato ("|nueva", cuenta recién creada, 18/11) no es parte del teléfono.
+      const x=String((m&&(m.mensaje||m.texto||m.MENSAJE))||'').match(/⟦INGRESAR:([^|⟧]*)\|?([^|⟧]*)(?:\|[^⟧]*)?⟧/);
       if(x && x[1].trim()){ ingU=x[1].trim(); ingT=x[2].trim(); }
     });
   }catch(_e){}
@@ -13524,8 +13713,9 @@ async function ejecutarAutoRetiro(id){
     if(!_cuenta || !_cuenta.seguir) return;
   }
 
-  // Política de 24hs — advertencia, el operador decide
-  const check = await verificarRetiro24h(usuario);
+  // Política de 24hs — advertencia, el operador decide. Con la cuenta y el titular del pedido se ve también
+  // si la misma persona ya cobró desde otro usuario.
+  const check = await verificarRetiro24h(usuario, { destino: s.DESTINO || s.CBU || _retiroMeta.destino || '', titular: s.TITULAR || s.titular || _retiroMeta.titular || '' });
   if(check.bloqueado){
     const proceder = await confirmarRetiroDuplicado(check);
     if(!proceder){
@@ -17508,6 +17698,37 @@ window._retiroSaldoCheck = window._retiroSaldoCheck || {};
     return r.data || [];
   }
   function _pc(){ try{ return (typeof pcOperativa !== "undefined" ? pcOperativa : "") || window.pcOperativa || ""; }catch(_e){ return ""; } }
+  function _operadorNodo(){ try{ return (typeof operador !== "undefined" && operador) ? String(operador.usuario || operador.nombre || "") : ""; }catch(_e){ return ""; } }
+
+  // ── Alerta de error para el admin (Juan, 18/11) ──────────────────────────────────────────
+  // Lo que NODO tuvo que agregar porque se anotó directo en Chunior es un error de proceso. Además del
+  // cartel del operador, sale como error por el canal de errores que ya existe: una fila del historial con
+  // estado ERROR y el detalle en `notas` con la etiqueta [ERR]{...} (el formato de _errNotas). El admin la
+  // ve en los errores del tablero en vivo, y en NODO abre con "Por qué falló". No se toca el servidor.
+  // Va con tipo ALERTA y no CARGA/RETIRO: nadie la confunde con una carga que falló y vuelve a cargar, la
+  // pasada no la toma como "la misma fila" y el cotejo con Agentes no la mira. El texto no dice "no estaba
+  // en NODO" ni "fuera de NODO": son las marcas del cartel del operador y saldría dos veces.
+  function _corto(t, n){ t = String(t == null ? "" : t); return t.length > n ? t.slice(0, n) + "…" : t; }
+  function _dosDig(n){ return (n < 10 ? "0" : "") + n; }
+  function alertaDeError(tabla, d, ctx){
+    ctx = ctx || {};
+    var m = d.mov, f = new Date(m.ms);
+    var cuando = Number.isFinite(m.ms) ? _dosDig(f.getDate()) + "/" + _dosDig(f.getMonth() + 1) + " " + _dosDig(f.getHours()) + ":" + _dosDig(f.getMinutes()) : "";
+    var humano = "Revisión de Chunior · " + tabla.nombre + " N° " + m.id + ": " + (m.creadoPor || "alguien")
+      + " lo anotó directo en Chunior" + (cuando ? " el " + cuando : "") + ", sin pasar por NODO. NODO lo agregó al historial"
+      + (ctx.filaId ? " (fila " + ctx.filaId + ")" : "") + ".";
+    var detalle = { m: "ANOTADO_SOLO_EN_CHUNIOR", tabla: tabla.nombre, n: String(m.id), tipo: d.tipo, por: m.creadoPor || null,
+      chunior: cuando || null, monto: m.monto, usuario: _corto(ctx.usuario, 80) || null, cuenta: _corto(m.cuenta, 80) || null,
+      desde: _corto(m.origen, 80) || null, fila: ctx.filaId || null, pc: ctx.pc || null, op: ctx.op || null };
+    return {
+      usuario: ctx.usuario || tabla.nombre.toUpperCase(), tipo: "ALERTA", monto: Math.abs(m.monto),
+      billetera_id: null, billetera_nombre: ctx.billetera || m.cuenta || null,
+      operador: m.creadoPor || "", origen: "CHUNIOR", estado: "ERROR",
+      notas: humano + " [ERR]" + JSON.stringify(detalle),
+      pc_codigo: ctx.pc || null
+    };
+  }
+
   async function _crear(tabla, d){
     var m = d.mov, uid = _uidDeCuenta(m.cuenta);
     var bil = uid && typeof billeteras !== "undefined" ? (billeteras || []).find(function(b){ return String(b.CHUNIOR_UID) === uid; }) : null;
@@ -17522,6 +17743,14 @@ window._retiroSaldoCheck = window._retiroSaldoCheck || {};
     };
     var r = await supabaseClient.from("historial_ops").insert(fila).select("id");
     if(r.error) throw r.error;
+    // La alerta no frena nada: la fila ya quedó. Si no sale, se ve en la consola y en el resumen.
+    try{
+      var a = await supabaseClient.from("historial_ops").insert(alertaDeError(tabla, d, {
+        filaId: r.data && r.data[0] ? r.data[0].id : null, pc: _pc(), op: _operadorNodo(),
+        usuario: fila.usuario, billetera: fila.billetera_nombre }));
+      if(a.error) throw a.error;
+      return true;
+    }catch(e){ console.warn("[pasada-chunior] alerta para el admin", tabla.ruta, e && e.message); return false; }
   }
 
   // ── Una pasada ───────────────────────────────────────────────────────────────────────────
@@ -17576,7 +17805,10 @@ window._retiroSaldoCheck = window._retiroSaldoCheck || {};
               var u = await supabaseClient.from("historial_ops").update({ chunior_movimiento_id: d.mov.id }).eq("id", d.fila.id);
               if(u.error) throw u.error;
               t.enlazadas++;
-            }else if(d.accion === "crear" && opts.escribir !== false){ await _crear(tabla, d); t.creadas++; }
+            }else if(d.accion === "crear" && opts.escribir !== false){
+              if(!(await _crear(tabla, d))) resumen.alertasSinMandar = (resumen.alertasSinMandar || 0) + 1;
+              t.creadas++;
+            }
             else if(d.accion === "crear") t.creadas++;
           }catch(e){ t.dudas++; console.warn("[pasada-chunior]", tabla.ruta, d.accion, e && e.message); }
         }
@@ -17596,7 +17828,7 @@ window._retiroSaldoCheck = window._retiroSaldoCheck || {};
     }finally{ CORRIENDO = false; }
   }
 
-  window.NodoPasadaChunior = { pasada: pasada, decidir: decidir, interpretarFila: interpretarFila,
+  window.NodoPasadaChunior = { pasada: pasada, decidir: decidir, interpretarFila: interpretarFila, alertaDeError: alertaDeError,
     fechaChunior: fechaChunior, montoChunior: montoChunior, TABLAS: TABLAS };
 
   try{
@@ -17707,6 +17939,7 @@ async function verificarSaldoRetiroOcioso(){
         window._retiroSaldoCheck[usuario.toLowerCase()] = { saldo:saldo, monto:monto, suficiente:suficiente, confiable:saldoConfiable, ts:Date.now(), raw:lectura.raw };
         try{ if(window._retiroSaldoDone && window._retiroSaldoDone[sid]) window._retiroSaldoDone[sid].confiable = saldoConfiable; }catch(_e){} // lectura confiable → no re-escanear este retiro
         try{ if(typeof window.v154pRenderSolicitudesPortalEnInicio==='function') window.v154pRenderSolicitudesPortalEnInicio(); }catch(_e){}
+        try{ if(saldoConfiable && typeof window.fichasRepintarAbiertos==='function') window.fichasRepintarAbiertos(usuario); }catch(_e){}
         // Auto-rechazo ANTI-FRAUDE — SOLO el caso INEQUÍVOCO: el usuario NO tiene fichas (saldo ~0).
         // ⚠ Antes rechazábamos con "saldo < $5.000 y < monto": eso rechazaba a un usuario que SÍ tenía
         // fichas (ej. 4.000 fichas pidiendo 50.000) tratándolo como falso. MAL: si tiene ALGUNAS fichas,
@@ -17824,6 +18057,9 @@ window.revisarFichasRetiro = function(opciones){
         window._retiroSaldoCheck[clave] = reg;
         // La tarjeta de la lista muestra "saldo … ✓/⚠" con este mismo dato.
         try{ if(typeof window.v154pRenderSolicitudesPortalEnInicio==='function') window.v154pRenderSolicitudesPortalEnInicio(); }catch(_e){}
+        // Y el cartel que esté abierto para este jugador ("Ver", el de aprobar): una lectura que llegó por
+        // otro lado (la de cuando entró el retiro, un reintento) se dibuja ahí sin volver a leer.
+        try{ if(typeof window.fichasRepintarAbiertos==='function') window.fichasRepintarAbiertos(usuario); }catch(_e){}
       } else reg.motivo = l.motivo;
       return reg;
     }finally{ _wdUnlock(); _drexGlobalUnlock(); }
@@ -17832,6 +18068,66 @@ window.revisarFichasRetiro = function(opciones){
   lectura.then(function(){ delete window._fichasLeyendo[clave]; }, function(){ delete window._fichasLeyendo[clave]; });
   return lectura;
 };
+
+// ── Fichas apenas llega el retiro ───────────────────────────────────────────────────────────
+// Juan, 23/11: la revisión de fichas se pide cuando llega el retiro, no cuando el agente queda ocioso. El
+// escaneo de arriba espera hasta 4 minutos y se saltea el retiro si el operador ya lo tomó, así que el
+// cartel casi nunca la encontraba hecha. Ahora:
+//  - corre aunque el operador ya esté con ese mismo retiro. Si aprieta Aceptar mientras se lee, pasa lo de
+//    siempre: el pago espera su turno con el agente o avisa que hay otra operación;
+//  - es la misma lectura de "Ver", del cartel de aprobar y de la tarjeta: al abrir el cartel la encuentra
+//    hecha (o se engancha a la que está en curso) y se dibuja en el momento;
+//  - si falla, se reintenta enseguida; si sigue fallando, se vuelve a probar en el próximo refresco de la
+//    bandeja. Sólo lee: el auto-rechazo sin fichas sigue siendo cosa del escaneo.
+const _FICHAS_LLEGADA_EDAD_MS = 2*60*60*1000;   // como el escaneo: los retiros viejos los mira el operador
+const _FICHAS_LLEGADA_INTENTOS = 6;             // en total, sumando las vueltas de la bandeja
+const _FICHAS_LLEGADA_PAUSA_MS = 30000;         // entre una vuelta fallida y la siguiente
+window._fichasAlLlegar = window._fichasAlLlegar || {};   // id de solicitud → { ok, enCola, intentos, ultimo }
+const _colaFichasLlegada = [];
+let _colaFichasLlegadaCorriendo = false;
+window.revisarFichasAlLlegar = function(solicitudes){
+  if(!window.ctrlElectron || !Array.isArray(solicitudes)) return;
+  const ahora = Date.now();
+  solicitudes.forEach(function(s){
+    if(String(s.TIPO||s.TIPO_SOLICITUD||'').toUpperCase() !== 'RETIRO') return;
+    if(window._estadoYaCerrado && window._estadoYaCerrado(s.ESTADO)) return;
+    const sid = String(s.ID||s.SOLICITUD_ID||s.ID_SOLICITUD||'');
+    const usuario = String(s.USUARIO||'').trim();
+    if(!sid || !usuario) return;
+    const fc = Date.parse(s.FECHA_CREACION||s.created_at||s.FECHA||'') || 0;
+    if(fc && (ahora - fc) > _FICHAS_LLEGADA_EDAD_MS) return;
+    const st = window._fichasAlLlegar[sid];
+    if(st && (st.ok || st.enCola)) return;
+    if(st && (st.intentos >= _FICHAS_LLEGADA_INTENTOS || (ahora - st.ultimo) < _FICHAS_LLEGADA_PAUSA_MS)) return;
+    // Con una parte ya pagada, lo que importa es si le alcanza para lo que falta.
+    let monto = Number(s.MONTO_REAL||s.MONTO_DECLARADO||0);
+    try{ const pp = window._retiroParcialInfo ? window._retiroParcialInfo(s) : null; if(pp && pp.hasProg) monto = pp.restante; }catch(_e){}
+    window._fichasAlLlegar[sid] = { ok:false, enCola:true, intentos:(st && st.intentos)||0, ultimo:(st && st.ultimo)||0 };
+    _colaFichasLlegada.push({ sid:sid, usuario:usuario, monto:Math.abs(Number(monto)||0) });
+  });
+  _correrFichasLlegada();
+};
+// De a una: el agente es uno solo. Cada lectura ya espera unos segundos si el agente está en otra cosa.
+async function _correrFichasLlegada(){
+  if(_colaFichasLlegadaCorriendo) return;
+  _colaFichasLlegadaCorriendo = true;
+  try{
+    while(_colaFichasLlegada.length){
+      const t = _colaFichasLlegada.shift();
+      const st = window._fichasAlLlegar[t.sid] || { ok:false, intentos:0, ultimo:0 };
+      for(let i = 0; i < 3 && st.intentos < _FICHAS_LLEGADA_INTENTOS; i++){
+        st.intentos++; st.ultimo = Date.now();
+        let r = null;
+        try{ r = await window.revisarFichasRetiro({ usuario:t.usuario, solicitudId:t.sid, monto:t.monto }); }catch(_e){}
+        // "No existe" también es una respuesta: no se insiste.
+        if(r && (r.confiable === true || r.motivo === 'no_existe')){ st.ok = true; break; }
+        if(i < 2) await new Promise(function(res){ setTimeout(res, 1500); });
+      }
+      st.enCola = false;
+      window._fichasAlLlegar[t.sid] = st;
+    }
+  }finally{ _colaFichasLlegadaCorriendo = false; }
+}
 
 // ── LA lectura de fichas ────────────────────────────────────────────────────────────────────
 // Todo lo que pregunta "cuántas fichas tiene este jugador" sin mover plata pasa por acá: el modal de

@@ -1,3 +1,11 @@
+// La clave del alta no se rellena con 1a2b3c4d (Juan, 23/11). Si el operador la deja vacía, los paneles
+// nuevos usan la clave al azar que ya trae la página de Agentes; Drex no propone ninguna y ahí va la
+// estándar. Si escribe una, va ésa. Lo que quedó de verdad vuelve de Agentes y es lo que se le pasa al jugador.
+function _altaClavePista(){
+  const be = String((window._agentBackendState && window._agentBackendState.backend) || '').toLowerCase();
+  return be === 'casinodrex' ? 'Vacía: 1a2b3c4d' : 'Vacía: la que da Agentes';
+}
+
 // prefUsuario/prefTelefono: para poder crear la cuenta DESDE la consulta del chat, con lo que el
 // cliente ya declaró. Antes había que copiar los datos, irse al apartado manual, crear la cuenta
 // allá, copiar el mensaje, volver al chat y recién ahí validar.
@@ -20,8 +28,8 @@ function abrirModalCrearUsuario(prefUsuario, prefTelefono, desdeChat){
     // por algo que ya sabíamos en el momento de crearla.
     '<label style="color:#c0cad8;font-size:12px;font-weight:700">TELÉFONO <span style="font-weight:400;text-transform:none;color:#777">(con código de área, sin 0 ni 15)</span></label>' +
     '<input id="nuevoJugTelefono" type="tel" inputmode="tel" placeholder="ej: 11 2345 6789" autocomplete="off" value="'+_pT+'" oninput="_altaNuevoCotejar()" style="margin-bottom:8px">' +
-    '<label style="color:#c0cad8;font-size:12px;font-weight:700">CLAVE INICIAL <span style="font-weight:400;text-transform:none;color:#777">(mín 6 caracteres)</span></label>' +
-    '<input id="nuevoJugClave" type="text" placeholder="1a2b3c4d" value="1a2b3c4d" autocomplete="off" style="margin-bottom:4px">' +
+    '<label style="color:#c0cad8;font-size:12px;font-weight:700">CLAVE INICIAL <span style="font-weight:400;text-transform:none;color:#777">(opcional · 8 o más letras o números)</span></label>' +
+    '<input id="nuevoJugClave" type="text" placeholder="'+escapeHtml(_altaClavePista())+'" value="" autocomplete="off" style="margin-bottom:4px">' +
     // El veredicto va ARRIBA del botón, no abajo: es lo que decide si hay que crear la cuenta o no.
     '<div id="nuevoJugCotejo" style="margin-top:8px"></div>' +
     '<div id="nuevoJugRes" style="min-height:16px;margin-top:4px"></div>',
@@ -99,13 +107,14 @@ window._altaValidarExistente = function(el){
 };
 async function _ejecutarCrearUsuario(){
   const usuario = (document.getElementById("nuevoJugUsuario")?.value || "").trim().toLowerCase().replace(/\s+/g, "");
-  const clave   = (document.getElementById("nuevoJugClave")?.value   || "").trim() || "1a2b3c4d";
+  // Vacía = la que da Agentes (ver _altaClavePista).
+  const clave   = (document.getElementById("nuevoJugClave")?.value   || "").trim();
   const telefono= (document.getElementById("nuevoJugTelefono")?.value|| "").trim();
   const resEl   = document.getElementById("nuevoJugRes");
   const btn     = document.getElementById("modalSaveBtn");
   if(!usuario){ if(resEl) resEl.innerHTML = '<span style="color:var(--red);font-size:12px">Ingresá un usuario.</span>'; return; }
   if(String(telefono).replace(/\D/g,"").length < 6){ if(resEl) resEl.innerHTML = '<span style="color:var(--red);font-size:12px">Ingresá el teléfono: sin él la cuenta nace sin vincular y no va a poder operar en el portal.</span>'; return; }
-  if(clave.length < 8){ if(resEl) resEl.innerHTML = '<span style="color:var(--red);font-size:12px">La clave tiene que tener al menos 8 letras o números (el sistema de juego no acepta menos).</span>'; return; }
+  if(clave && clave.length < 8){ if(resEl) resEl.innerHTML = '<span style="color:var(--red);font-size:12px">La clave tiene que tener al menos 8 letras o números (el sistema de juego no acepta menos). Dejala vacía para usar la que da Agentes.</span>'; return; }
   if(btn){ btn.disabled = true; btn.textContent = "Creando..."; }
   if(resEl) resEl.innerHTML = '<span style="color:#c0cad8;font-size:12px">Procesando...</span>';
   try {
@@ -113,8 +122,10 @@ async function _ejecutarCrearUsuario(){
     const r = await callDrex("crearUsuario", usuario, clave);
     if(r && r.ok !== false){
       const aliasFinal = r.alias || usuario;
+      // La que quedó de verdad la devuelve Agentes (la al azar de la página, si se dejó vacía).
       const claveFinal = r.password || clave;
-      const texto = "Usuario: " + aliasFinal + "\nClave: " + claveFinal;
+      if(!claveFinal) toast("Usuario creado, pero no pude leer la clave que quedó: fijate en Agentes antes de pasársela.", "yellow");
+      const texto = "Usuario: " + aliasFinal + (claveFinal ? "\nClave: " + claveFinal : "");
       try { await navigator.clipboard.writeText(texto); } catch(_){}
       toast("Usuario " + aliasFinal + " creado · vinculando el teléfono...", "green");
       // Auto-registrar el usuario recién creado en NODO en segundo plano
@@ -127,16 +138,17 @@ async function _ejecutarCrearUsuario(){
       // La clave recién elegida viaja por acá porque ejecutarVincular no la conoce y el modal
       // de resultado, si no, ofrece copiar el mensaje con "12345a" fijo — que sería mentira
       // cuando el operador puso otra.
-      try{ window._altaClaveNueva = claveFinal; }catch(_e){}
+      try{ if(claveFinal) window._altaClaveNueva = claveFinal; }catch(_e){}
       // La clave del alta sólo vivía en memoria: cerrabas el panel y se perdía. Queda
       // registrada igual que un cambio de clave, así "Datos de ingreso" la puede mostrar
       // después sin tener que resetearla.
       try{
-        await registrarEnHistorial({ usuario: aliasFinal, tipo:'RESET_CLAVE', monto:0,
+        if(claveFinal) await registrarEnHistorial({ usuario: aliasFinal, tipo:'RESET_CLAVE', monto:0,
           origen:'MANUAL', estado:'OK', notas:'clave → '+claveFinal+' · alta' });
       }catch(_e){}
       try{ cerrarModal(); }catch(_e){}
-      await ejecutarVincular(aliasFinal, telefono, !!window.__altaDesdeChat);
+      // La clave viaja al aviso del chat: el jugador nuevo tiene que saber con qué entrar (Juan, 18/11).
+      await ejecutarVincular(aliasFinal, telefono, !!window.__altaDesdeChat, { claveNueva: claveFinal || undefined });
       return;
     } else if(r?.error === 'duplicado'){
       // Alias duplicado → buscar y proponer alternativas que NO estén usadas

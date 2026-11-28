@@ -844,11 +844,12 @@ async function crearUsuario(alias, _password, options = {}) {
   const aliasInput = campos[0], passInput = campos[1];
   if (!aliasInput) throw new Error('No apareció el campo Alias.');
   if (!(await setFieldAndVerify(aliasInput, String(alias).trim(), 5))) throw new Error('No se pudo escribir el alias.');
-  // A veces la página ya trae una contraseña al azar en el campo. Si el operador no eligió otra (vacía o la
-  // estándar que NODO pone de entrada), se usa ésa en vez de pisarla (Juan, 18/11). Si eligió una, se escribe.
+  // La página ya trae una contraseña al azar en el campo. Si el operador dejó la clave vacía, se usa ésa en vez
+  // de pisarla (Juan, 18/11); NODO ya no rellena con 1a2b3c4d (23/11), así que si escribió una —aunque sea la
+  // estándar— se escribe la suya. Sólo si la página no trae ninguna se cae a la estándar.
   const elegida = String(_password == null ? '' : _password).trim();
   let propuesta = '';
-  if (passInput && (!elegida || elegida === CLAVE_ESTANDAR)) {
+  if (passInput && !elegida) {
     await _esperarQue(() => String(passInput.value || '').trim().length >= CLAVE_MINIMA, 1200);
     const v = String(passInput.value || '').trim();
     if (v.length >= CLAVE_MINIMA && /^[A-Za-z0-9]+$/.test(v)) propuesta = v;

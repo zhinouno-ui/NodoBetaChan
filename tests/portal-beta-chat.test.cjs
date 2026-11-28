@@ -52,7 +52,7 @@ function harness(handler=async()=>beta()){
   };
   vm.createContext(ctx);
   vm.runInContext(block,ctx);
-  for(const name of ['chatAgregar','chatMessageRole','chatHelpMessage','addMsg','savePortalThreadSeen','threadKey','renderThreadMsg','portalChatRenderLegacy','incomingOperatorMsg'])vm.runInContext(fn(name),ctx);
+  for(const name of ['chatAgregar','chatMessageRole','chatHelpMessage','claveDelMensaje','sinAsteriscos','renderClaveNuevaHtml','addMsg','savePortalThreadSeen','threadKey','renderThreadMsg','portalChatRenderLegacy','incomingOperatorMsg'])vm.runInContext(fn(name),ctx);
   return {ctx,calls,elements,intervals,messages:()=>elements.get('messages').children.filter(n=>n.className.startsWith('msg ')),ticks:()=>elements.get('messages').children.filter(n=>n.tick).map(n=>n.tick.textContent)};
 }
 test('beta resuelta y dos entradas de arranque comparten un timer y un vuelo',async()=>{

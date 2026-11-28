@@ -1201,6 +1201,8 @@ function irABusquedaUsuarios() {
 
 // Crear usuario en el backoffice (URL: /agents/new_user)
 async function crearUsuario(alias, password, options = {}) {
+  // Drex no propone clave: si el operador la dejo vacia, va la estandar de blanqueo (Juan, 23/11).
+  if (password == null || !String(password).trim()) password = '1a2b3c4d';
   if (!alias || String(alias).trim().length < 3) {
     throw new Error('El alias debe tener al menos 3 caracteres.');
   }

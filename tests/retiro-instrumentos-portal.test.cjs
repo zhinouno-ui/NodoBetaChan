@@ -46,15 +46,17 @@ async function base() {
   await db.exec(leer('retiro-instrumentos-portal.sql'));
   await db.exec(leer('retiro-dni-interruptor.sql'));
   await db.exec(leer('retiro-dni-aparte.sql'));
+  await db.exec(leer('retiro-dni-portal-viejo.sql'));
   const uno = async (sql, params) => Object.values((await db.query(sql, params)).rows[0])[0];
   const crear = (destino, titular, dni, meta = { telefono: '1100000000' }) => uno(
     `select landing_portal_retiro_crear_v1('codp1','pruebaxx','1100000000',null,15000,$1,$2,$3,$4)`, [titular, destino, dni, JSON.stringify(meta)]);
   const contexto = () => uno(`select landing_portal_retiro_contexto_v1('codp1','pruebaxx','1100000000',null)`);
+  const contexto2 = () => uno(`select landing_portal_retiro_contexto_v2('codp1','pruebaxx','1100000000',null)`);
   const estado = (sid) => uno(`select panel_retiro_instrumento('s', $1)`, [sid]);
   const validar = (sid, dni) => uno(`select panel_retiro_instrumento_validar('s', $1, $2, 'juancarlos')`, [sid, dni]);
   const marca = async (sid) => (await uno(`select metadata from landing_solicitudes where id=$1`, [sid])).retiro_instrumento_v1;
   const error = async (fn) => { try { await fn(); return null; } catch (e) { return String(e.message || e); } };
-  return { db, uno, crear, contexto, estado, validar, marca, error };
+  return { db, uno, crear, contexto, contexto2, estado, validar, marca, error };
 }
 
 const t = PGlite ? test : test.skip;
@@ -263,12 +265,12 @@ t('interruptor del admin: prende y apaga el DNI de SU oficina, con quién y cuá
   assert.equal((await lista('admin-todas')).length, 2, 'el admin general ve todas');
   const r = await b.uno(`select admin_retiro_dni_oficina_cambiar('admin-p1', 'p1', true)`);
   assert.deepEqual(r, { ok: true, pc_codigo: 'P1', habilitado: true, cambiado_por: 'encargada' });
-  assert.equal((await b.contexto()).enabled, true, 'el Portal ya pide el DNI en P1');
+  assert.equal((await b.contexto2()).enabled, true, 'P1 ya usa el retiro nuevo');
   assert.match(await b.error(() => b.uno(`select admin_retiro_dni_oficina_cambiar('admin-p1', 'P2', true)`)), /Sin permiso para P2/);
   assert.match(await b.error(() => b.uno(`select admin_retiro_dni_oficina_cambiar('cualquiera', 'P1', false)`)), /Sesión inválida/);
   assert.match(await b.error(() => b.uno(`select admin_retiro_dni_oficina_cambiar('admin-todas', 'P99', true)`)), /OFICINA_DESCONOCIDA/);
   await b.uno(`select admin_retiro_dni_oficina_cambiar('admin-todas', 'P1', false)`);
-  assert.equal((await b.contexto()).enabled, false, 'apagado vuelve al retiro de siempre');
+  assert.equal((await b.contexto2()).enabled, false, 'apagado vuelve al retiro de siempre');
   const hist = (await b.db.query(`select pc_codigo, habilitado, cambiado_por from retiro_instrumentos_oficinas_historial order by id`)).rows;
   assert.deepEqual(hist.map(h => [h.pc_codigo, h.habilitado, h.cambiado_por]), [['P1', true, 'encargada'], ['P1', false, 'general']]);
 });
@@ -290,9 +292,12 @@ t('controles: vínculo, datos y secreto del panel', async () => {
 t('con la beta prendida y el switch del DNI apagado, el retiro sale sin DNI y el cajero valida la cuenta', async () => {
   const b = await base();
   await b.db.query(`insert into retiro_instrumentos_oficinas(pc_codigo, habilitado) values ('P1', true)`);
-  const ctx = await b.contexto();
+  const ctx = await b.contexto2();
   assert.equal(ctx.enabled, true);
   assert.equal(ctx.pide_dni, false, 'el Portal tiene que enterarse de que no pide DNI');
+  // 18/11: el Portal publicado no conoce pide_dni y con enabled=true dibuja el DNI. A ese (v1) se le contesta
+  // que vaya por el retiro de siempre; con el DNI prendido ve lo mismo que el nuevo y lo pide.
+  assert.deepEqual(await b.contexto(), { ok: true, contract: 'retiro.instrumentos.v1', enabled: false });
   const r = await b.crear('alias.demo.mp', 'Fulano Demo', '');
   assert.equal(r.error_code, undefined, 'sin el switch del DNI no puede volver DNI_REQUERIDO');
   assert.equal(r.estado_validacion, 'PENDIENTE', 'la cuenta nueva la confirma el cajero');
@@ -300,5 +305,8 @@ t('con la beta prendida y el switch del DNI apagado, el retiro sale sin DNI y el
   const fila = (await b.db.query(`select dni_hash from retiro_instrumentos where usuario = 'pruebaxx'`)).rows[0];
   assert.equal(fila.dni_hash, null);
   await b.db.query(`update retiro_instrumentos_oficinas set pide_dni = true where pc_codigo = 'P1'`);
-  assert.equal((await b.contexto()).pide_dni, true);
+  assert.equal((await b.contexto2()).pide_dni, true);
+  const viejo = await b.contexto();
+  assert.equal(viejo.enabled, true, 'con el DNI prendido el Portal viejo vuelve a pedirlo');
+  assert.equal(viejo.pide_dni, true);
 });

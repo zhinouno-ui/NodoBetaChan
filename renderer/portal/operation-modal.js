@@ -1264,6 +1264,33 @@ ${stepperHtml}
   };
   if(deps.window) deps.window.expedienteRevisarFichas = function(forzar){ return api.revisarFichasExpediente(!!forzar); };
 
+  // Una lectura que llegó por otro lado (la de cuando entró el retiro, un reintento) se dibuja también en el
+  // cartel que esté abierto para ese jugador, sin volver a leer: si había quedado en "no pude leer", se
+  // corrige solo.
+  api.fichasRepintarAbiertos = function(usuario){
+    const u = String(usuario || '').toLowerCase();
+    const c = u ? fichasEnCache(u) : null;
+    if(!c) return;
+    try{
+      const d = _expedienteActualData;
+      if(d && d.fichasPendientes && String(d.usuario || '').toLowerCase() === u){
+        _pintarFichas(fichasHtml(c, Math.abs(Number(d.montoDeclarado || 0))));
+      }
+    }catch(_e){}
+    try{
+      const modal = deps.document.getElementById('portalJobModal');
+      const box = deps.document.getElementById('portalJobFichas');
+      if(modal && box && (!modal.style || modal.style.display !== 'none')){
+        const s = portalSolicitudById(Number(modal.dataset && modal.dataset.solicitudId));
+        if(s && String(s.TIPO || s.TIPO_SOLICITUD || '').toUpperCase() === 'RETIRO' && String(s.USUARIO || '').toLowerCase() === u){
+          box.innerHTML = '<span style="color:#64748b">Cotejo de fichas:</span> '
+            + fichasHtml(c, Math.abs(Number(s.MONTO_REAL || s.MONTO_DECLARADO || 0)), 'portalJobRevisarFichas');
+        }
+      }
+    }catch(_e){}
+  };
+  if(deps.window) deps.window.fichasRepintarAbiertos = function(usuario){ return api.fichasRepintarAbiertos(usuario); };
+
   // El cartel de aprobar un retiro coteja las fichas igual que "Ver": misma lectura, mismo texto y
   // botón de reintento. Antes no mostraba ninguna y se aprobaba sin saber si las tenía.
   api.portalJobRevisarFichas = async function(forzar){

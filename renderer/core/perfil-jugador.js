@@ -828,6 +828,18 @@ window.verDetalleMovimiento = function(histId, usuarioArg, solicitudIdArg){
       }
     }catch(_e){}
   }
+  // Segundas cuentas (Juan, 19/11): lo de arriba sale de lo que vio ESTA PC y sólo de este usuario. Esto pregunta al
+  // servidor qué otros usuarios cobraron a esta misma cuenta o a este titular. Se pinta cuando llega; no frena nada.
+  if(esRetiro && cbuVal && typeof window.nodoOtrasCuentasDeCobro === 'function'){
+    const _idOtras = 'pjOtrasCuentas' + Date.now().toString(36) + Math.floor(Math.random() * 1e4);
+    cbuWarnHtml += '<div id="' + _idOtras + '" style="margin-top:5px;font-size:11px;color:#8b949e">Buscando si otros usuarios cobran a esta cuenta…</div>';
+    window.nodoOtrasCuentasDeCobro(cbuVal, titularDecl, usuario).then(function(r){
+      const el = document.getElementById(_idOtras); if(el) el.outerHTML = window.nodoOtrasCuentasHtml(r);
+    }).catch(function(e){
+      console.warn('[perfil] otras cuentas', e && e.message);
+      const el = document.getElementById(_idOtras); if(el) el.textContent = 'No se pudo revisar si otros usuarios cobran a esta cuenta.';
+    });
+  }
 
   const arbol = arbolUsuario(usuario);
   const perfilResumen=_pjEstado(usuario);

@@ -1329,6 +1329,9 @@ async function cargarSolicitudesPortal(silencioso=false){
       // Si entró una carga con un retiro a medio pagar, ese parcial se cierra solo (Juan, 26/9).
       // Va después del render para no demorar la pantalla, y sin await: si falla, no arrastra nada.
       try{ if(deps.window.cerrarParcialesPorCarga) deps.window.cerrarParcialesPorCarga(); }catch(_e){}
+      // Llegó un retiro: se le revisan las fichas en el momento, sin esperar a que el agente quede ocioso
+      // (Juan, 23/11). Sin await: la bandeja ya está en pantalla y la lectura se dibuja cuando vuelve.
+      try{ if(deps.window.revisarFichasAlLlegar) deps.window.revisarFichasAlLlegar(deps.V154P.solicitudes); }catch(_e){}
       // NODO en Discord: los renglones se rearman con lo que acaba de llegar.
       try{ if(deps.window.actualizarPresenciaDiscord) deps.window.actualizarPresenciaDiscord(); }catch(_e){}
       // Alertas de retiro (bono sin liberar / CBU compartido): async y cacheadas 60 s.
@@ -4605,6 +4608,33 @@ ${stepperHtml}
     return r;
   };
   if(deps.window) deps.window.expedienteRevisarFichas = function(forzar){ return api.revisarFichasExpediente(!!forzar); };
+
+  // Una lectura que llegó por otro lado (la de cuando entró el retiro, un reintento) se dibuja también en el
+  // cartel que esté abierto para ese jugador, sin volver a leer: si había quedado en "no pude leer", se
+  // corrige solo.
+  api.fichasRepintarAbiertos = function(usuario){
+    const u = String(usuario || '').toLowerCase();
+    const c = u ? fichasEnCache(u) : null;
+    if(!c) return;
+    try{
+      const d = _expedienteActualData;
+      if(d && d.fichasPendientes && String(d.usuario || '').toLowerCase() === u){
+        _pintarFichas(fichasHtml(c, Math.abs(Number(d.montoDeclarado || 0))));
+      }
+    }catch(_e){}
+    try{
+      const modal = deps.document.getElementById('portalJobModal');
+      const box = deps.document.getElementById('portalJobFichas');
+      if(modal && box && (!modal.style || modal.style.display !== 'none')){
+        const s = portalSolicitudById(Number(modal.dataset && modal.dataset.solicitudId));
+        if(s && String(s.TIPO || s.TIPO_SOLICITUD || '').toUpperCase() === 'RETIRO' && String(s.USUARIO || '').toLowerCase() === u){
+          box.innerHTML = '<span style="color:#64748b">Cotejo de fichas:</span> '
+            + fichasHtml(c, Math.abs(Number(s.MONTO_REAL || s.MONTO_DECLARADO || 0)), 'portalJobRevisarFichas');
+        }
+      }
+    }catch(_e){}
+  };
+  if(deps.window) deps.window.fichasRepintarAbiertos = function(usuario){ return api.fichasRepintarAbiertos(usuario); };
 
   // El cartel de aprobar un retiro coteja las fichas igual que "Ver": misma lectura, mismo texto y
   // botón de reintento. Antes no mostraba ninguna y se aprobaba sin saber si las tenía.

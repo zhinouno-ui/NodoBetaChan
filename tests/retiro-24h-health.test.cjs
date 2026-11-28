@@ -15,10 +15,12 @@ function cargar(resultados){
     normalizar:value=>String(value||'').trim().toUpperCase(),
     formatFecha:value=>String(value||''),
     retiros24hCSV:[],
+    // NODO los tiene; la búsqueda por persona (19/11) les pone un tope de 5 s.
+    setTimeout,clearTimeout,
     NodoSalud:{begin:rama=>({record:(stage,state,code)=>eventos.push({rama,stage,state,code})})},
     supabaseClient:{from(tabla){
       const resultado=resultados[tabla];
-      const q={select(){return q;},ilike(){return q;},eq(){return q;},in(){return q;},gte(){return q;},order(){return q;},limit(){return Promise.resolve(resultado);}};
+      const q={select(){return q;},ilike(){return q;},eq(){return q;},in(){return q;},gte(){return q;},or(){return q;},order(){return q;},limit(){return Promise.resolve(resultado);}};
       return q;
     }}
   };

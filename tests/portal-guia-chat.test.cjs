@@ -99,7 +99,7 @@ function harness(options={}){
       rpcCalls.push({name,args});
       // La ruta de la oficina trae su WhatsApp: options.whatsapp lo cambia ('' = no tiene), options.ruta toda la respuesta.
       if(name==='landing_resolver_ruta_publica')return options.ruta?options.ruta(args):{data:[{ok:true,pc_codigo:'P1',whatsapp_numero:options.whatsapp===undefined?WA_OFICINA:options.whatsapp}]};
-      if(name==='landing_portal_retiro_contexto_v1'&&!options.rpc)return {error:{code:'PGRST202',message:'function does not exist'}};
+      if(/^landing_portal_retiro_contexto_v[12]$/.test(name)&&!options.rpc)return {error:{code:'PGRST202',message:'function does not exist'}};
       return options.rpc?options.rpc(name,args):{data:{ok:true,chat_id:7,chat_token:'token'}};
     },
     normalize:data=>Array.isArray(data)?data[0]:data,
@@ -130,7 +130,7 @@ function harness(options={}){
 function abierto(options){const h=harness(options);h.ctx.guiaMostrar();return h;}
 // pide_dni: el switch aparte del DNI por oficina (16/11). Apagado por defecto, como en el servidor.
 function retiroV1Rpc(ultima_solicitud,instrumento=null,pide_dni=false){
-  return async name=>name==='landing_portal_retiro_contexto_v1'
+  return async name=>/^landing_portal_retiro_contexto_v[12]$/.test(name)
     ? {data:{ok:true,contract:'retiro.instrumentos.v1',enabled:true,pide_dni,instrumento,ultima_solicitud}}
     : {data:{ok:true,verdict:'ACCESO',estado:'VINCULADO'}};
 }
@@ -1012,7 +1012,7 @@ function globoReal(){
   const nodos=[];const ctx={$:()=>({appendChild(n){nodos.push(n);}}),document:{createElement:()=>({classList:{add(){}},className:'',innerHTML:''})},scrollChat(){},now:()=>'',_fechaCorta:()=>'',
     esc:s=>String(s??'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'",'&#039;'),String,JSON,RegExp};
   vm.createContext(ctx);
-  for(const name of ['chatAgregar','chatHelpMessage','parseTransferCard','renderTransferCardHtml','addMsg'])vm.runInContext(source(name),ctx);
+  for(const name of ['chatAgregar','chatHelpMessage','parseTransferCard','renderTransferCardHtml','claveDelMensaje','sinAsteriscos','renderClaveNuevaHtml','addMsg'])vm.runInContext(source(name),ctx);
   return ctx;
 }
 test('un motivo o un destino con «Alias:» en el asistente sigue siendo texto, no datos para transferir',()=>{
@@ -1024,6 +1024,13 @@ test('la tarjeta del operador no arma código con lo que dice el mensaje',()=>{
   assert.ok(n.innerHTML.includes('transfer-card'),'la tarjeta sigue existiendo');
   assert.ok(!/onclick="copyText\('/.test(n.innerHTML),'el valor no entra al código del botón');
   assert.ok(n.innerHTML.includes('copyText(this.dataset.valor,this)'));
+});
+test('la clave del cajero sale en su tarjeta con Copiar y el resto del mensaje queda (cuenta nueva, 18/11)',()=>{
+  const n=globoReal().addMsg('✅ ¡Listo! Ya creamos tu cuenta.<br><br>👤 Usuario: pruebaxx<br>🔑 Nueva clave: Ab12cd34<br><br>Con ese usuario y esa clave entrás al casino.','operator',null,{local:true});
+  const h=n.innerHTML;
+  assert.ok(h.includes('Ya creamos tu cuenta')&&h.includes('Usuario: pruebaxx')&&h.includes('Con ese usuario y esa clave'),h);
+  assert.ok(h.includes('data-valor="Ab12cd34"')&&h.includes('Tu clave nueva'));
+  assert.ok(!h.includes('Nueva clave:'),'la línea cruda se reemplaza por la tarjeta');
 });
 test('el Portal no depende de lo que los iPhone viejos no tienen',()=>{
   assert.ok(!PORTAL.includes('Object.hasOwn'));

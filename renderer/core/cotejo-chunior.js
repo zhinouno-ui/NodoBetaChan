@@ -170,6 +170,37 @@
     return r.data || [];
   }
   function _pc(){ try{ return (typeof pcOperativa !== "undefined" ? pcOperativa : "") || window.pcOperativa || ""; }catch(_e){ return ""; } }
+  function _operadorNodo(){ try{ return (typeof operador !== "undefined" && operador) ? String(operador.usuario || operador.nombre || "") : ""; }catch(_e){ return ""; } }
+
+  // ── Alerta de error para el admin (Juan, 18/11) ──────────────────────────────────────────
+  // Lo que NODO tuvo que agregar porque se anotó directo en Chunior es un error de proceso. Además del
+  // cartel del operador, sale como error por el canal de errores que ya existe: una fila del historial con
+  // estado ERROR y el detalle en `notas` con la etiqueta [ERR]{...} (el formato de _errNotas). El admin la
+  // ve en los errores del tablero en vivo, y en NODO abre con "Por qué falló". No se toca el servidor.
+  // Va con tipo ALERTA y no CARGA/RETIRO: nadie la confunde con una carga que falló y vuelve a cargar, la
+  // pasada no la toma como "la misma fila" y el cotejo con Agentes no la mira. El texto no dice "no estaba
+  // en NODO" ni "fuera de NODO": son las marcas del cartel del operador y saldría dos veces.
+  function _corto(t, n){ t = String(t == null ? "" : t); return t.length > n ? t.slice(0, n) + "…" : t; }
+  function _dosDig(n){ return (n < 10 ? "0" : "") + n; }
+  function alertaDeError(tabla, d, ctx){
+    ctx = ctx || {};
+    var m = d.mov, f = new Date(m.ms);
+    var cuando = Number.isFinite(m.ms) ? _dosDig(f.getDate()) + "/" + _dosDig(f.getMonth() + 1) + " " + _dosDig(f.getHours()) + ":" + _dosDig(f.getMinutes()) : "";
+    var humano = "Revisión de Chunior · " + tabla.nombre + " N° " + m.id + ": " + (m.creadoPor || "alguien")
+      + " lo anotó directo en Chunior" + (cuando ? " el " + cuando : "") + ", sin pasar por NODO. NODO lo agregó al historial"
+      + (ctx.filaId ? " (fila " + ctx.filaId + ")" : "") + ".";
+    var detalle = { m: "ANOTADO_SOLO_EN_CHUNIOR", tabla: tabla.nombre, n: String(m.id), tipo: d.tipo, por: m.creadoPor || null,
+      chunior: cuando || null, monto: m.monto, usuario: _corto(ctx.usuario, 80) || null, cuenta: _corto(m.cuenta, 80) || null,
+      desde: _corto(m.origen, 80) || null, fila: ctx.filaId || null, pc: ctx.pc || null, op: ctx.op || null };
+    return {
+      usuario: ctx.usuario || tabla.nombre.toUpperCase(), tipo: "ALERTA", monto: Math.abs(m.monto),
+      billetera_id: null, billetera_nombre: ctx.billetera || m.cuenta || null,
+      operador: m.creadoPor || "", origen: "CHUNIOR", estado: "ERROR",
+      notas: humano + " [ERR]" + JSON.stringify(detalle),
+      pc_codigo: ctx.pc || null
+    };
+  }
+
   async function _crear(tabla, d){
     var m = d.mov, uid = _uidDeCuenta(m.cuenta);
     var bil = uid && typeof billeteras !== "undefined" ? (billeteras || []).find(function(b){ return String(b.CHUNIOR_UID) === uid; }) : null;
@@ -184,6 +215,14 @@
     };
     var r = await supabaseClient.from("historial_ops").insert(fila).select("id");
     if(r.error) throw r.error;
+    // La alerta no frena nada: la fila ya quedó. Si no sale, se ve en la consola y en el resumen.
+    try{
+      var a = await supabaseClient.from("historial_ops").insert(alertaDeError(tabla, d, {
+        filaId: r.data && r.data[0] ? r.data[0].id : null, pc: _pc(), op: _operadorNodo(),
+        usuario: fila.usuario, billetera: fila.billetera_nombre }));
+      if(a.error) throw a.error;
+      return true;
+    }catch(e){ console.warn("[pasada-chunior] alerta para el admin", tabla.ruta, e && e.message); return false; }
   }
 
   // ── Una pasada ───────────────────────────────────────────────────────────────────────────
@@ -238,7 +277,10 @@
               var u = await supabaseClient.from("historial_ops").update({ chunior_movimiento_id: d.mov.id }).eq("id", d.fila.id);
               if(u.error) throw u.error;
               t.enlazadas++;
-            }else if(d.accion === "crear" && opts.escribir !== false){ await _crear(tabla, d); t.creadas++; }
+            }else if(d.accion === "crear" && opts.escribir !== false){
+              if(!(await _crear(tabla, d))) resumen.alertasSinMandar = (resumen.alertasSinMandar || 0) + 1;
+              t.creadas++;
+            }
             else if(d.accion === "crear") t.creadas++;
           }catch(e){ t.dudas++; console.warn("[pasada-chunior]", tabla.ruta, d.accion, e && e.message); }
         }
@@ -258,7 +300,7 @@
     }finally{ CORRIENDO = false; }
   }
 
-  window.NodoPasadaChunior = { pasada: pasada, decidir: decidir, interpretarFila: interpretarFila,
+  window.NodoPasadaChunior = { pasada: pasada, decidir: decidir, interpretarFila: interpretarFila, alertaDeError: alertaDeError,
     fechaChunior: fechaChunior, montoChunior: montoChunior, TABLAS: TABLAS };
 
   try{

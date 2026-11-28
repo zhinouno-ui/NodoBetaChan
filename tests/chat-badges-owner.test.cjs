@@ -357,7 +357,7 @@ test('el chat y su solicitud puente son una sola conversación en la lista',()=>
 
 test('si ya salió el aviso de validación, la tarjeta coteja lo validado y no lo que escribió mal el jugador',()=>{
   const src=fs.readFileSync(path.join(ROOT,'renderer/core/cotejo-alta.js'),'utf8');
-  assert.ok(src.includes("match(/⟦INGRESAR:([^|⟧]*)\\|?([^⟧]*)⟧/)"));
+  assert.ok(src.includes("match(/⟦INGRESAR:([^|⟧]*)\\|?([^|⟧]*)(?:\\|[^⟧]*)?⟧/)"));
   assert.ok(src.includes('uDecl=ingU; tDecl=ingT||tDecl;'));
   assert.ok(src.includes('if(delJugador(m)) return;'),'el aviso lo escribe el operador, no el jugador');
 });

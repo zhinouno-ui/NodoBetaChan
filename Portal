@@ -968,6 +968,18 @@ function chatAgregar(nodo){
   else if(accion&&accion.parentNode===host)host.insertBefore(nodo,accion);else host.appendChild(nodo);
   scrollChat();
 }
+// La clave nueva que manda el cajero ("🔑 Nueva clave: *xxxx*"). Con los asteriscos a la vista el jugador no
+// sabía cuál era la clave (¿los asteriscos también?) y no la podía copiar (Juan, 18/11).
+function claveDelMensaje(t){
+  const m=String(t||"").match(/Nueva clave:\s*\*?([A-Za-z0-9]{4,40})\*?/i);
+  return m?m[1]:"";
+}
+function sinAsteriscos(t){return String(t||"").replace(/\*([^*\n]+)\*/g,"$1");}
+function renderClaveNuevaHtml(clave){
+  return '<div class="transfer-card"><div class="transfer-head"><div class="transfer-title">🔑 Tu clave nueva</div></div>'
+    +'<div class="transfer-field"><div class="tf-main"><div class="transfer-label">Clave para entrar a jugar</div><div class="transfer-value">'+esc(clave)+'</div></div>'
+    +'<button class="copy-btn" data-lbl="Copiar" data-valor="'+esc(clave)+'" onclick="copyText(this.dataset.valor,this)">Copiar</button></div></div>';
+}
 function addMsg(text,who="bot",imgUrl=null,meta=null){
   const wrap=document.createElement("div");
   who=["user","operator","bot","guide","system"].includes(who)?who:"system";
@@ -976,7 +988,14 @@ function addMsg(text,who="bot",imgUrl=null,meta=null){
   const imgHtml=imgUrl?`<img class="chat-img" src="${esc(imgUrl)}" onclick="window.open('${esc(imgUrl)}','_blank')" onerror="this.style.display='none'" alt="imagen">`:""
   const help=chatHelpMessage(text,who);
   let cuerpo=help.text;
-  if(who!=="user"&&who!=="guide"){ const card=parseTransferCard(text); if(card) cuerpo=renderTransferCardHtml(card); }   // tarjeta solo en bot/sistema: el asistente muestra textos que escribió otro
+  if(who!=="user"&&who!=="guide"){
+    const clave=claveDelMensaje(text);
+    if(clave){
+      const ls=String(text).split("<br>"),i=ls.findIndex(l=>/Nueva clave:/i.test(l));
+      cuerpo=ls.slice(0,i).join("<br>").replace(/(<br>)+$/,"")+renderClaveNuevaHtml(clave)+ls.slice(i+1).join("<br>").replace(/^(<br>)+/,"");
+    }
+    else { const card=parseTransferCard(text); if(card) cuerpo=renderTransferCardHtml(card); }
+  }   // tarjeta solo en bot/sistema: el asistente muestra textos que escribió otro
   const actions=help.actions.map(action=>'<button type="button" onclick="guiaAbrirTarjeta(\''+action+'\')">'+(action==="inicio"?"Ver las opciones":"Revisar una transferencia enviada")+'</button>').join("");
   const labels={user:"Vos",operator:"Cajero",bot:"Asistente automático",guide:"Asistente automático",system:"Sistema"};
   const stamp=meta?.fecha||meta?.created_at;
@@ -1000,25 +1019,25 @@ function incomingOperatorMsg(texto,imgUrl,m=null){
   // ── Marca oculta de validación: el operador validó la cuenta desde el panel y manda
   //    ⟦INGRESAR:usuario⟧ dentro del mensaje. No mostramos la marca cruda: mostramos el
   //    texto (sin la marca) + un botón "Ingresar" para que entre directo desde el chat.
-  let _ingresarUser=null, _ingresarTel="";
+  let _ingresarUser=null, _ingresarTel="", _ingresarNueva=false;
   const _mIng=texto.match(/⟦INGRESAR:([^⟧]*)⟧/);
-  if(_mIng){ const _p=String(_mIng[1]||"").split("|"); _ingresarUser=(_p[0]||"").trim(); _ingresarTel=(_p[1]||"").trim(); texto=texto.replace(/⟦INGRESAR:[^⟧]*⟧/g,"").trim(); }
+  if(_mIng){ const _p=String(_mIng[1]||"").split("|"); _ingresarUser=(_p[0]||"").trim(); _ingresarTel=(_p[1]||"").trim(); _ingresarNueva=(_p[2]||"").trim()==="nueva"; texto=texto.replace(/⟦INGRESAR:[^⟧]*⟧/g,"").trim(); }
   // Dedup central por contenido: el mismo mensaje del operador puede llegar por pollPortalThread
   // Y por pollOperatorMessages (dos fuentes, con claves distintas). Así no se duplica.
   const k=(String(texto||"").trim().slice(0,160))+"|"+(String(imgUrl||"").slice(0,120));
-  if(k!=="|"){ if(!state._opMsgSeen) state._opMsgSeen=new Set(); if(state._opMsgSeen.has(k)){ if(_ingresarUser) mostrarBotonIngresar(_ingresarUser,_ingresarTel); return; } state._opMsgSeen.add(k); }
+  if(k!=="|"){ if(!state._opMsgSeen) state._opMsgSeen=new Set(); if(state._opMsgSeen.has(k)){ if(_ingresarUser) mostrarBotonIngresar(_ingresarUser,_ingresarTel,undefined,_ingresarNueva); return; } state._opMsgSeen.add(k); }
   const who=m?chatMessageRole(m):"operator";
   if(texto||imgUrl) addMsg(escMsg(texto),who,imgUrl||null,m);
   const fueraDelChat = state.screen!=="chat" || !$("widget")?.classList.contains("open");
   if(fueraDelChat){ bumpUnread(); try{ showOperatorBubble(texto,imgUrl); }catch(_e){} }
-  if(_ingresarUser) mostrarBotonIngresar(_ingresarUser,_ingresarTel);
+  if(_ingresarUser) mostrarBotonIngresar(_ingresarUser,_ingresarTel,undefined,_ingresarNueva);
 }
 // Botón "Ingresar" dentro del chat: aparece cuando el operador validó la cuenta (por la marca
 // ⟦INGRESAR⟧ o por el auto-chequeo del cotejo). Al tocarlo, revalida y entra directo al home.
 // avisar=false: la marca viene del HISTORIAL (un mensaje viejo). El botón se muestra igual (Juan, 3/10), pero
 // no se avisa como novedad: en un teléfono nuevo, la validación de hace días salía como "¡Ya te activamos!"
 // con el contador en 1 aunque el jugador ya estaba adentro (recorrido del 18/11).
-function mostrarBotonIngresar(usuario,telefono,avisar){
+function mostrarBotonIngresar(usuario,telefono,avisar,nueva){
   usuario=String(usuario||"").trim() || (state.usuario||"");
   telefono=String(telefono||"").trim();
   // Acá había un "si ya está adentro, no lo muestres". Lo sacamos (Juan, 3/10): el operador lo
@@ -1040,15 +1059,17 @@ function mostrarBotonIngresar(usuario,telefono,avisar){
   const wrap=document.createElement("div");
   wrap.className="msg bot";
   wrap.innerHTML='<div class="bubble" style="background:rgba(34,197,94,.12);border:1px solid rgba(34,197,94,.42)">'
-    +'<div style="font-weight:800;color:#86efac;margin-bottom:6px">✅ ¡Tu cuenta ya está activa!</div>'
-    +'<div style="font-size:13px;line-height:1.4;margin-bottom:10px">Ya podés entrar'+(usuario?' con el usuario <b>'+esc(usuario)+'</b>':'')+' y empezar a operar.</div>'
-    +'<button id="btnIngresarValidado" class="action-btn" style="margin:0" onclick="confirmarIngresoValidado(\''+usuario.replace(/'/g,"")+'\',\''+telefono.replace(/'/g,"")+'\')">Ingresar ›</button>'
+    +'<div style="font-weight:800;color:#86efac;margin-bottom:6px">'+(nueva?'✅ ¡Tu cuenta ya está creada!':'✅ ¡Tu cuenta ya está activa!')+'</div>'
+    +'<div style="font-size:13px;line-height:1.4;margin-bottom:10px">'+(nueva
+      ?'Tocá Ingresar y elegí la clave con la que vas a entrar a jugar.'
+      :'Ya podés entrar'+(usuario?' con el usuario <b>'+esc(usuario)+'</b>':'')+' y empezar a operar.')+'</div>'
+    +'<button id="btnIngresarValidado" class="action-btn" style="margin:0" onclick="confirmarIngresoValidado(\''+usuario.replace(/'/g,"")+'\',\''+telefono.replace(/'/g,"")+'\''+(nueva?',true':'')+')">Ingresar ›</button>'
     +'</div><div class="meta">BET300 · '+now()+'</div>';
   chatAgregar(wrap);
   const fueraDelChat = state.screen!=="chat" || !$("widget")?.classList.contains("open");
   if(fueraDelChat&&avisar!==false){ bumpUnread(); try{ showOperatorBubble("✅ ¡Ya te activamos! Tocá para ingresar.",null); }catch(_e){} }
 }
-async function confirmarIngresoValidado(usuario,telefono){
+async function confirmarIngresoValidado(usuario,telefono,nueva){
   usuario=String(usuario||"").trim();
   telefono=String(telefono||"").trim();
   // La marca ⟦INGRESAR:usuario|telefono⟧ trae los datos CORREGIDOS por el operador. Los adoptamos
@@ -1094,6 +1115,9 @@ async function confirmarIngresoValidado(usuario,telefono){
       guiaCorrer(GUIA_DESPUES[que]);
       return;
     }
+    // Cuenta recién creada: la clave se la eligió el sistema. Se lo lleva a poner una suya (Juan, 18/11).
+    // Sin minimizar: antes se cerraba el Portal y la pantalla de la clave quedaba abierta adentro, sin verse.
+    if(nueva){ state.claveCuentaNueva=true; try{ await goClave(); }catch(_e){} toast("✅ ¡Listo! Ahora elegí tu clave."); return; }
     try{ toggleWidget(false); }catch(_e){}
     goHome();
     toast("✅ ¡Listo! Ya podés operar.");
@@ -1289,7 +1313,7 @@ function portalChatRenderRows(rows,notificar,prepend){
     const img=m.imagen_url||m.imagen||null;
     // Si este chat se cierra se sigue leyendo el hilo viejo, que no repite lo que ya vio por texto.
     state.shownTexts.add(who==='user'?(crudo?'u|'+crudo.substring(0,200):'uimg|'+String(img||'').substring(0,80)):crudo.substring(0,200));
-    if(!text&&!img){if(ing)mostrarBotonIngresar(ing[0],ing[1],!old&&!!notificar);continue;}
+    if(!text&&!img){if(ing)mostrarBotonIngresar(ing[0],ing[1],!old&&!!notificar,ing[2]==="nueva");continue;}
     const node=addMsg(escMsg(text),who,img,m);
     node._portalSignature=signature;
     node._portalCanonicalId=m.id==null?'':String(m.id);
@@ -1307,7 +1331,7 @@ function portalChatRenderRows(rows,notificar,prepend){
         &&(n._portalCanonicalId.length>id.length||(n._portalCanonicalId.length===id.length&&n._portalCanonicalId>id)));
       if(after)host.insertBefore(node,after);
     }else if(prepend)host.insertBefore(node,first);
-    if(ing)mostrarBotonIngresar(ing[0],ing[1],!old&&!!notificar);
+    if(ing)mostrarBotonIngresar(ing[0],ing[1],!old&&!!notificar,ing[2]==="nueva");
     if(!old&&notificar&&who!=='user'&&state.screen!=='chat'){
       bumpUnread();showOperatorBubble(text,img);
       if(text)notificarLocal('BET300 · '+(who==='operator'?'Operador':who==='bot'?'Asistente':'Sistema'),chatHelpMessage(text,who).text.substring(0,100),'/','bet300-op');
@@ -1489,9 +1513,9 @@ function renderThreadMsg(m, notificar){
   if(!rawTexto&&!imgUrl)return;
   if(who!=="user"){
     // Marca oculta de validación ⟦INGRESAR:usuario⟧ → botón "Ingresar" (se saca del texto visible).
-    let ing=null, ingTel="", texto=rawTexto;
+    let ing=null, ingTel="", ingNueva=false, texto=rawTexto;
     const mm=rawTexto.match(/⟦INGRESAR:([^⟧]*)⟧/);
-    if(mm){ const _p=String(mm[1]||"").split("|"); ing=(_p[0]||"").trim(); ingTel=(_p[1]||"").trim(); texto=rawTexto.replace(/⟦INGRESAR:[^⟧]*⟧/g,"").trim(); }
+    if(mm){ const _p=String(mm[1]||"").split("|"); ing=(_p[0]||"").trim(); ingTel=(_p[1]||"").trim(); ingNueva=(_p[2]||"").trim()==="nueva"; texto=rawTexto.replace(/⟦INGRESAR:[^⟧]*⟧/g,"").trim(); }
     // Dedup por contenido, compartido con pollOperatorMessages (misma clave, texto crudo).
     const tk=rawTexto?rawTexto.substring(0,200):((m.fecha||"")+"|img|"+(imgUrl||"").substring(0,80));
     if(!state.shownTexts.has(tk)){
@@ -1499,10 +1523,10 @@ function renderThreadMsg(m, notificar){
       if(texto||imgUrl) addMsg(escMsg(texto),who,imgUrl||null,m);
       if(notificar){
         const fuera=state.screen!=="chat"||!$("widget")?.classList.contains("open");
-        if(fuera){ bumpUnread(); try{ showOperatorBubble(texto,imgUrl); }catch(_e){} if(texto){ try{ notificarLocal("BET300 · "+(who==="operator"?"Cajero":who==="bot"?"Asistente":"Sistema"),chatHelpMessage(texto,who).text.substring(0,100),"/","bet300-op"); }catch(_e){} } }
+        if(fuera){ bumpUnread(); try{ showOperatorBubble(texto,imgUrl); }catch(_e){} if(texto){ try{ notificarLocal("BET300 · "+(who==="operator"?"Cajero":who==="bot"?"Asistente":"Sistema"),sinAsteriscos(chatHelpMessage(texto,who).text).substring(0,100),"/","bet300-op"); }catch(_e){} } }
       }
     }
-    if(ing) mostrarBotonIngresar(ing,ingTel,!!notificar);
+    if(ing) mostrarBotonIngresar(ing,ingTel,!!notificar,ingNueva);
   } else {
     // Mensaje del propio usuario (historial). Dedup por contenido contra lo ya mostrado en vivo.
     const uk=rawTexto?("u|"+rawTexto.substring(0,200)):("uimg|"+(imgUrl||"").substring(0,80));
@@ -2775,7 +2799,7 @@ function showOperatorBubble(texto, imgUrl){
     el.onclick=function(){ try{toggleWidget(true);}catch(_e){} try{goChat();}catch(_e){} hideOperatorBubble(); };
     document.body.appendChild(el);
   }
-  const prev=imgUrl?"[Imagen]":String(texto||"").replace(/<[^>]*>/g,"").slice(0,90);
+  const prev=imgUrl?"[Imagen]":sinAsteriscos(String(texto||"").replace(/<[^>]*>/g,"")).slice(0,90);
   el.innerHTML='<div style="font-weight:800;margin-bottom:2px">💬 Nuevo mensaje</div><div style="opacity:.85">'+esc(prev||"Tenés un mensaje de tu cajero")+'</div><div style="margin-top:6px;font-size:11px;color:#7cc4ff;font-weight:700">Tocá para abrir el chat ›</div>';
   el.style.display="block";
 }
@@ -3452,8 +3476,8 @@ function renderRetiro(){
 // Traer el CBU y el titular del último retiro y dejarlos puestos. Antes había que tipear los
 // dos de memoria cada vez, o irlos a buscar a otra app con el portal abierto. Los campos
 // quedan EDITABLES y se avisa de dónde salieron: si cobra en otra cuenta, los cambia y listo.
-function _retiroRpcInexistente(error){
-  return _esRpcInexistente(error,"landing_portal_retiro_contexto_v1");
+function _retiroRpcInexistente(error,nombre){
+  return _esRpcInexistente(error,nombre||"landing_portal_retiro_contexto_v1");
 }
 async function _consultarRetiroProtocolo(forzar){
   const key=[state.publicCode||"",state.usuario||"",state.telefono||"",location.host||""].join("|");
@@ -3461,10 +3485,12 @@ async function _consultarRetiroProtocolo(forzar){
   if(!forzar&&cache&&cache.key===key&&Date.now()-cache.at<30000)return cache.value;
   let result;
   try{
-    const r=await rpc("landing_portal_retiro_contexto_v1",{
-      p_public_code:state.publicCode||"",p_usuario:state.usuario||"",
-      p_telefono:state.telefono||"",p_host:location.host||""
-    });
+    // v2 trae la beta y el DNI por separado. v1 es la de los Portales viejos: con el DNI apagado les contesta
+    // "retiro de siempre", porque esos Portales piden el DNI con sólo ver la beta prendida (Juan, 18/11).
+    const args={p_public_code:state.publicCode||"",p_usuario:state.usuario||"",
+      p_telefono:state.telefono||"",p_host:location.host||""};
+    let r=await rpc("landing_portal_retiro_contexto_v2",args);
+    if(r.error&&_retiroRpcInexistente(r.error,"landing_portal_retiro_contexto_v2"))r=await rpc("landing_portal_retiro_contexto_v1",args);
     if(r.error){
       result=_retiroRpcInexistente(r.error)?{mode:"legacy"}:{mode:"error",code:"RETIRO_CONTEXTO_NO_DISPONIBLE"};
     }else{
@@ -3737,8 +3763,17 @@ async function enviarSolicitudRetiro(){
 // ── Reset de clave (pantalla) — tipo CAMBIO_CLAVE ──────────────────────────
 function renderClave(){
   const s=$("screenClave");
-  s.innerHTML=`<div class="screen-title">Reiniciar clave</div>
-    <div class="screen-desc">Es la clave con la que entrás a jugar. Si dejás el campo vacío queda <b>1a2b3c4d</b> y la cambiás cuando entres.</div>
+  const nueva=!!state.claveCuentaNueva;
+  s.innerHTML=nueva?`<div class="screen-title">Elegí tu clave</div>
+    <div class="screen-desc">Tu cuenta ya está creada. Podés entrar a jugar con la clave que te mandamos por el chat, o escribir acá una tuya.</div>
+    <div class="user-chip">👤 ${esc(state.usuario)}</div>
+    <div class="form-card">
+      <label>Tu clave</label>
+      <input id="claveNueva" placeholder="Mínimo 8 · letras y números">
+      <button id="btnEnviarClave" class="action-btn" onclick="enviarSolicitudClave()">Usar esta clave</button>
+      <button class="action-btn secondary-btn" style="margin-top:9px" onclick="state.claveCuentaNueva=false;goHome()">Ahora no, sigo con la que me mandaron</button>
+    </div>`:`<div class="screen-title">Reiniciar clave</div>
+    <div class="screen-desc">Es la clave con la que entrás a jugar. Si dejás el campo vacío, te damos una clave nueva y te la mandamos por el chat.</div>
     <div class="user-chip">👤 ${esc(state.usuario)}</div>
     <div class="form-card">
       <label>Clave nueva (opcional)</label>
@@ -3766,11 +3801,13 @@ async function crearSolicitudClave(claveRaw){
 async function enviarSolicitudClave(){
   if(state.nivelAcceso==="SOPORTE"){ toast("Validá tus datos para operar. Escribinos por soporte."); try{goChat();}catch(_e){} return; }
   if(!state.pcCodigo){ toast("No sabemos de qué cajero sos. Abrí el enlace que te pasó tu cajero."); return; }
+  if(state.claveCuentaNueva&&!String($("claveNueva")?.value||"").trim()){ $("claveNueva")?.focus(); toast("Escribí la clave que querés usar."); return; }
   if(!_tomarEnvio("btnEnviarClave")) return;
   try{
     const r=await crearSolicitudClave($("claveNueva")?.value);
     if(r.revisar)return toast(r.revisar);
     if(!r.ok){toast("No pudimos enviar la solicitud. Probá por el chat.");goChat();return;}
+    state.claveCuentaNueva=false;
     toast("Pedido de cambio de clave enviado 🔑");
     // El asistente dice que está en curso y no ofrece nada más (ver guiaPedidoEnCurso). Antes este globo
     // salía debajo del menú de "Una carga / Un retiro / Entrar a mi cuenta" (Juan, 16/11).
@@ -4993,7 +5030,7 @@ async function guiaFichaClave(){
   if(!await guiaPuedeOperar("clave"))return;
   guiaDecir("Dale, te la reinicio 👇");
   guiaFicha('<form class="guia-ficha" novalidate onsubmit="event.preventDefault();guiaEnviarClave()"><h4>🔑 Reiniciar tu clave de juego</h4>'
-    +'<div class="sub">Es la clave con la que entrás a jugar. Si dejás el campo vacío queda <b>1a2b3c4d</b> y la cambiás cuando entres.</div>'
+    +'<div class="sub">Es la clave con la que entrás a jugar. Si dejás el campo vacío, te damos una clave nueva y te la mandamos por el chat.</div>'
     +'<label for="guiaClaveNueva">Clave nueva (opcional)</label>'
     +'<input id="guiaClaveNueva" placeholder="Mínimo 8, letras y números" autocomplete="off">'
     +'<div id="guiaError" class="guia-error" role="alert"></div><button type="submit" id="guiaEnviar" class="action-btn">Cambiar la clave</button></form>');

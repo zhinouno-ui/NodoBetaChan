@@ -591,8 +591,9 @@ async function ejecutarAutoRetiro(id){
     if(!_cuenta || !_cuenta.seguir) return;
   }
 
-  // Política de 24hs — advertencia, el operador decide
-  const check = await verificarRetiro24h(usuario);
+  // Política de 24hs — advertencia, el operador decide. Con la cuenta y el titular del pedido se ve también
+  // si la misma persona ya cobró desde otro usuario.
+  const check = await verificarRetiro24h(usuario, { destino: s.DESTINO || s.CBU || _retiroMeta.destino || '', titular: s.TITULAR || s.titular || _retiroMeta.titular || '' });
   if(check.bloqueado){
     const proceder = await confirmarRetiroDuplicado(check);
     if(!proceder){

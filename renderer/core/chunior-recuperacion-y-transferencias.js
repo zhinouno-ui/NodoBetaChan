@@ -99,6 +99,7 @@ async function verificarSaldoRetiroOcioso(){
         window._retiroSaldoCheck[usuario.toLowerCase()] = { saldo:saldo, monto:monto, suficiente:suficiente, confiable:saldoConfiable, ts:Date.now(), raw:lectura.raw };
         try{ if(window._retiroSaldoDone && window._retiroSaldoDone[sid]) window._retiroSaldoDone[sid].confiable = saldoConfiable; }catch(_e){} // lectura confiable → no re-escanear este retiro
         try{ if(typeof window.v154pRenderSolicitudesPortalEnInicio==='function') window.v154pRenderSolicitudesPortalEnInicio(); }catch(_e){}
+        try{ if(saldoConfiable && typeof window.fichasRepintarAbiertos==='function') window.fichasRepintarAbiertos(usuario); }catch(_e){}
         // Auto-rechazo ANTI-FRAUDE — SOLO el caso INEQUÍVOCO: el usuario NO tiene fichas (saldo ~0).
         // ⚠ Antes rechazábamos con "saldo < $5.000 y < monto": eso rechazaba a un usuario que SÍ tenía
         // fichas (ej. 4.000 fichas pidiendo 50.000) tratándolo como falso. MAL: si tiene ALGUNAS fichas,
@@ -216,6 +217,9 @@ window.revisarFichasRetiro = function(opciones){
         window._retiroSaldoCheck[clave] = reg;
         // La tarjeta de la lista muestra "saldo … ✓/⚠" con este mismo dato.
         try{ if(typeof window.v154pRenderSolicitudesPortalEnInicio==='function') window.v154pRenderSolicitudesPortalEnInicio(); }catch(_e){}
+        // Y el cartel que esté abierto para este jugador ("Ver", el de aprobar): una lectura que llegó por
+        // otro lado (la de cuando entró el retiro, un reintento) se dibuja ahí sin volver a leer.
+        try{ if(typeof window.fichasRepintarAbiertos==='function') window.fichasRepintarAbiertos(usuario); }catch(_e){}
       } else reg.motivo = l.motivo;
       return reg;
     }finally{ _wdUnlock(); _drexGlobalUnlock(); }
@@ -224,6 +228,66 @@ window.revisarFichasRetiro = function(opciones){
   lectura.then(function(){ delete window._fichasLeyendo[clave]; }, function(){ delete window._fichasLeyendo[clave]; });
   return lectura;
 };
+
+// ── Fichas apenas llega el retiro ───────────────────────────────────────────────────────────
+// Juan, 23/11: la revisión de fichas se pide cuando llega el retiro, no cuando el agente queda ocioso. El
+// escaneo de arriba espera hasta 4 minutos y se saltea el retiro si el operador ya lo tomó, así que el
+// cartel casi nunca la encontraba hecha. Ahora:
+//  - corre aunque el operador ya esté con ese mismo retiro. Si aprieta Aceptar mientras se lee, pasa lo de
+//    siempre: el pago espera su turno con el agente o avisa que hay otra operación;
+//  - es la misma lectura de "Ver", del cartel de aprobar y de la tarjeta: al abrir el cartel la encuentra
+//    hecha (o se engancha a la que está en curso) y se dibuja en el momento;
+//  - si falla, se reintenta enseguida; si sigue fallando, se vuelve a probar en el próximo refresco de la
+//    bandeja. Sólo lee: el auto-rechazo sin fichas sigue siendo cosa del escaneo.
+const _FICHAS_LLEGADA_EDAD_MS = 2*60*60*1000;   // como el escaneo: los retiros viejos los mira el operador
+const _FICHAS_LLEGADA_INTENTOS = 6;             // en total, sumando las vueltas de la bandeja
+const _FICHAS_LLEGADA_PAUSA_MS = 30000;         // entre una vuelta fallida y la siguiente
+window._fichasAlLlegar = window._fichasAlLlegar || {};   // id de solicitud → { ok, enCola, intentos, ultimo }
+const _colaFichasLlegada = [];
+let _colaFichasLlegadaCorriendo = false;
+window.revisarFichasAlLlegar = function(solicitudes){
+  if(!window.ctrlElectron || !Array.isArray(solicitudes)) return;
+  const ahora = Date.now();
+  solicitudes.forEach(function(s){
+    if(String(s.TIPO||s.TIPO_SOLICITUD||'').toUpperCase() !== 'RETIRO') return;
+    if(window._estadoYaCerrado && window._estadoYaCerrado(s.ESTADO)) return;
+    const sid = String(s.ID||s.SOLICITUD_ID||s.ID_SOLICITUD||'');
+    const usuario = String(s.USUARIO||'').trim();
+    if(!sid || !usuario) return;
+    const fc = Date.parse(s.FECHA_CREACION||s.created_at||s.FECHA||'') || 0;
+    if(fc && (ahora - fc) > _FICHAS_LLEGADA_EDAD_MS) return;
+    const st = window._fichasAlLlegar[sid];
+    if(st && (st.ok || st.enCola)) return;
+    if(st && (st.intentos >= _FICHAS_LLEGADA_INTENTOS || (ahora - st.ultimo) < _FICHAS_LLEGADA_PAUSA_MS)) return;
+    // Con una parte ya pagada, lo que importa es si le alcanza para lo que falta.
+    let monto = Number(s.MONTO_REAL||s.MONTO_DECLARADO||0);
+    try{ const pp = window._retiroParcialInfo ? window._retiroParcialInfo(s) : null; if(pp && pp.hasProg) monto = pp.restante; }catch(_e){}
+    window._fichasAlLlegar[sid] = { ok:false, enCola:true, intentos:(st && st.intentos)||0, ultimo:(st && st.ultimo)||0 };
+    _colaFichasLlegada.push({ sid:sid, usuario:usuario, monto:Math.abs(Number(monto)||0) });
+  });
+  _correrFichasLlegada();
+};
+// De a una: el agente es uno solo. Cada lectura ya espera unos segundos si el agente está en otra cosa.
+async function _correrFichasLlegada(){
+  if(_colaFichasLlegadaCorriendo) return;
+  _colaFichasLlegadaCorriendo = true;
+  try{
+    while(_colaFichasLlegada.length){
+      const t = _colaFichasLlegada.shift();
+      const st = window._fichasAlLlegar[t.sid] || { ok:false, intentos:0, ultimo:0 };
+      for(let i = 0; i < 3 && st.intentos < _FICHAS_LLEGADA_INTENTOS; i++){
+        st.intentos++; st.ultimo = Date.now();
+        let r = null;
+        try{ r = await window.revisarFichasRetiro({ usuario:t.usuario, solicitudId:t.sid, monto:t.monto }); }catch(_e){}
+        // "No existe" también es una respuesta: no se insiste.
+        if(r && (r.confiable === true || r.motivo === 'no_existe')){ st.ok = true; break; }
+        if(i < 2) await new Promise(function(res){ setTimeout(res, 1500); });
+      }
+      st.enCola = false;
+      window._fichasAlLlegar[t.sid] = st;
+    }
+  }finally{ _colaFichasLlegadaCorriendo = false; }
+}
 
 // ── LA lectura de fichas ────────────────────────────────────────────────────────────────────
 // Todo lo que pregunta "cuántas fichas tiene este jugador" sin mover plata pasa por acá: el modal de

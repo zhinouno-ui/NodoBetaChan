@@ -16,8 +16,10 @@ test('aprieta Aceptar en "Verifique la información" y toma la contraseña que m
   assert.ok(f.indexOf('clickElement(guardar)') < f.indexOf('clickElement(aceptar)'), 'primero Crear jugador, después Aceptar');
 });
 
-test('con la contraseña al azar de la página: se usa ésa si el operador no eligió otra', () => {
-  assert.match(f, /if \(passInput && \(!elegida \|\| elegida === CLAVE_ESTANDAR\)\)/);
+test('con la contraseña al azar de la página: se usa ésa si el operador dejó la clave vacía', () => {
+  assert.match(f, /if \(passInput && !elegida\)/);
+  // 23/11: NODO ya no rellena con 1a2b3c4d, así que la que escribió el operador se respeta aunque sea ésa.
+  assert.doesNotMatch(f, /elegida === CLAVE_ESTANDAR/);
   assert.match(f, /if \(passInput && !propuesta\) await setFieldAndVerify\(passInput, clave, 5\)/);
   assert.match(f, /password: claveVerificada \|\| clave/);
 });

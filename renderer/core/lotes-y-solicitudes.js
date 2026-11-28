@@ -519,7 +519,7 @@ async function abrirCerrarRetiro(id){
 
   const usuario = s.USUARIO || s.USUARIO_JUGADOR || "";
   if(usuario){
-    const check = await verificarRetiro24h(usuario);
+    const check = await verificarRetiro24h(usuario, { destino: s.DESTINO || s.CBU || s.RETIRO_ALIAS_CBU || s.ALIAS_CBU || '', titular: s.TITULAR || s.RETIRO_TITULAR || '' });
     if(check.bloqueado){
       const proceder = await confirmarRetiroDuplicado(check);
       if(!proceder) return;

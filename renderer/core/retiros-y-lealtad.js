@@ -22,12 +22,148 @@ async function _blacklistDelServidor(usuario){
     return d;
   }catch(_e){ return null; }
 }
-async function verificarRetiro24h(usuario) {
+// ── La misma persona desde otra cuenta (Juan, 19/11) ─────────────────────────────────────────
+// El chequeo de 24 h miraba sólo el usuario. Caso real de P4: tres cuentas, tres teléfonos, un mismo titular
+// y la misma cuenta de cobro; en 90 días 28 retiros salieron a menos de 24 h del anterior de esa persona, y el
+// chequeo por usuario frenaba 2. No se traba nada: se le avisa al operador quién cobró, cuándo y a qué cuenta,
+// con el texto listo para el motivo del rechazo ("el operador tiene más decisión con buena información").
+// "Misma persona" = cobró a la misma cuenta (CBU/alias) o a nombre del mismo titular, sin importar tildes.
+function _bl24Norm(t){ return String(t||'').normalize('NFD').replace(/[̀-ͯ]/g,'').toLowerCase().replace(/\s+/g,' ').trim(); }
+function _bl24Destino(t){ const s = String(t||'').replace(/[^A-Za-z0-9.]/g,'').toLowerCase(); return s.length > 5 ? s : ''; }
+// Las filas de retiro del historial dicen "#502169 · Titular: Nombre Apellido · Alias: 0000… · ARS 5,000.06".
+function _bl24DeNotas(notas){
+  const s = String(notas||'');
+  return { titular: ((s.match(/Titular:\s*([^·|\n]+?)\s*(?:·|\||$)/i)||[])[1]||'').trim(),
+           destino: ((s.match(/(?:Alias|CBU|CVU|Destino)\s*:\s*([^·|\s]+)/i)||[])[1]||'').trim() };
+}
+// Para buscar el titular en el servidor sin que una tilde lo esconda: "López" y "Lopez" tienen que dar igual.
+// Vocales y eñe van como comodín (_); después se compara el nombre entero acá.
+function _bl24PatronTitular(tit){
+  const pal = _bl24Norm(tit).split(' ').filter(Boolean);
+  if(pal.length < 2) return '';
+  return 'Titular: ' + pal.slice(0, 2).map(function(p){ return p.replace(/[^a-z]/g,'_').replace(/[aeioun]/g,'_'); }).join(' ');
+}
+function _bl24Hora(d){ return d.toLocaleTimeString('es-AR', { hour:'2-digit', minute:'2-digit', hour12:false }); }
+function _bl24Dia(d){
+  const hoy = new Date(); const ayer = new Date(Date.now() - _BL_H24); const manana = new Date(Date.now() + _BL_H24);
+  return d.toDateString() === hoy.toDateString() ? 'hoy' : d.toDateString() === ayer.toDateString() ? 'ayer'
+    : d.toDateString() === manana.toDateString() ? 'mañana' : 'el ' + d.toLocaleDateString('es-AR', { day:'2-digit', month:'2-digit' });
+}
+// Devuelve el retiro más reciente (24 h) de OTRA cuenta de la misma persona, o null.
+async function _retiro24hMismaPersona(usuario, extra){
+  if(typeof supabaseClient === 'undefined') return null;
+  const u = String(usuario||'').trim(); if(!u) return null;
+  const uN = normalizar(u);
+  const destinos = new Set(), titulares = new Set();
+  const sumar = function(d, t){ const dn = _bl24Destino(d); if(dn) destinos.add(dn); const tn = _bl24Norm(t); if(tn.split(' ').length >= 2) titulares.add(tn); };
+  if(extra) sumar(extra.destino, extra.titular);
+  // A dónde cobra esta cuenta: sus últimos retiros. Con .in (no ilike) para que use el índice: 0,4–1 s contra 1,2–1,8 s.
+  const variantes = Array.from(new Set([u, u.toLowerCase(), u.toUpperCase(), u.charAt(0).toUpperCase() + u.slice(1).toLowerCase()]));
+  const prev = await supabaseClient.from('historial_ops').select('notas')
+    .in('usuario', variantes).eq('tipo','RETIRO').eq('estado','OK')
+    .order('created_at', { ascending:false }).limit(15);
+  if(prev.error) throw prev.error;
+  (prev.data||[]).forEach(function(r){ const x = _bl24DeNotas(r.notas); sumar(x.destino, x.titular); });
+  const filtros = [];
+  destinos.forEach(function(d){ filtros.push('notas.ilike.*' + d + '*'); });
+  titulares.forEach(function(t){ const p = _bl24PatronTitular(t); if(p) filtros.push('notas.ilike.*' + p + '*'); });
+  if(!filtros.length) return null;
+  const r = await supabaseClient.from('historial_ops')
+    .select('id, usuario, created_at, monto, notas, pc_codigo, billetera_nombre')
+    .eq('tipo','RETIRO').eq('estado','OK').gte('created_at', new Date(Date.now() - _BL_H24).toISOString())
+    .or(filtros.slice(0, 12).join(','))
+    .order('created_at', { ascending:false }).limit(30);
+  if(r.error) throw r.error;
+  for(const h of (r.data||[])){
+    if(normalizar(h.usuario) === uN || _blEsParcial(h) || /\[BL_EXCLUIDO\]/.test(String(h.notas||''))) continue;
+    const x = _bl24DeNotas(h.notas), dn = _bl24Destino(x.destino);
+    const porCuenta = !!(dn && destinos.has(dn));
+    const porTitular = !porCuenta && titulares.has(_bl24Norm(x.titular));
+    if(porCuenta || porTitular) return { fila: h, porCuenta: porCuenta, titular: x.titular, destino: x.destino };
+  }
+  return null;
+}
+function _retiro24hResultadoPersona(usuario, hit){
+  const h = hit.fila, fecha = new Date(h.created_at), proximo = new Date(fecha.getTime() + _BL_H24);
+  const como = hit.porCuenta ? 'a la misma cuenta de cobro' : 'a nombre del mismo titular';
+  return {
+    bloqueado: true, advertencia: true, usuario, origen: 'MISMA_PERSONA',
+    otroUsuario: h.usuario, porCuenta: hit.porCuenta, titular: hit.titular || null, destino: hit.destino || null,
+    oficinaOtro: h.pc_codigo || null, historial_id: h.id,
+    horasRestantes: Math.max(0, Math.ceil((proximo.getTime() - Date.now()) / 3600000)),
+    monto: h.monto, fecha: h.created_at, proximoRetiro: proximo.toISOString(), billetera_nombre: h.billetera_nombre || null,
+    // Es el texto que le llega al jugador si se rechaza (va después de "Tu solicitud de retiro fue rechazada:").
+    mensaje: 'Retiro 24 hs: ya se hizo un retiro desde el usuario ' + h.usuario + ' ' + _bl24Dia(fecha) + ' a las ' + _bl24Hora(fecha)
+      + ', ' + como + '. Podés volver a pedir ' + _bl24Dia(proximo) + ' a las ' + _bl24Hora(proximo) + '.'
+  };
+}
+// Las segundas cuentas, fuera de las 24 h (Juan, 19/11: "NODO debe notificar cuáles son las segundas cuentas"):
+// qué OTROS usuarios cobraron en los últimos 60 días a esta cuenta o a nombre de este titular, y cuántas veces.
+// Para mostrar en el detalle del retiro; no frena nada. → { cuenta:[{usuario,oficina,veces}], titular:[…] } o null.
+async function nodoOtrasCuentasDeCobro(destino, titular, usuario){
+  if(typeof supabaseClient === 'undefined') return null;
+  const dn = _bl24Destino(destino), tn = _bl24Norm(titular), pat = _bl24PatronTitular(titular), uN = normalizar(usuario);
+  const desde = new Date(Date.now() - 60 * 86400000).toISOString();
+  const pedir = function(patron){
+    return supabaseClient.from('historial_ops').select('usuario, pc_codigo, notas')
+      .eq('tipo','RETIRO').eq('estado','OK').ilike('notas', '%' + patron + '%').gte('created_at', desde).limit(300);
+  };
+  const [rc, rt] = await Promise.all([dn ? pedir(dn) : null, pat ? pedir(pat) : null]);
+  if((rc && rc.error) || (rt && rt.error)) throw (rc && rc.error) || rt.error;
+  const juntar = function(filas, vale){
+    const m = {};
+    (filas || []).forEach(function(h){
+      if(normalizar(h.usuario) === uN || !vale(_bl24DeNotas(h.notas))) return;
+      const k = normalizar(h.usuario);
+      m[k] = m[k] || { usuario: h.usuario, oficina: h.pc_codigo || '', veces: 0 };
+      m[k].veces++;
+    });
+    return Object.values(m).sort(function(a, b){ return b.veces - a.veces; });
+  };
+  return {
+    cuenta: juntar(rc && rc.data, function(x){ return _bl24Destino(x.destino) === dn; }),
+    titular: juntar(rt && rt.data, function(x){ return tn && _bl24Norm(x.titular) === tn; })
+  };
+}
+window.nodoOtrasCuentasDeCobro = nodoOtrasCuentasDeCobro;
+// Lo mismo, en castellano y corto, para pintar en el detalle del retiro.
+function nodoOtrasCuentasHtml(r){
+  if(!r) return '';
+  const lista = function(xs){ return xs.slice(0, 6).map(function(x){ return escapeHtml(x.usuario) + (x.oficina ? ' (' + escapeHtml(x.oficina) + ')' : '') + ' ×' + x.veces; }).join(' · ') + (xs.length > 6 ? ' · y ' + (xs.length - 6) + ' más' : ''); };
+  const nombresCuenta = {}; r.cuenta.forEach(function(x){ nombresCuenta[normalizar(x.usuario)] = 1; });
+  const soloTitular = r.titular.filter(function(x){ return !nombresCuenta[normalizar(x.usuario)]; });
+  if(!r.cuenta.length && !soloTitular.length) return '<div style="margin-top:5px;font-size:11px;color:#8b949e">Ningún otro usuario cobró a esta cuenta ni a este titular en 60 días.</div>';
+  return '<div style="margin-top:6px;padding:7px 10px;border-radius:8px;background:rgba(168,85,247,.12);border:1px solid rgba(168,85,247,.5);color:#e9d5ff;font-size:12px;font-weight:700">'
+    + '👥 Posibles segundas cuentas (60 días)'
+    + (r.cuenta.length ? '<br><span style="font-weight:600">Cobraron a esta misma cuenta: ' + lista(r.cuenta) + '</span>' : '')
+    + (soloTitular.length ? '<br><span style="font-weight:600">Cobraron a nombre del mismo titular: ' + lista(soloTitular) + '</span>' : '')
+    + '</div>';
+}
+window.nodoOtrasCuentasHtml = nodoOtrasCuentasHtml;
+
+// La búsqueda por persona no puede demorar el retiro: si no contesta en 5 s se sigue sin ella (y la luz lo dice).
+function _retiro24hPersonaConTope(usuario, extra){
+  let tope;
+  const limite = new Promise(function(ok){ tope = setTimeout(function(){ ok({ sinComprobar: true }); }, 5000); });
+  const busqueda = _retiro24hMismaPersona(usuario, extra)
+    .catch(function(e){ console.warn('[retiro-24h] misma persona', e && e.message); return { sinComprobar: true }; });
+  return Promise.race([busqueda, limite]).finally(function(){ clearTimeout(tope); });
+}
+async function _retiro24hSoloPersona(usuario, personaP, health){
+  const p = await personaP;
+  if(p && p.sinComprobar){ health?.record('DATA', 'DEGRADED', 'RETIRO_24H_PERSONA_SIN_COMPROBAR'); return { bloqueado: false }; }
+  if(p && p.fila){ health?.record('DATA', 'OK', 'RETIRO_24H_MISMA_PERSONA'); return _retiro24hResultadoPersona(usuario, p); }
+  return { bloqueado: false };
+}
+
+// extra (opcional): { destino, titular } del retiro que se está por pagar, si se conocen.
+async function verificarRetiro24h(usuario, extra) {
   const health = window.NodoSalud?.begin('RETIROS');
+  const personaP = _retiro24hPersonaConTope(usuario, extra);
   const bl = await _blacklistDelServidor(usuario);
   if(bl){
     health?.record('DATA', 'OK', bl.bloqueado ? 'RETIRO_24H_MATCH' : 'RETIRO_24H_CLEAR');
-    if(!bl.bloqueado) return { bloqueado: false };
+    if(!bl.bloqueado) return _retiro24hSoloPersona(usuario, personaP, health);
     const fecha = new Date(bl.retiro_at), proximo = new Date(bl.hasta), pasado = Date.now() - fecha.getTime();
     return {
       bloqueado: true, advertencia: true, usuario,
@@ -98,7 +234,7 @@ async function verificarRetiro24h(usuario) {
   if(candidatos.length) health?.record('DATA', _fuenteFallo?'DEGRADED':'OK',
     _fuenteFallo?'RETIRO_24H_MATCH_PARCIAL':'RETIRO_24H_MATCH');
   else health?.record('DATA', _fuenteFallo ? 'DEGRADED' : 'OK', _fuenteFallo ? 'RETIRO_24H_SIN_COMPROBAR' : 'RETIRO_24H_CLEAR');
-  if(!candidatos.length) return { bloqueado: false };
+  if(!candidatos.length) return _retiro24hSoloPersona(usuario, personaP, health);
 
   // Tomar el retiro más reciente de cualquier fuente
   candidatos.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
@@ -135,14 +271,34 @@ function confirmarRetiroDuplicado(check) {
       ? '<br><span class="small" style="color:#e0c070">Billetera: <b>' + escapeHtml(check.billetera_nombre) + '</b></span>'
       : '';
 
+    const persona = check.origen === 'MISMA_PERSONA';
+    const pasado  = Date.now() - new Date(check.fecha).getTime();
+    const cabeza  = persona
+      ? '<b>⚠️ Esta persona ya retiró desde otro usuario</b><br><br>' +
+        '<b>' + escapeHtml(check.otroUsuario || '') + '</b> cobró hace <b>' + escapeHtml(_blFmtGap(pasado)) + '</b>'
+          + (check.oficinaOtro ? ' (' + escapeHtml(check.oficinaOtro) + ')' : '') + ', '
+          + (check.porCuenta ? 'a la misma cuenta de cobro' : 'a nombre del mismo titular') + ':<br>' +
+        (check.titular ? '👤 Titular: <b>' + escapeHtml(check.titular) + '</b><br>' : '') +
+        (check.destino ? '🏦 Cuenta: <b>' + escapeHtml(check.destino) + '</b><br>' : '')
+      : '<b>⚠️ Retiro en las últimas 24hs</b><br><br>' +
+        '<b>' + escapeHtml(check.usuario || '') + '</b> ya realizó un retiro:<br>';
+    // El texto para el motivo del rechazo, listo para copiar (en el retiro del Portal, al cancelar se le manda solo).
+    const motivo = String(check.mensaje || '');
+    const copiar = motivo
+      ? '<div style="margin:0 0 12px;padding:8px 10px;border-radius:8px;background:#0d1117;border:1px solid rgba(255,255,255,.12)">' +
+          '<div class="small" style="color:#8b949e;font-weight:800;margin-bottom:4px">MENSAJE PARA EL RECHAZO</div>' +
+          '<div style="font-size:13px;color:#e6edf3;margin-bottom:6px">' + escapeHtml(motivo) + '</div>' +
+          '<button type="button" class="mini-btn" data-valor="' + escapeHtml(motivo) + '" onclick="portalCopiarCbu(this)" style="width:auto">📋 Copiar mensaje <span class="pcopy-ico"></span></button>' +
+        '</div>'
+      : '';
     const body =
       '<div class="alert-box" style="line-height:1.7;margin-bottom:14px">' +
-        '<b>⚠️ Retiro en las últimas 24hs</b><br><br>' +
-        '<b>' + escapeHtml(check.usuario || '') + '</b> ya realizó un retiro:<br>' +
+        cabeza +
         '📅 Retiro anterior: <b>' + fechaRet + '</b><br>' +
         '🕐 Habilitado nuevamente: <b>' + horaOk + '</b><br>' +
         '💰 Monto anterior: <b>' + money(check.monto) + '</b>' + bilInfo +
       '</div>' +
+      copiar +
       (check.origen === 'BLACKLIST'
         ? '<p style="color:#c0cad8;font-size:13px">Está en la <b>blacklist</b>: hasta esa hora no puede pedir otro retiro. '
           + 'Si revisaste el caso y corresponde pagarle, sacalo de la blacklist: queda destrabado también en el Portal.</p>'
